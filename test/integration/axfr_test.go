@@ -77,11 +77,11 @@ func axfrServerWithACL(t *testing.T, aclEntries []string) (*server.Server, func(
 	}
 
 	// Build state normally to get zones loaded.
-	state, err := buildServerState(cfg, aliases, country, asnDB, logger)
+	state, err := server.BuildState(cfg, aliases, country, asnDB, logger)
 	if err != nil {
 		_ = country.Close()
 		_ = asnDB.Close()
-		t.Fatalf("buildServerState: %v", err)
+		t.Fatalf("server.BuildState: %v", err)
 	}
 
 	// Override the ACL with the test-controlled entries.

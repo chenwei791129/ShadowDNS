@@ -12,7 +12,6 @@ package integration_test
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -27,9 +26,7 @@ import (
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
-	"github.com/chenwei791129/ShadowDNS/internal/transfer"
 	"github.com/chenwei791129/ShadowDNS/internal/view"
-	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
 
 // fixtureDir is the path to the shared testdata/integration directory.
@@ -82,11 +79,11 @@ func newTestServer(t *testing.T) (*server.Server, func()) {
 		t.Fatalf("LoadGeoIP: %v", err)
 	}
 
-	state, err := buildServerState(cfg, aliases, country, asn, logger)
+	state, err := server.BuildState(cfg, aliases, country, asn, logger)
 	if err != nil {
 		_ = country.Close()
 		_ = asn.Close()
-		t.Fatalf("buildServerState: %v", err)
+		t.Fatalf("server.BuildState: %v", err)
 	}
 
 	srv := server.NewServer(state, logger)
@@ -110,98 +107,6 @@ func newTestServer(t *testing.T) (*server.Server, func()) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	return srv, teardown
-}
-
-// buildServerState replicates the wiring in cmd/shadowdns/main.go.
-// It is intentionally inlined here so that the integration package is
-// self-contained and does not need to import package main.
-func buildServerState(
-	cfg *config.Config,
-	aliases config.AliasMap,
-	country *view.CountryDB,
-	asn *view.ASNDB,
-	logger *slog.Logger,
-) (server.ServerState, error) {
-	rootZones := make(map[string]map[string]*zone.Zone)
-	backupZones := make(map[string]map[string]*zone.Zone)
-	zoneOrigins := make(map[string][]string)
-	viewRuleSets := make([]view.NamedRuleSet, 0, len(cfg.Views))
-
-	declaredBackups := make(map[string]bool, len(aliases))
-	for backup := range aliases {
-		declaredBackups[backup] = true
-	}
-
-	for _, v := range cfg.Views {
-		viewRuleSets = append(viewRuleSets, view.NamedRuleSet{
-			Name:  v.Name,
-			Rules: v.MatchClients,
-		})
-
-		rootZones[v.Name] = make(map[string]*zone.Zone)
-		backupZones[v.Name] = make(map[string]*zone.Zone)
-		seenOrigins := make([]string, 0, len(v.Zones))
-
-		for _, z := range v.Zones {
-			origin := z.Name + "."
-			parsed, err := zone.ParseFile(z.File, origin)
-			if err != nil {
-				return server.ServerState{}, fmt.Errorf("view %q zone %q: %w", v.Name, z.Name, err)
-			}
-			zone.Classify(parsed, aliases, logger)
-
-			switch parsed.Role {
-			case zone.RoleBackupOverride:
-				backupZones[v.Name][origin] = parsed
-			default:
-				rootZones[v.Name][origin] = parsed
-			}
-			seenOrigins = append(seenOrigins, origin)
-		}
-
-		for backup, root := range aliases {
-			if _, ok := rootZones[v.Name][root]; !ok {
-				continue
-			}
-			if _, ok := backupZones[v.Name][backup]; ok {
-				continue
-			}
-			if !contains(seenOrigins, backup) {
-				seenOrigins = append(seenOrigins, backup)
-			}
-		}
-
-		zoneOrigins[v.Name] = seenOrigins
-	}
-
-	matcher := &view.Matcher{
-		Views:   viewRuleSets,
-		Country: country,
-		ASN:     asn,
-	}
-
-	acl, err := transfer.NewACL(cfg.Options.AllowTransfer)
-	if err != nil {
-		return server.ServerState{}, fmt.Errorf("building allow-transfer ACL: %w", err)
-	}
-
-	return server.ServerState{
-		Matcher:          matcher,
-		Aliases:          aliases,
-		RootZones:        rootZones,
-		BackupZones:      backupZones,
-		ZoneOrigins:      zoneOrigins,
-		AllowTransferACL: acl,
-	}, nil
-}
-
-func contains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
 }
 
 // udpAddr returns the string representation of the server's UDP listener.
