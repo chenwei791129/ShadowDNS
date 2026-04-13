@@ -108,8 +108,10 @@ cd shadowdns
 **2. Build the binary.**
 
 ```bash
-go build -o shadowdns ./cmd/shadowdns
+make build
 ```
+
+The binary is written to `bin/shadowdns`.
 
 **3. Place GeoIP databases in your GeoIP directory.**
 
@@ -125,7 +127,7 @@ Download these from [MaxMind](https://dev.maxmind.com/geoip/geolite2-free-geoloc
 **4. Run ShadowDNS.**
 
 ```bash
-./shadowdns \
+./bin/shadowdns \
     --named-conf /etc/namedb/named.conf \
     --aliases    /etc/namedb/aliases.yaml
 ```
@@ -229,9 +231,9 @@ ShadowDNS uses first-match semantics (identical to BIND). Any view whose `match-
 ### 3. Run `--dry-run` against production config before cutover
 
 ```bash
-go build -o ./shadowdns ./cmd/shadowdns
+make build
 
-./shadowdns \
+./bin/shadowdns \
     --named-conf /etc/namedb/named.conf \
     --aliases    /etc/namedb/aliases.yaml \
     --dry-run
