@@ -1,2 +1,14 @@
 .spectra/
 openspec/.vector-search.db*
+
+# Go build artifacts
+/shadowdns
+/bin/
+*.test
+*.out
+coverage.txt
+
+# Local dev
+.local/
+*.swp
+.DS_Store
