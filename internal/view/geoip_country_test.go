@@ -1,0 +1,58 @@
+package view
+
+import (
+	"net/netip"
+	"testing"
+)
+
+func TestCountryDB_Lookup(t *testing.T) {
+	path := buildCountryMMDB(t)
+
+	db, err := OpenCountryDB(path)
+	if err != nil {
+		t.Fatalf("OpenCountryDB: %v", err)
+	}
+	defer db.Close()
+
+	t.Run("known IP returns country code", func(t *testing.T) {
+		code, ok := db.Lookup(netip.MustParseAddr("192.0.2.1"))
+		if !ok {
+			t.Fatal("expected ok=true, got false")
+		}
+		if code != "TH" {
+			t.Errorf("expected TH, got %q", code)
+		}
+	})
+
+	t.Run("second known IP returns correct code", func(t *testing.T) {
+		code, ok := db.Lookup(netip.MustParseAddr("198.51.100.1"))
+		if !ok {
+			t.Fatal("expected ok=true, got false")
+		}
+		if code != "JP" {
+			t.Errorf("expected JP, got %q", code)
+		}
+	})
+
+	t.Run("unknown IP returns no-match", func(t *testing.T) {
+		code, ok := db.Lookup(netip.MustParseAddr("10.0.0.1"))
+		if ok {
+			t.Errorf("expected ok=false for unknown IP, got code=%q", code)
+		}
+	})
+
+	t.Run("nil CountryDB does not panic", func(t *testing.T) {
+		var nilDB *CountryDB
+		code, ok := nilDB.Lookup(netip.MustParseAddr("192.0.2.1"))
+		if ok || code != "" {
+			t.Errorf("expected ('', false), got (%q, %v)", code, ok)
+		}
+	})
+}
+
+func TestOpenCountryDB_MissingFile(t *testing.T) {
+	_, err := OpenCountryDB("/nonexistent/path/GeoLite2-Country.mmdb")
+	if err == nil {
+		t.Error("expected error for missing file, got nil")
+	}
+}
