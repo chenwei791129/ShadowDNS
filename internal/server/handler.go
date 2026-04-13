@@ -345,6 +345,21 @@ func addrFromRemote(w dns.ResponseWriter) (netip.Addr, error) {
 	return ip, nil
 }
 
+// handleChaos replies REFUSED for all CHAOS-class queries so the server
+// never reveals version, hostname, or any identity information.
+func handleChaos(w dns.ResponseWriter, req *dns.Msg) {
+	m := new(dns.Msg)
+	m.SetReply(req)
+	m.Opcode = dns.OpcodeQuery
+	m.RecursionAvailable = false
+	m.Authoritative = false
+	m.Rcode = dns.RcodeRefused
+	m.Answer = nil
+	m.Ns = nil
+	m.Extra = nil
+	_ = w.WriteMsg(m)
+}
+
 // replyRcode sends a response with the given RCODE and no payload.
 // RA is always false; AA is false for error responses.
 func replyRcode(w dns.ResponseWriter, req *dns.Msg, rcode int) {
