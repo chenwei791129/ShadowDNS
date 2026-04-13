@@ -13,8 +13,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"slices"
 	"syscall"
+	"time"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
@@ -22,6 +22,11 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/view"
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
+
+// notifyDeadline caps the total time a single NOTIFY goroutine can block,
+// including the 1s/2s/4s backoff chain. Anything longer would leak a
+// goroutine behind a hung peer for the lifetime of the server.
+const notifyDeadline = 10 * time.Second
 
 // runOptions captures everything run() needs from the environment.
 // Keeping these in a struct makes run() unit-testable without touching globals.
@@ -98,7 +103,7 @@ func run(ctx context.Context, opts runOptions) error {
 		}
 	}()
 
-	state, err := buildServerState(cfg, aliases, country, asn, logger)
+	state, err := server.BuildState(cfg, aliases, country, asn, logger)
 	if err != nil {
 		return fmt.Errorf("building server state: %w", err)
 	}
@@ -129,94 +134,6 @@ func run(ctx context.Context, opts runOptions) error {
 	return srv.Start(ctx, opts.ListenAddr)
 }
 
-// buildServerState assembles the ServerState: parses every zone file into memory,
-// classifies root vs backup zones, builds the view matcher, and constructs the
-// allow-transfer ACL.
-func buildServerState(
-	cfg *config.Config,
-	aliases config.AliasMap,
-	country *view.CountryDB,
-	asn *view.ASNDB,
-	logger *slog.Logger,
-) (server.ServerState, error) {
-	rootZones := make(map[string]map[string]*zone.Zone)
-	backupZones := make(map[string]map[string]*zone.Zone)
-	zoneOrigins := make(map[string][]string)
-	viewRuleSets := make([]view.NamedRuleSet, 0, len(cfg.Views))
-
-	// Pre-compute backup-origin set for quick "declared in aliases?" lookup.
-	declaredBackups := make(map[string]bool, len(aliases))
-	for backup := range aliases {
-		declaredBackups[backup] = true
-	}
-
-	for _, v := range cfg.Views {
-		viewRuleSets = append(viewRuleSets, view.NamedRuleSet{
-			Name:  v.Name,
-			Rules: v.MatchClients,
-		})
-
-		rootZones[v.Name] = make(map[string]*zone.Zone)
-		backupZones[v.Name] = make(map[string]*zone.Zone)
-		seenOrigins := make([]string, 0, len(v.Zones))
-
-		for _, z := range v.Zones {
-			origin := z.Name + "."
-			parsed, err := zone.ParseFile(z.File, origin)
-			if err != nil {
-				return server.ServerState{}, fmt.Errorf("view %q zone %q: %w", v.Name, z.Name, err)
-			}
-			zone.Classify(parsed, aliases, logger)
-
-			switch parsed.Role {
-			case zone.RoleBackupOverride:
-				backupZones[v.Name][origin] = parsed
-			default:
-				rootZones[v.Name][origin] = parsed
-			}
-			seenOrigins = append(seenOrigins, origin)
-		}
-
-		// Detect aliased backups declared in aliases.yaml but not present in master.zones.
-		// Such backups will SERVFAIL on query — warn early.
-		for backup, root := range aliases {
-			if _, ok := rootZones[v.Name][root]; !ok {
-				continue // root not loaded in this view; nothing to alias against
-			}
-			if _, ok := backupZones[v.Name][backup]; ok {
-				continue // backup zone file present
-			}
-			// Backup is implicit (no override file). It still needs an origin entry
-			// so Detect() can find it.
-			if !slices.Contains(seenOrigins, backup) {
-				seenOrigins = append(seenOrigins, backup)
-			}
-		}
-
-		zoneOrigins[v.Name] = seenOrigins
-	}
-
-	matcher := &view.Matcher{
-		Views:   viewRuleSets,
-		Country: country,
-		ASN:     asn,
-	}
-
-	acl, err := transfer.NewACL(cfg.Options.AllowTransfer)
-	if err != nil {
-		return server.ServerState{}, fmt.Errorf("building allow-transfer ACL: %w", err)
-	}
-
-	return server.ServerState{
-		Matcher:          matcher,
-		Aliases:          aliases,
-		RootZones:        rootZones,
-		BackupZones:      backupZones,
-		ZoneOrigins:      zoneOrigins,
-		AllowTransferACL: acl,
-	}, nil
-}
-
 // dispatchNotifies sends NOTIFY messages for every loaded root zone in the
 // background. Each zone × NS-target pair becomes its own goroutine; all are
 // fire-and-forget with results logged.
@@ -239,8 +156,12 @@ func dispatchNotifies(
 				}
 				seen[k] = true
 				go func(origin, target string) {
+					// Bound each NOTIFY attempt so a hung NS target cannot leak a
+					// goroutine for the lifetime of the server.
+					notifyCtx, cancel := context.WithTimeout(ctx, notifyDeadline)
+					defer cancel()
 					addr := target + ":53"
-					if err := transfer.SendNOTIFY(ctx, origin, addr, logger); err != nil {
+					if err := transfer.SendNOTIFY(notifyCtx, origin, addr, logger); err != nil {
 						logger.Warn("NOTIFY failed",
 							"origin", origin,
 							"target", target,

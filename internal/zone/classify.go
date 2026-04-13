@@ -24,9 +24,11 @@ func Classify(z *Zone, aliases config.AliasMap, logger *slog.Logger) *Zone {
 	return z
 }
 
-// filterBackupRecords removes records of types other than TXT/MX/SRV from the zone,
-// logging a warning for each discarded record.
+// filterBackupRecords removes records of types other than TXT/MX/SRV from the
+// zone, logging a warning for each discarded record. SOA is always among the
+// discarded types, so z.SOA is cleared unconditionally.
 func filterBackupRecords(z *Zone, logger *slog.Logger) {
+	z.SOA = nil
 	for owner, rrs := range z.Records {
 		kept := rrs[:0] // reuse backing array
 		for _, rr := range rrs {
@@ -44,16 +46,6 @@ func filterBackupRecords(z *Zone, logger *slog.Logger) {
 			delete(z.Records, owner)
 		} else {
 			z.Records[owner] = kept
-		}
-	}
-
-	// Re-derive SOA pointer since filtering may have removed it.
-	z.SOA = nil
-	for _, rrs := range z.Records {
-		for _, rr := range rrs {
-			if soa, ok := rr.(*dns.SOA); ok {
-				z.SOA = soa
-			}
 		}
 	}
 }
