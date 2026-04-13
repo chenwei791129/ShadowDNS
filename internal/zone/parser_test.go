@@ -170,6 +170,11 @@ example.org. IN A 1.2.3.4
 	if !strings.Contains(err.Error(), "out-of-zone") {
 		t.Errorf("error %q does not mention out-of-zone", err.Error())
 	}
+	// Per zone-parser spec: "returns a fatal error citing the file and line".
+	// The offending record sits on line 3 of the fixture above.
+	if !strings.Contains(err.Error(), ":3:") {
+		t.Errorf("error %q does not cite line 3", err.Error())
+	}
 }
 
 func TestParseFile_UnknownRRType_Error(t *testing.T) {
