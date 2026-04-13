@@ -67,7 +67,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 
 	// Zone transfer requests (AXFR / IXFR) are handled separately.
 	if qtype == dns.TypeAXFR || qtype == dns.TypeIXFR {
-		s.handleTransfer(w, req)
+		s.handleTransfer(w, req, qname)
 		return
 	}
 
@@ -180,7 +180,7 @@ func (s *Server) handleBackupQuery(
 		return
 	}
 
-	records := alias.Resolve(qname, qtype, backupZone, rootZone)
+	records := alias.Resolve(qname, qtype, match.MatchedZone, backupZone, rootZone)
 	if len(records) > 0 {
 		replyWithAnswer(w, req, records)
 		return
@@ -260,11 +260,9 @@ func backupZoneHasName(backupZone *zone.Zone, rootZone *zone.Zone, match alias.M
 }
 
 // handleTransfer routes AXFR/IXFR requests through the ACL and then dispatches
-// to the transfer subsystem.
-func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg) {
-	q := req.Question[0]
-	qname := strings.ToLower(q.Name)
-
+// to the transfer subsystem. qname is the already-lowercased query name from
+// ServeDNS.
+func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string) {
 	// Extract source IP for ACL check.
 	srcIP, err := addrFromRemote(w)
 	if err != nil {
@@ -354,9 +352,6 @@ func handleChaos(w dns.ResponseWriter, req *dns.Msg) {
 	m.RecursionAvailable = false
 	m.Authoritative = false
 	m.Rcode = dns.RcodeRefused
-	m.Answer = nil
-	m.Ns = nil
-	m.Extra = nil
 	_ = w.WriteMsg(m)
 }
 

@@ -29,7 +29,7 @@ func TestResolve_OverrideTXT(t *testing.T) {
 	rootTXT := newTXT("root.com.", "v=spf1 include:root.com. ~all")
 	rootZone := buildZone("root.com.", rootTXT)
 
-	rrs := Resolve("backup.com.", dns.TypeTXT, backupZone, rootZone)
+	rrs := Resolve("backup.com.", dns.TypeTXT, "backup.com.", backupZone, rootZone)
 
 	if len(rrs) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(rrs))
@@ -51,7 +51,7 @@ func TestResolve_NoOverride_InheritsMXWithRewrite(t *testing.T) {
 	rootMX := newMX("root.com.", 10, "mail.root.com.")
 	rootZone := buildZone("root.com.", rootMX)
 
-	rrs := Resolve("backup.com.", dns.TypeMX, backupZone, rootZone)
+	rrs := Resolve("backup.com.", dns.TypeMX, "backup.com.", backupZone, rootZone)
 
 	if len(rrs) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(rrs))
@@ -75,7 +75,7 @@ func TestResolve_SRVOverride(t *testing.T) {
 	rootSRV := newSRV("_sip._tcp.root.com.", 0, 0, 5060, "sip.root.com.")
 	rootZone := buildZone("root.com.", rootSRV)
 
-	rrs := Resolve("_sip._tcp.backup.com.", dns.TypeSRV, backupZone, rootZone)
+	rrs := Resolve("_sip._tcp.backup.com.", dns.TypeSRV, "backup.com.", backupZone, rootZone)
 
 	if len(rrs) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(rrs))
@@ -93,7 +93,7 @@ func TestResolve_NilBackupZone_FallsThrough(t *testing.T) {
 	rootA := newA("www.root.com.", "10.0.0.1")
 	rootZone := buildZone("root.com.", rootA)
 
-	rrs := Resolve("www.backup.com.", dns.TypeA, nil, rootZone)
+	rrs := Resolve("www.backup.com.", dns.TypeA, "backup.com.", nil, rootZone)
 
 	if len(rrs) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(rrs))
@@ -118,7 +118,7 @@ func TestResolve_OverrideExistsButQueryTypeIsA(t *testing.T) {
 	rootA := newA("root.com.", "192.168.1.1")
 	rootZone := buildZone("root.com.", rootA)
 
-	rrs := Resolve("backup.com.", dns.TypeA, backupZone, rootZone)
+	rrs := Resolve("backup.com.", dns.TypeA, "backup.com.", backupZone, rootZone)
 
 	if len(rrs) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(rrs))
@@ -136,7 +136,7 @@ func TestResolve_NoMatchInRootZone(t *testing.T) {
 	backupZone := buildZone("backup.com.")
 	rootZone := buildZone("root.com.") // no records
 
-	rrs := Resolve("www.backup.com.", dns.TypeA, backupZone, rootZone)
+	rrs := Resolve("www.backup.com.", dns.TypeA, "backup.com.", backupZone, rootZone)
 
 	if len(rrs) != 0 {
 		t.Errorf("expected empty result, got %d records", len(rrs))
@@ -150,5 +150,5 @@ func TestResolve_NilRootZone_DoesNotPanic(t *testing.T) {
 			t.Errorf("Resolve panicked with nil rootZone: %v", r)
 		}
 	}()
-	_ = Resolve("backup.com.", dns.TypeA, nil, nil)
+	_ = Resolve("backup.com.", dns.TypeA, "backup.com.", nil, nil)
 }
