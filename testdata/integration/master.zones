@@ -1,0 +1,34 @@
+view "view-th" {
+    match-clients {
+        geoip country TH;
+        geoip asnum "AS64500 Test ASN";
+    };
+    recursion no;
+
+    zone "example.com" {
+        type master;
+        file "master/example.com_view-th.fwd";
+    };
+
+    zone "backup.example" {
+        type master;
+        file "master/backup.example_view-th.fwd";
+    };
+};
+
+view "view-other" {
+    match-clients {
+        any;
+    };
+    recursion no;
+
+    zone "example.com" {
+        type master;
+        file "master/example.com_view-other.fwd";
+    };
+
+    zone "backup.example" {
+        type master;
+        file "master/backup.example_view-other.fwd";
+    };
+};

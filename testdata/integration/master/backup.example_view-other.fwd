@@ -1,0 +1,11 @@
+$TTL 300
+@ IN SOA ns1.backup.example. hostmaster.backup.example. (
+    1
+    300
+    120
+    604800
+    300
+)
+
+@   IN TXT   "google-site-verification=BACKUP_VIEW_OTHER_VERIFY_TOKEN"
+@   IN MX    20 mx-backup.example.net.

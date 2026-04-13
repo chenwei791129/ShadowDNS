@@ -1,0 +1,15 @@
+$TTL 300
+@ IN SOA ns1.backup.example. hostmaster.backup.example. (
+    1           ; serial — this gets overridden by the inherited root SOA
+    300
+    120
+    604800
+    300
+)
+
+; This file is loaded as a backup-override zone.
+; Only TXT, MX, and SRV records are retained per the alias mechanism.
+; A, AAAA, CNAME records here would be silently dropped with a warning.
+
+@   IN TXT   "google-site-verification=BACKUP_VIEW_TH_VERIFY_TOKEN"
+@   IN MX    20 mx-backup.example.net.
