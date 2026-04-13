@@ -12,7 +12,7 @@ func TestCountryDB_Lookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenCountryDB: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	t.Run("known IP returns country code", func(t *testing.T) {
 		code, ok := db.Lookup(netip.MustParseAddr("192.0.2.1"))

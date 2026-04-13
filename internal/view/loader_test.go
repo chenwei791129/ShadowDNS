@@ -102,8 +102,8 @@ func TestLoadGeoIP_BothValid(t *testing.T) {
 	if asnDB == nil {
 		t.Error("expected non-nil asnDB")
 	}
-	defer countryDB.Close()
-	defer asnDB.Close()
+	defer func() { _ = countryDB.Close() }()
+	defer func() { _ = asnDB.Close() }()
 }
 
 func TestLoadGeoIP_CorruptCountryFile(t *testing.T) {

@@ -54,7 +54,7 @@ func startAXFRServer(t *testing.T, mux *dns.ServeMux) (addr string, cleanup func
 	udpAddr := "127.0.0.1:" + portStr
 	udpConn, err := net.ListenPacket("udp4", udpAddr)
 	if err != nil {
-		tcpLn.Close()
+		_ = tcpLn.Close()
 		t.Fatalf("UDP listen on %s: %v", udpAddr, err)
 	}
 
@@ -206,7 +206,7 @@ func TestHandleAXFR_NilZone_Refused(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	dnsConn := &dns.Conn{Conn: conn}
-	defer dnsConn.Close()
+	defer func() { _ = dnsConn.Close() }()
 
 	req := new(dns.Msg)
 	req.SetAxfr(dns.Fqdn(origin))

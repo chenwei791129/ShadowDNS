@@ -273,13 +273,14 @@ func (lx *lexer) next() token {
 func (lx *lexer) skipWhitespace() {
 	for lx.pos < len(lx.input) {
 		ch := lx.input[lx.pos]
-		if ch == '\n' {
+		switch ch {
+		case '\n':
 			lx.line++
 			lx.pos++
-		} else if ch == ' ' || ch == '\t' || ch == '\r' {
+		case ' ', '\t', '\r':
 			lx.pos++
-		} else {
-			break
+		default:
+			return
 		}
 	}
 }

@@ -532,7 +532,7 @@ func writeMMDB(t *testing.T, tree *mmdbwriter.Tree, path string) {
 	if err != nil {
 		t.Fatalf("create %s: %v", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := tree.WriteTo(f); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}

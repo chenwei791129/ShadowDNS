@@ -12,7 +12,7 @@ func TestASNDB_Lookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenASNDB: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	t.Run("known IP returns ASN", func(t *testing.T) {
 		asn, ok := db.Lookup(netip.MustParseAddr("203.0.113.1"))

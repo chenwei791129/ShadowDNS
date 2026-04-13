@@ -398,12 +398,12 @@ func readBracedBodyRaw(lx *lexer, path string) ([]byte, int, error) {
 			return nil, 0, fmt.Errorf("%s:%d: unterminated block", path, openTok.line)
 		}
 		ch := lx.input[lx.pos]
-		if ch == '\n' {
+		switch ch {
+		case '\n':
 			lx.line++
-		}
-		if ch == '{' {
+		case '{':
 			depth++
-		} else if ch == '}' {
+		case '}':
 			depth--
 		}
 		lx.pos++

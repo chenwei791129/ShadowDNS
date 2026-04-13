@@ -181,7 +181,7 @@ func TestMatcher_CountryRule_WithRealDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenCountryDB: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	m := &Matcher{
 		Views: []NamedRuleSet{
@@ -253,7 +253,7 @@ func TestMatcher_ASNRule_WithRealDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenASNDB: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	m := &Matcher{
 		Views: []NamedRuleSet{

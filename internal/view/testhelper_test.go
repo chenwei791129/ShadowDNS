@@ -49,7 +49,7 @@ func buildCountryMMDB(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("create mmdb file: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if _, err := writer.WriteTo(f); err != nil {
 		t.Fatalf("WriteTo: %v", err)
@@ -94,7 +94,7 @@ func buildASNMMDB(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("create mmdb file: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if _, err := writer.WriteTo(f); err != nil {
 		t.Fatalf("WriteTo: %v", err)
