@@ -160,19 +160,25 @@ func axfrCollect(t *testing.T, addr, qname string) []dns.RR {
 	return rrs
 }
 
-// axfrRcode sends an AXFR request and returns the RCODE from the first DNS
-// message.  Used to verify REFUSED responses — the server sends a regular DNS
-// reply before any stream data when denying.
+// axfrRcode sends an AXFR request over TCP and returns the RCODE of the
+// reply.  Wraps axfrRcodeVia for the common TCP case.
 func axfrRcode(t *testing.T, addr, qname string) int {
 	t.Helper()
+	return axfrRcodeVia(t, "tcp", addr, qname)
+}
 
-	c := &dns.Client{Net: "tcp", Timeout: 3 * time.Second}
+// axfrRcodeVia sends an AXFR request over the given network (tcp or udp)
+// and returns the RCODE.  A connection error is treated as REFUSED since
+// that is how TCP-side denies manifest.
+func axfrRcodeVia(t *testing.T, network, addr, qname string) int {
+	t.Helper()
+
+	c := &dns.Client{Net: network, Timeout: 3 * time.Second}
 	m := new(dns.Msg)
 	m.SetAxfr(dns.Fqdn(qname))
 
 	resp, _, err := c.Exchange(m, addr)
 	if err != nil {
-		// Connection closed immediately by the server after REFUSED — treat as REFUSED.
 		return dns.RcodeRefused
 	}
 	return resp.Rcode
@@ -281,5 +287,18 @@ func TestAXFR_UnknownZone_Refused(t *testing.T) {
 	rcode := axfrRcode(t, addr, "unknown.com.")
 	if rcode != dns.RcodeRefused {
 		t.Errorf("expected REFUSED for unknown zone AXFR, got %s", dns.RcodeToString[rcode])
+	}
+}
+
+// TestAXFR_UDP_Refused verifies that AXFR requests delivered over UDP are
+// rejected with REFUSED per RFC 5936 §2.1 (AXFR SHALL be carried over TCP).
+// The ACL allows 127.0.0.1 so that an ACL mismatch cannot mask the refusal.
+func TestAXFR_UDP_Refused(t *testing.T) {
+	srv, cancel := axfrServerAllowLoopback(t)
+	defer cancel()
+
+	rcode := axfrRcodeVia(t, "udp", udpAddr(srv), "example.com.")
+	if rcode != dns.RcodeRefused {
+		t.Errorf("expected REFUSED for AXFR over UDP, got %s", dns.RcodeToString[rcode])
 	}
 }

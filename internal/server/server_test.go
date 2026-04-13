@@ -102,6 +102,21 @@ func buildBackupZone(origin string, rrs ...dns.RR) *zone.Zone {
 	return z
 }
 
+// newRootBackupServer starts a server with one root zone and one backup-override
+// zone under the "default" view, returning the UDP address and a cancel func.
+func newRootBackupServer(t *testing.T, rootZ, backupZ *zone.Zone) (string, func()) {
+	t.Helper()
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {rootZ.Origin, backupZ.Origin}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {rootZ.Origin: rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{"default": {backupZ.Origin: backupZ}},
+		Aliases:     config.AliasMap{backupZ.Origin: rootZ.Origin},
+	}, nil)
+	udpAddr, _, cancel := startTestServer(t, srv)
+	return udpAddr, cancel
+}
+
 // startTestServer starts a Server on an OS-assigned port and returns it plus
 // a cancel function.  The server is fully ready when this function returns.
 func startTestServer(t *testing.T, srv *Server) (udpAddr, tcpAddr string, cancel func()) {
@@ -234,7 +249,7 @@ func TestListener_TCFlagOnTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial UDP: %v", err)
 	}
-	defer udpConn.Close()
+	defer func() { _ = udpConn.Close() }()
 	_ = udpConn.SetDeadline(time.Now().Add(2 * time.Second))
 
 	if _, err := udpConn.Write(reqBytes); err != nil {
@@ -979,5 +994,161 @@ func TestMalformed_PanicRecovery(t *testing.T) {
 	resp2 := query(t, "udp", udpAddr, "www.root.com.", dns.TypeA)
 	if resp2.Rcode != dns.RcodeSuccess {
 		t.Errorf("post-panic query: expected NOERROR, got %s", dns.RcodeToString[resp2.Rcode])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CIDR-based view routing (view-matcher spec: first-match on IP/CIDR)
+// ---------------------------------------------------------------------------
+
+// TestViewRouting_CIDRMatches verifies a CIDR rule covering the loopback
+// address routes the query to the matching view.
+func TestViewRouting_CIDRMatches(t *testing.T) {
+	rootZ := buildRootZone("root.com.", makeARecord("www.root.com.", "192.0.2.1", 300))
+
+	srv := NewServer(ServerState{
+		Matcher:     makeMatcher("127.0.0.0/8", "loopback"),
+		ZoneOrigins: map[string][]string{"loopback": {"root.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"loopback": {"root.com.": rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}, nil)
+
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "www.root.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("CIDR match expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(resp.Answer))
+	}
+}
+
+// TestViewRouting_CIDRDoesNotMatch verifies a CIDR rule that excludes the
+// loopback address produces REFUSED (no view matched).
+func TestViewRouting_CIDRDoesNotMatch(t *testing.T) {
+	rootZ := buildRootZone("root.com.", makeARecord("www.root.com.", "192.0.2.1", 300))
+
+	srv := NewServer(ServerState{
+		Matcher:     makeMatcher("10.0.0.0/8", "corp"),
+		ZoneOrigins: map[string][]string{"corp": {"root.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"corp": {"root.com.": rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}, nil)
+
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "www.root.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeRefused {
+		t.Errorf("non-matching CIDR expected REFUSED, got %s", dns.RcodeToString[resp.Rcode])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Backup-zone override (alias-resolver spec: TXT/MX/SRV override precedence)
+// ---------------------------------------------------------------------------
+
+// TestBackupOverride_TXTPrecedence verifies a TXT record defined in the
+// backup zone takes precedence over the root zone's inherited value.
+func TestBackupOverride_TXTPrecedence(t *testing.T) {
+	rootZ := buildRootZone("root.com.")
+	rootZ.AddRR(&dns.TXT{
+		Hdr: dns.RR_Header{Name: "root.com.", Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 300},
+		Txt: []string{"v=spf1 -all"},
+	})
+	backupZ := buildBackupZone("backup.com.")
+	backupZ.AddRR(&dns.TXT{
+		Hdr: dns.RR_Header{Name: "backup.com.", Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 300},
+		Txt: []string{"v=spf1 include:_spf.backup.com -all"},
+	})
+
+	udpAddr, cancel := newRootBackupServer(t, rootZ, backupZ)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "backup.com.", dns.TypeTXT)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected 1 TXT answer, got %d", len(resp.Answer))
+	}
+	txt, ok := resp.Answer[0].(*dns.TXT)
+	if !ok {
+		t.Fatalf("answer is not TXT: %T", resp.Answer[0])
+	}
+	if len(txt.Txt) != 1 || txt.Txt[0] != "v=spf1 include:_spf.backup.com -all" {
+		t.Errorf("expected backup override TXT, got %v", txt.Txt)
+	}
+}
+
+// TestBackupOverride_MXPrecedence verifies an MX record defined in the backup
+// zone replaces the root zone's inherited MX.
+func TestBackupOverride_MXPrecedence(t *testing.T) {
+	rootZ := buildRootZone("root.com.")
+	rootZ.AddRR(&dns.MX{
+		Hdr:        dns.RR_Header{Name: "root.com.", Rrtype: dns.TypeMX, Class: dns.ClassINET, Ttl: 300},
+		Preference: 10,
+		Mx:         "mail.root.com.",
+	})
+	backupZ := buildBackupZone("backup.com.")
+	backupZ.AddRR(&dns.MX{
+		Hdr:        dns.RR_Header{Name: "backup.com.", Rrtype: dns.TypeMX, Class: dns.ClassINET, Ttl: 300},
+		Preference: 5,
+		Mx:         "mail.backup.com.",
+	})
+
+	udpAddr, cancel := newRootBackupServer(t, rootZ, backupZ)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "backup.com.", dns.TypeMX)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected 1 MX answer, got %d", len(resp.Answer))
+	}
+	mx, ok := resp.Answer[0].(*dns.MX)
+	if !ok {
+		t.Fatalf("answer is not MX: %T", resp.Answer[0])
+	}
+	if mx.Preference != 5 || mx.Mx != "mail.backup.com." {
+		t.Errorf("expected backup override MX (pref=5 mail.backup.com.), got pref=%d %s", mx.Preference, mx.Mx)
+	}
+}
+
+// TestBackupOverride_NonOverridableFallsThrough verifies that a query for a
+// non-overridable type (A) falls through to the root zone even when the
+// backup override zone is present.
+func TestBackupOverride_NonOverridableFallsThrough(t *testing.T) {
+	rootZ := buildRootZone("root.com.", makeARecord("www.root.com.", "10.0.0.1", 300))
+	backupZ := buildBackupZone("backup.com.")
+	backupZ.AddRR(&dns.TXT{
+		Hdr: dns.RR_Header{Name: "backup.com.", Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 300},
+		Txt: []string{"override"},
+	})
+
+	udpAddr, cancel := newRootBackupServer(t, rootZ, backupZ)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "www.backup.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected 1 A answer (inherited from root), got %d", len(resp.Answer))
+	}
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("answer is not A: %T", resp.Answer[0])
+	}
+	if a.Hdr.Name != "www.backup.com." {
+		t.Errorf("expected owner rewritten to www.backup.com., got %s", a.Hdr.Name)
+	}
+	if a.A.String() != "10.0.0.1" {
+		t.Errorf("expected inherited A 10.0.0.1, got %s", a.A.String())
 	}
 }

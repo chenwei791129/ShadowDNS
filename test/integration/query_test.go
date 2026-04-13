@@ -147,6 +147,51 @@ func TestQuery_TXT(t *testing.T) {
 	}
 }
 
+// TestQuery_A_TCP verifies that the same A query delivered over TCP
+// returns the expected record — exercises the TCP listener end-to-end
+// for non-AXFR traffic (spec dns-server Requirement: serve over UDP and TCP).
+func TestQuery_A_TCP(t *testing.T) {
+	srv, cancel := newTestServer(t)
+	defer cancel()
+	addr := tcpAddr(srv)
+
+	resp := queryTCP(t, addr, "www.example.com.", dns.TypeA)
+
+	assertNoError(t, resp)
+	assertAuthoritative(t, resp)
+	assertAnswerCount(t, resp, 1)
+	assertHasA(t, resp, "www.example.com.", "198.51.100.30")
+	if resp.Truncated {
+		t.Error("TCP response must not have TC=1")
+	}
+}
+
+// TestQuery_NS_TCP verifies an NS query over TCP returns the expected
+// answer set.  assertAnswerCount guards against accidental glue leaking
+// into the answer section.
+func TestQuery_NS_TCP(t *testing.T) {
+	srv, cancel := newTestServer(t)
+	defer cancel()
+	addr := tcpAddr(srv)
+
+	resp := queryTCP(t, addr, "example.com.", dns.TypeNS)
+
+	assertNoError(t, resp)
+	assertAuthoritative(t, resp)
+
+	nsCount := 0
+	for _, rr := range resp.Answer {
+		if rr.Header().Rrtype == dns.TypeNS {
+			nsCount++
+		}
+	}
+	if nsCount < 2 {
+		t.Errorf("expected at least 2 NS records over TCP, got %d", nsCount)
+	}
+	// Every answer record must be NS — no extra types mixed in.
+	assertAnswerCount(t, resp, nsCount)
+}
+
 // TestQuery_SOA verifies that an explicit SOA query returns the SOA in the
 // answer section with AA=1.
 func TestQuery_SOA(t *testing.T) {
