@@ -38,8 +38,10 @@ func ParseFile(path string, origin string) (*Zone, error) {
 	}
 
 	zp := dns.NewZoneParser(f, canonOrigin, path)
-	// Enable parsing of $TTL and other directives.
 	zp.SetDefaultTTL(0)
+	// Real BIND deployments split zones across $INCLUDE-d fragments; honour
+	// them. Zone files come from trusted operator config, not network input.
+	zp.SetIncludeAllowed(true)
 
 	for rr, ok := zp.Next(); ok; rr, ok = zp.Next() {
 		// Validate that the owner name is within the zone origin.
