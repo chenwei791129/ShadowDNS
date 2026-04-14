@@ -3,7 +3,7 @@
 name: shadowdns
 arch: amd64
 platform: linux
-version: 0.1.0
+version: ${VERSION}
 section: net
 priority: optional
 maintainer: ShadowDNS Maintainers <shadowdns@example.com>

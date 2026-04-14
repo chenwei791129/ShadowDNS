@@ -19,8 +19,10 @@ lint:
 smoke: build
 	@./scripts/smoke.sh
 
+VERSION ?= 0.0.0-dev
+
 deb: build
-	go tool nfpm package --packager deb
+	VERSION=$(VERSION) go tool nfpm package --packager deb
 
 test-deb:
 	@./scripts/test-deb.sh

@@ -51,6 +51,8 @@ jobs:
 
       - name: Build .deb package
         run: go tool nfpm package --packager deb
+        env:
+          VERSION: ${{ needs.release-please.outputs.tag_name }}
 
       - name: Upload release artifacts
         env:
