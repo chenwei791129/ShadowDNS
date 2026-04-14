@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -1142,5 +1143,132 @@ func TestBackupOverride_NonOverridableFallsThrough(t *testing.T) {
 	}
 	if a.A.String() != "10.0.0.1" {
 		t.Errorf("expected inherited A 10.0.0.1, got %s", a.A.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SwapState — atomic state replacement
+// ---------------------------------------------------------------------------
+
+// TestSwapState_QueriesUseNewState verifies that after SwapState, new DNS
+// queries are answered using the replacement state.
+func TestSwapState_QueriesUseNewState(t *testing.T) {
+	// Initial state: www.root.com. → 1.2.3.4
+	stateA := ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones: map[string]map[string]*zone.Zone{
+			"default": {"root.com.": buildRootZone("root.com.", makeARecord("www.root.com.", "1.2.3.4", 300))},
+		},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}
+
+	srv := NewServer(stateA, nil)
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	// Verify initial state responds with 1.2.3.4.
+	resp := query(t, "udp", udpAddr, "www.root.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("before swap: expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("before swap: expected 1 answer, got %d", len(resp.Answer))
+	}
+	a := resp.Answer[0].(*dns.A)
+	if a.A.String() != "1.2.3.4" {
+		t.Fatalf("before swap: expected 1.2.3.4, got %s", a.A.String())
+	}
+
+	// Swap to new state: www.root.com. → 5.6.7.8
+	stateB := ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones: map[string]map[string]*zone.Zone{
+			"default": {"root.com.": buildRootZone("root.com.", makeARecord("www.root.com.", "5.6.7.8", 300))},
+		},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}
+	srv.SwapState(stateB)
+
+	// Verify new queries use the swapped state.
+	resp = query(t, "udp", udpAddr, "www.root.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("after swap: expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("after swap: expected 1 answer, got %d", len(resp.Answer))
+	}
+	a = resp.Answer[0].(*dns.A)
+	if a.A.String() != "5.6.7.8" {
+		t.Errorf("after swap: expected 5.6.7.8, got %s", a.A.String())
+	}
+}
+
+// TestSwapState_ConcurrentQueriesConsistent verifies that in-flight DNS queries
+// during an atomic state swap never observe mixed or partial state. Every
+// response IP must be exactly one of the two known addresses.
+func TestSwapState_ConcurrentQueriesConsistent(t *testing.T) {
+	const numGoroutines = 50
+
+	// stateA: www.root.com. → 1.2.3.4
+	stateA := ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones: map[string]map[string]*zone.Zone{
+			"default": {"root.com.": buildRootZone("root.com.", makeARecord("www.root.com.", "1.2.3.4", 300))},
+		},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}
+
+	// stateB: www.root.com. → 5.6.7.8
+	stateB := ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones: map[string]map[string]*zone.Zone{
+			"default": {"root.com.": buildRootZone("root.com.", makeARecord("www.root.com.", "5.6.7.8", 300))},
+		},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}
+
+	srv := NewServer(stateA, nil)
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	// results collects the response IP from each goroutine.
+	results := make([]string, numGoroutines)
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	// Launch all query goroutines before triggering the swap so they are
+	// in-flight when the atomic pointer replacement occurs.
+	for i := range numGoroutines {
+		go func(idx int) {
+			defer wg.Done()
+			resp := query(t, "udp", udpAddr, "www.root.com.", dns.TypeA)
+			if len(resp.Answer) == 1 {
+				if a, ok := resp.Answer[0].(*dns.A); ok {
+					results[idx] = a.A.String()
+				}
+			}
+		}(i)
+	}
+
+	// Swap state while queries are in-flight.
+	srv.SwapState(stateB)
+
+	wg.Wait()
+
+	// Every response must be one of the two valid IPs — never anything else.
+	// This proves no query observed partial or mixed state.
+	for i, ip := range results {
+		if ip != "1.2.3.4" && ip != "5.6.7.8" {
+			t.Errorf("goroutine %d: unexpected IP %q (want 1.2.3.4 or 5.6.7.8)", i, ip)
+		}
 	}
 }

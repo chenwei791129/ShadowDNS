@@ -23,6 +23,42 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
 
+// reload re-reads configuration and zone data, then atomically swaps the
+// server state and dispatches NOTIFY messages. GeoIP databases are reused
+// from startup. On any error the old state is preserved and the error is
+// returned.
+func reload(
+	ctx context.Context,
+	opts runOptions,
+	srv *server.Server,
+	country *view.CountryDB,
+	asn *view.ASNDB,
+	logger *slog.Logger,
+) error {
+	logger.Info("reload initiated")
+
+	cfg, err := config.LoadNamedConf(opts.NamedConfPath, logger)
+	if err != nil {
+		return fmt.Errorf("loading named.conf: %w", err)
+	}
+
+	aliases, err := config.LoadAliases(opts.AliasesPath, logger)
+	if err != nil {
+		return fmt.Errorf("loading aliases: %w", err)
+	}
+
+	state, err := server.BuildState(cfg, aliases, country, asn, logger)
+	if err != nil {
+		return fmt.Errorf("building server state: %w", err)
+	}
+
+	srv.SwapState(state)
+	dispatchNotifies(ctx, state.RootZones, logger)
+
+	logger.Info("reload complete", "views", len(cfg.Views), "zones", state.ZoneCount())
+	return nil
+}
+
 // notifyDeadline caps the total time a single NOTIFY goroutine can run.
 // The backoff chain (1s+2s+4s) plus per-attempt exchange timeouts can
 // exceed this, so later retries may be cut short — that is intentional.
@@ -110,16 +146,9 @@ func run(ctx context.Context, opts runOptions) error {
 
 	// --dry-run: count loaded zones, log summary, and exit without listening.
 	if opts.DryRun {
-		zoneCount := 0
-		for _, zones := range state.RootZones {
-			zoneCount += len(zones)
-		}
-		for _, zones := range state.BackupZones {
-			zoneCount += len(zones)
-		}
 		logger.Info("dry-run: configuration loaded successfully",
 			"views", len(cfg.Views),
-			"zones", zoneCount,
+			"zones", state.ZoneCount(),
 		)
 		return nil
 	}
@@ -129,6 +158,31 @@ func run(ctx context.Context, opts runOptions) error {
 	// Fire NOTIFY messages for every loaded root zone in background goroutines.
 	// These are best-effort; failures are logged but do not block startup.
 	dispatchNotifies(ctx, state.RootZones, logger)
+
+	// Listen for SIGHUP to trigger graceful reload.
+	sighupCh := make(chan os.Signal, 1)
+	signal.Notify(sighupCh, syscall.SIGHUP)
+	defer signal.Stop(sighupCh)
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-sighupCh:
+				if err := reload(ctx, opts, srv, country, asn, logger); err != nil {
+					logger.Error("reload failed", "err", err)
+				}
+				// Drain the channel (capacity 1) so that a second SIGHUP
+				// received during this reload does not trigger an
+				// immediate redundant re-reload.
+				select {
+				case <-sighupCh:
+				default:
+				}
+			}
+		}
+	}()
 
 	logger.Info("shadowdns ready", "views", len(cfg.Views), "listen", opts.ListenAddr)
 	return srv.Start(ctx, opts.ListenAddr)

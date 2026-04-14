@@ -65,9 +65,14 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
+	// Load a consistent state snapshot for this request. All subsequent
+	// lookups within the same request use this snapshot, so a concurrent
+	// reload cannot produce a half-old / half-new response.
+	st := s.state.Load()
+
 	// Zone transfer requests (AXFR / IXFR) are handled separately.
 	if qtype == dns.TypeAXFR || qtype == dns.TypeIXFR {
-		s.handleTransfer(w, req, qname)
+		s.handleTransfer(w, req, qname, st)
 		return
 	}
 
@@ -83,7 +88,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	// Determine view from client IP.
-	viewName := s.Matcher.Resolve(clientIP)
+	viewName := st.Matcher.Resolve(clientIP)
 	if viewName == "" {
 		s.Logger.Info("no view matched client; replying REFUSED",
 			"client", clientIP.String(),
@@ -94,8 +99,8 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	// Determine zone using longest-suffix match + alias map.
-	origins := s.ZoneOrigins[viewName]
-	match := alias.Detect(qname, origins, s.Aliases)
+	origins := st.ZoneOrigins[viewName]
+	match := alias.Detect(qname, origins, st.Aliases)
 	if match.MatchedZone == "" {
 		s.Logger.Info("query outside all loaded zones; replying REFUSED",
 			"view", viewName,
@@ -106,9 +111,9 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	if match.IsBackup {
-		s.handleBackupQuery(w, req, viewName, qname, qtype, match)
+		s.handleBackupQuery(w, req, viewName, qname, qtype, match, st)
 	} else {
-		s.handleRootQuery(w, req, viewName, qname, qtype, match)
+		s.handleRootQuery(w, req, viewName, qname, qtype, match, st)
 	}
 }
 
@@ -119,8 +124,9 @@ func (s *Server) handleRootQuery(
 	viewName, qname string,
 	qtype uint16,
 	match alias.Match,
+	st *ServerState,
 ) {
-	rootZone := s.RootZones[viewName][match.MatchedZone]
+	rootZone := st.RootZones[viewName][match.MatchedZone]
 	if rootZone == nil {
 		s.Logger.Error("root zone missing for matched origin; replying SERVFAIL",
 			"view", viewName,
@@ -156,8 +162,9 @@ func (s *Server) handleBackupQuery(
 	viewName, qname string,
 	qtype uint16,
 	match alias.Match,
+	st *ServerState,
 ) {
-	rootZone := s.RootZones[viewName][match.RootZone]
+	rootZone := st.RootZones[viewName][match.RootZone]
 	if rootZone == nil {
 		s.Logger.Error("root zone missing for backup alias; replying SERVFAIL",
 			"view", viewName,
@@ -168,7 +175,7 @@ func (s *Server) handleBackupQuery(
 		return
 	}
 
-	backupZone := s.BackupZones[viewName][match.MatchedZone] // may be nil
+	backupZone := st.BackupZones[viewName][match.MatchedZone] // may be nil
 
 	// Precompute the backup SOA once; used for both the apex short-circuit and
 	// the authority section of negative replies.
@@ -262,7 +269,7 @@ func backupZoneHasName(backupZone *zone.Zone, rootZone *zone.Zone, match alias.M
 // handleTransfer routes AXFR/IXFR requests through the ACL and then dispatches
 // to the transfer subsystem. qname is the already-lowercased query name from
 // ServeDNS.
-func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string) {
+func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string, st *ServerState) {
 	// Extract source IP for ACL check.
 	srcIP, err := addrFromRemote(w)
 	if err != nil {
@@ -275,7 +282,7 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 	}
 
 	// ACL check: nil ACL or non-matching IP → REFUSED.
-	if !s.AllowTransferACL.Allows(srcIP) {
+	if !st.AllowTransferACL.Allows(srcIP) {
 		s.Logger.Info("zone transfer: source IP not in allow-transfer ACL; replying REFUSED",
 			"src", srcIP.String(),
 			"qname", qname,
@@ -285,7 +292,7 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 	}
 
 	// Determine which view this client falls into, then look up the zone.
-	viewName := s.Matcher.Resolve(srcIP)
+	viewName := st.Matcher.Resolve(srcIP)
 	if viewName == "" {
 		s.Logger.Info("zone transfer: no view matched client; replying REFUSED",
 			"src", srcIP.String(),
@@ -295,8 +302,8 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 		return
 	}
 
-	origins := s.ZoneOrigins[viewName]
-	match := alias.Detect(qname, origins, s.Aliases)
+	origins := st.ZoneOrigins[viewName]
+	match := alias.Detect(qname, origins, st.Aliases)
 	if match.MatchedZone == "" {
 		s.Logger.Info("zone transfer: qname outside all loaded zones; replying REFUSED",
 			"view", viewName,
@@ -307,11 +314,11 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 	}
 
 	if match.IsBackup {
-		rootZone := s.RootZones[viewName][match.RootZone]
-		backupZone := s.BackupZones[viewName][match.MatchedZone] // may be nil
+		rootZone := st.RootZones[viewName][match.RootZone]
+		backupZone := st.BackupZones[viewName][match.MatchedZone] // may be nil
 		transfer.HandleAliasAXFR(w, req, match.MatchedZone, rootZone, backupZone)
 	} else {
-		rootZone := s.RootZones[viewName][match.MatchedZone]
+		rootZone := st.RootZones[viewName][match.MatchedZone]
 		transfer.HandleAXFR(w, req, rootZone)
 	}
 }

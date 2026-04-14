@@ -5,6 +5,7 @@ package server
 
 import (
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/miekg/dns"
 
@@ -30,10 +31,43 @@ type ServerState struct {
 	AllowTransferACL *transfer.ACL
 }
 
+// ZoneCount returns the total number of loaded zones (root + backup) across
+// all views.
+func (s *ServerState) ZoneCount() int {
+	n := 0
+	for _, zones := range s.RootZones {
+		n += len(zones)
+	}
+	for _, zones := range s.BackupZones {
+		n += len(zones)
+	}
+	return n
+}
+
+// sanitize ensures all map fields are non-nil so callers never need nil checks.
+func (s *ServerState) sanitize() {
+	if s.RootZones == nil {
+		s.RootZones = make(map[string]map[string]*zone.Zone)
+	}
+	if s.BackupZones == nil {
+		s.BackupZones = make(map[string]map[string]*zone.Zone)
+	}
+	if s.ZoneOrigins == nil {
+		s.ZoneOrigins = make(map[string][]string)
+	}
+	if s.Aliases == nil {
+		s.Aliases = make(config.AliasMap)
+	}
+}
+
 // Server is the main DNS server object.  It implements dns.Handler so it can be
 // passed directly to miekg's dns.Server.
+//
+// The server state is held behind an atomic pointer so that it can be replaced
+// at runtime (e.g. on SIGHUP) without restarting listeners or blocking
+// in-flight queries.
 type Server struct {
-	ServerState
+	state  atomic.Pointer[ServerState]
 	Logger *slog.Logger
 
 	udp *dns.Server
@@ -46,20 +80,18 @@ func NewServer(state ServerState, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if state.RootZones == nil {
-		state.RootZones = make(map[string]map[string]*zone.Zone)
+	state.sanitize()
+	s := &Server{
+		Logger: logger,
 	}
-	if state.BackupZones == nil {
-		state.BackupZones = make(map[string]map[string]*zone.Zone)
-	}
-	if state.ZoneOrigins == nil {
-		state.ZoneOrigins = make(map[string][]string)
-	}
-	if state.Aliases == nil {
-		state.Aliases = make(config.AliasMap)
-	}
-	return &Server{
-		ServerState: state,
-		Logger:      logger,
-	}
+	s.state.Store(&state)
+	return s
+}
+
+// SwapState atomically replaces the server's in-memory state.
+// In-flight requests that already loaded the old state will complete
+// using their snapshot; new requests will see the replacement.
+func (s *Server) SwapState(state ServerState) {
+	state.sanitize()
+	s.state.Store(&state)
 }
