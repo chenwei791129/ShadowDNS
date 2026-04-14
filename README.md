@@ -82,6 +82,7 @@ Response sent to client
 - EDNS Client Subnet (ECS, RFC 7871) — improved GeoIP accuracy when queries arrive via resolvers
 - Access logging — structured log file for query/response auditing
 - Health check endpoint — HTTP `/healthz` for load balancer probes
+- CNAME Flattening — resolve CNAME targets at query time and return A/AAAA directly, allowing CNAME to coexist with other record types at the zone apex
 
 ### Not supported
 
@@ -112,6 +113,7 @@ Response sent to client
 | EDNS Client Subnet (ECS)      | No            | Planned      |
 | Access logging                | Yes           | Planned      |
 | Health check endpoint         | No            | Planned      |
+| CNAME Flattening              | No            | Planned      |
 | Dynamic Update                | Yes           | No           |
 | Recursion                     | Configurable  | Always off   |
 
