@@ -144,11 +144,15 @@ ShadowDNS listens on `:53` (UDP and TCP) by default. Use `--listen` to override.
 
 ### Command-line flags
 
-| Flag            | Default | Required | Description                                              |
-|-----------------|---------|----------|----------------------------------------------------------|
-| `--named-conf`  | —       | Yes      | Path to `named.conf`. The `geoip-directory` option inside this file controls where mmdb files are read from. |
-| `--aliases`     | —       | No       | Path to `aliases.yaml`. If omitted or file is absent, all zones are treated as root zones (no aliasing). |
-| `--listen`      | `:53`   | No       | UDP/TCP listen address. Accepts any `host:port` form.    |
+| Flag              | Default | Required | Description                                              |
+|-------------------|---------|----------|----------------------------------------------------------|
+| `-named-conf`     | —       | Yes      | Path to `named.conf`. The `geoip-directory` option inside this file controls where mmdb files are read from. |
+| `-aliases`        | —       | No       | Path to `aliases.yaml`. If omitted or file is absent, all zones are treated as root zones (no aliasing). |
+| `-listen`         | `:53`   | No       | UDP/TCP listen address. Accepts any `host:port` form.    |
+| `-metrics-addr`   | `:9153` | No       | Prometheus `/metrics` HTTP listen address. Empty string disables. |
+| `-dry-run`        | `false` | No       | Load configuration and zones, log a summary, then exit without starting listeners. |
+| `-reload`         | `false` | No       | Send SIGHUP to a running server. Requires `-named-conf`. |
+| `-version`        | `false` | No       | Print version and exit.                                  |
 
 ### aliases.yaml schema
 
