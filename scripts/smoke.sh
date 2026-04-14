@@ -16,7 +16,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-SMOKE_DIR="${TMPDIR%/}/shadowdns-smoke"
+SMOKE_DIR="${TMPDIR:-/tmp}"
+SMOKE_DIR="${SMOKE_DIR%/}/shadowdns-smoke"
 BINARY="${REPO_ROOT}/bin/shadowdns"
 FIXTURE_SRC="${REPO_ROOT}/testdata/integration"
 
