@@ -99,6 +99,7 @@ Response sent to client
 | IPv6 listener                 | Yes           | No (v1)      |
 | Dynamic Update                | Yes           | No (v1)      |
 | Hot reload (SIGHUP)           | Yes           | Yes          |
+| Prometheus metrics            | No            | Yes          |
 | Recursion                     | Configurable  | Always off   |
 
 ## Quick start
@@ -210,7 +211,6 @@ This software has not yet been deployed to production. Integration testing again
 
 Known limitations to address before production use:
 
-- No Prometheus metrics or structured access logging in v1.
 - IXFR is not supported; slaves perform a full AXFR on each NOTIFY.
 
 ## Pre-deployment Checklist
