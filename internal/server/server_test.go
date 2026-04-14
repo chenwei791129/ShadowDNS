@@ -162,7 +162,6 @@ func query(t *testing.T, network, addr, qname string, qtype uint16) *dns.Msg {
 }
 
 // ---------------------------------------------------------------------------
-// Task 6.1 — Listener (UDP + TCP)
 // ---------------------------------------------------------------------------
 
 // TestListener_UDP verifies the server can answer a UDP query.
@@ -285,7 +284,6 @@ func TestListener_TCFlagOnTruncation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 6.2 — Authoritative-only mode
 // ---------------------------------------------------------------------------
 
 // TestAuthoritative_AASet verifies AA=1 and RA=0 for queries in a loaded zone.
@@ -373,7 +371,6 @@ func TestAuthoritative_NoRecursion(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 6.3 — Answer queries using view, alias, and zone data
 // ---------------------------------------------------------------------------
 
 // TestQuery_RootZoneA verifies an A query returns the correct record.
@@ -528,7 +525,6 @@ func TestQuery_NoZoneMatch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 6.4 — SOA in authority section for NXDOMAIN and NODATA
 // ---------------------------------------------------------------------------
 
 // TestNegative_RootNXDOMAIN verifies NXDOMAIN with SOA authority for a nonexistent name.
@@ -629,7 +625,6 @@ func TestNegative_BackupNXDOMAIN(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 6.5 — Serve zone SOA on explicit SOA query
 // ---------------------------------------------------------------------------
 
 // TestSOA_RootApex verifies SOA is returned from answer section on apex SOA query.
@@ -698,7 +693,6 @@ func TestSOA_BackupApex(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 6.6 — Hide server identity (CHAOS)
 // ---------------------------------------------------------------------------
 
 func TestChaos_VersionBind(t *testing.T) {
@@ -797,7 +791,6 @@ func TestChaos_RandomQuery(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 6.7 — Minimal responses
 // ---------------------------------------------------------------------------
 
 // TestMinimal_NoAuthorityOnPositive verifies authority section is empty on positive answers.
@@ -887,7 +880,6 @@ func TestMinimal_NoGlueForNS(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 6.8 — Handle malformed / unsupported queries without crashing
 // ---------------------------------------------------------------------------
 
 // TestMalformed_UpdateOpcode verifies UPDATE messages receive NOTIMP.

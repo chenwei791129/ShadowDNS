@@ -7,16 +7,9 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
 
-// Resolve answers a backup-zone query: when qtype is overridable (TXT/MX/SRV)
-// and the backup zone supplies records at qname, those override any inherited
-// data; otherwise the root zone is consulted with qname rewritten into the
-// root namespace, and each resulting record is rewritten back to backupOrigin.
-//
-//   - qname:        original (backup-namespace) query name, lowercased FQDN
-//   - qtype:        DNS query type
-//   - backupOrigin: the backup zone's origin (match.MatchedZone)
-//   - backupZone:   loaded backup-override zone, or nil if no .fwd exists
-//   - rootZone:     the root zone whose data is shared
+// Resolve answers a backup-zone query. Overridable types (TXT/MX/SRV) are
+// served from the backup zone when present; everything else falls through to
+// the root zone with in-bailiwick rewrite applied.
 //
 // MUST NOT panic on any input.
 func Resolve(qname string, qtype uint16, backupOrigin string, backupZone *zone.Zone, rootZone *zone.Zone) []dns.RR {

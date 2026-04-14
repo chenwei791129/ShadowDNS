@@ -22,7 +22,6 @@ func writeZoneFile(t *testing.T, content string) string {
 	return path
 }
 
-// ---- Task 3.1: RFC 1035 parsing ----
 
 func TestParseFile_SOAMultiLine(t *testing.T) {
 	content := `$TTL 3600
@@ -154,7 +153,6 @@ func TestParseFile_ParseError_IncludesFilePath(t *testing.T) {
 	}
 }
 
-// ---- Task 3.4: Out-of-zone owner name ----
 
 // TestParseFile_OutOfZoneOwner_Skipped verifies that out-of-zone records are
 // silently skipped (matching BIND 9 behaviour) rather than causing a fatal

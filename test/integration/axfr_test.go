@@ -1,4 +1,3 @@
-// Task 8.5 — Integration tests for AXFR (zone transfer).
 //
 // Approach (b) from the spec: for ACL tests, build ServerState by-hand rather
 // than reading from named.conf, so we can control the allow-transfer list.

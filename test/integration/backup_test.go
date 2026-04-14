@@ -1,4 +1,3 @@
-// Task 8.3 — Integration tests for backup zone queries.
 //
 // All queries use loopback (127.0.0.1) → view-other.
 // Tests verify:

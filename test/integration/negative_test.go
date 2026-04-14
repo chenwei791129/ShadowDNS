@@ -1,4 +1,3 @@
-// Task 8.4 — Integration tests for NXDOMAIN and NODATA responses.
 //
 // All queries use loopback (127.0.0.1) → view-other.
 // Tests verify:

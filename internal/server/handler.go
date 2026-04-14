@@ -61,7 +61,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			"qname", qname,
 			"remote", w.RemoteAddr().String(),
 		)
-		handleChaos(w, req)
+		replyRcode(w, req, dns.RcodeRefused)
 		return
 	}
 
@@ -341,18 +341,6 @@ func addrFromRemote(w dns.ResponseWriter) (netip.Addr, error) {
 		return netip.Addr{}, fmt.Errorf("parsing IP %q: %w", host, parseErr)
 	}
 	return ip, nil
-}
-
-// handleChaos replies REFUSED for all CHAOS-class queries so the server
-// never reveals version, hostname, or any identity information.
-func handleChaos(w dns.ResponseWriter, req *dns.Msg) {
-	m := new(dns.Msg)
-	m.SetReply(req)
-	m.Opcode = dns.OpcodeQuery
-	m.RecursionAvailable = false
-	m.Authoritative = false
-	m.Rcode = dns.RcodeRefused
-	_ = w.WriteMsg(m)
 }
 
 // replyRcode sends a response with the given RCODE and no payload.

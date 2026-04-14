@@ -9,7 +9,6 @@ import (
 	"github.com/miekg/dns"
 )
 
-// ---- Task 3.3: Classify zones ----
 
 // testHandler is an slog.Handler that captures log records for assertions.
 type testHandler struct {

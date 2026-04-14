@@ -6,7 +6,6 @@ import (
 	"github.com/miekg/dns"
 )
 
-// ---- Task 3.2: In-memory zone structure ----
 
 func TestZone_LookupByOwner(t *testing.T) {
 	content := `$TTL 3600

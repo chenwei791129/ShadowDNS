@@ -114,7 +114,6 @@ func collectAXFR(t *testing.T, qname, hostport string) []dns.RR {
 }
 
 // --------------------------------------------------------------------------
-// Task 7.1 — HandleAXFR basic
 // --------------------------------------------------------------------------
 
 func TestHandleAXFR_TCP_StreamsSOARecordsSOA(t *testing.T) {
@@ -186,7 +185,6 @@ func TestHandleAXFR_UDP_Refused(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// Task 7.6 — nil zone → REFUSED
 // --------------------------------------------------------------------------
 
 func TestHandleAXFR_NilZone_Refused(t *testing.T) {
@@ -223,7 +221,6 @@ func TestHandleAXFR_NilZone_Refused(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// Task 7.5 — IXFR falls back to full AXFR
 // --------------------------------------------------------------------------
 
 func TestHandleTransfer_IXFR_FallsBackToAXFR(t *testing.T) {
@@ -274,7 +271,6 @@ func TestHandleTransfer_IXFR_FallsBackToAXFR(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// Task 7.2 — HandleAliasAXFR
 // --------------------------------------------------------------------------
 
 func buildRootZone() *zone.Zone {

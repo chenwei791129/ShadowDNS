@@ -23,9 +23,9 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
 
-// notifyDeadline caps the total time a single NOTIFY goroutine can block,
-// including the 1s/2s/4s backoff chain. Anything longer would leak a
-// goroutine behind a hung peer for the lifetime of the server.
+// notifyDeadline caps the total time a single NOTIFY goroutine can run.
+// The backoff chain (1s+2s+4s) plus per-attempt exchange timeouts can
+// exceed this, so later retries may be cut short — that is intentional.
 const notifyDeadline = 10 * time.Second
 
 // runOptions captures everything run() needs from the environment.

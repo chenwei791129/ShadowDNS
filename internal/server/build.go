@@ -3,7 +3,6 @@ package server
 import (
 	"fmt"
 	"log/slog"
-	"slices"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
@@ -38,6 +37,7 @@ func BuildState(
 		rootZones[v.Name] = make(map[string]*zone.Zone)
 		backupZones[v.Name] = make(map[string]*zone.Zone)
 		seenOrigins := make([]string, 0, len(v.Zones))
+		seenSet := make(map[string]bool, len(v.Zones))
 
 		for _, z := range v.Zones {
 			origin := z.Name + "."
@@ -54,6 +54,7 @@ func BuildState(
 				rootZones[v.Name][origin] = parsed
 			}
 			seenOrigins = append(seenOrigins, origin)
+			seenSet[origin] = true
 		}
 
 		// Aliased backups declared in aliases.yaml but missing from master.zones
@@ -65,8 +66,9 @@ func BuildState(
 			if _, ok := backupZones[v.Name][backup]; ok {
 				continue
 			}
-			if !slices.Contains(seenOrigins, backup) {
+			if !seenSet[backup] {
 				seenOrigins = append(seenOrigins, backup)
+				seenSet[backup] = true
 			}
 		}
 

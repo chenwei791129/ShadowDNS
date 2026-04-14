@@ -13,12 +13,8 @@ import (
 )
 
 // ParseFile parses a single RFC 1035 zone file and returns the parsed Zone.
-// path is the absolute path to the zone file.
-// origin is the zone's apex name (e.g. "example.com.") supplied by the caller.
-//
-// Records whose owner name falls outside the zone origin are logged as
-// warnings and silently skipped, matching BIND 9's behaviour. Syntax errors
-// are still fatal.
+// Out-of-zone owner names are logged as warnings and skipped, matching
+// BIND 9's behaviour. Syntax errors are still fatal.
 //
 // MUST NOT panic on any input.
 func ParseFile(path string, origin string, logger *slog.Logger) (*Zone, error) {
@@ -49,16 +45,11 @@ func ParseFile(path string, origin string, logger *slog.Logger) (*Zone, error) {
 	for rr, ok := zp.Next(); ok; rr, ok = zp.Next() {
 		ownerName := strings.ToLower(rr.Header().Name)
 		if !dnsutil.IsInZone(ownerName, canonOrigin) {
-			line := findOwnerLine(path, ownerName)
-			if line > 0 {
-				logger.Warn("ignoring out-of-zone data",
-					"file", path, "line", line,
-					"owner", ownerName, "zone", canonOrigin)
-			} else {
-				logger.Warn("ignoring out-of-zone data",
-					"file", path,
-					"owner", ownerName, "zone", canonOrigin)
+			attrs := []any{"file", path, "owner", ownerName, "zone", canonOrigin}
+			if line := findOwnerLine(path, ownerName); line > 0 {
+				attrs = append(attrs, "line", line)
 			}
+			logger.Warn("ignoring out-of-zone data", attrs...)
 			continue
 		}
 		z.AddRR(rr)
@@ -72,16 +63,17 @@ func ParseFile(path string, origin string, logger *slog.Logger) (*Zone, error) {
 }
 
 // findOwnerLine returns the 1-based line number of the first record whose
-// owner token matches name, or 0 if not found. Leading-whitespace lines are
-// skipped because their owner is inherited from the previous record.
+// owner token matches name, or 0 if not found.
 func findOwnerLine(path, name string) int {
+	// Best-effort: if the file vanished between the initial parse and this
+	// re-scan, return 0 and let the caller omit the line number.
 	f, err := os.Open(path)
 	if err != nil {
 		return 0
 	}
 	defer func() { _ = f.Close() }()
 
-	needle := trimTrailingDot(strings.ToLower(name))
+	needle := strings.TrimSuffix(strings.ToLower(name), ".")
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 4096), 1<<20)
 
@@ -99,13 +91,9 @@ func findOwnerLine(path, name string) int {
 		if len(fields) == 0 {
 			continue
 		}
-		if trimTrailingDot(strings.ToLower(fields[0])) == needle {
+		if strings.TrimSuffix(strings.ToLower(fields[0]), ".") == needle {
 			return lineNo
 		}
 	}
 	return 0
-}
-
-func trimTrailingDot(s string) string {
-	return strings.TrimSuffix(s, ".")
 }
