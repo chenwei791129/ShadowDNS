@@ -16,8 +16,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-SMOKE_DIR="${TMPDIR:-/tmp}/shadowdns-smoke"
-BINARY="${REPO_ROOT}/shadowdns"
+SMOKE_DIR="${TMPDIR%/}/shadowdns-smoke"
+BINARY="${REPO_ROOT}/bin/shadowdns"
 FIXTURE_SRC="${REPO_ROOT}/testdata/integration"
 
 VERBOSE=0
@@ -29,9 +29,11 @@ die()  { echo "[smoke] ERROR: $*" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 # 1. Build the binary.
 # ---------------------------------------------------------------------------
-info "Building binary..."
-go build -o "${BINARY}" "${REPO_ROOT}/cmd/shadowdns"
-info "Binary built: ${BINARY}"
+if [[ ! -x "${BINARY}" ]]; then
+	info "Building binary..."
+	(cd "${REPO_ROOT}" && make build)
+fi
+info "Binary: ${BINARY}"
 
 # ---------------------------------------------------------------------------
 # 2. Prepare the smoke directory.

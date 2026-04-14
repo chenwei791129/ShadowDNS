@@ -2,7 +2,7 @@ BIN_DIR := bin
 BINARY := $(BIN_DIR)/shadowdns
 CMD_PKG := ./cmd/shadowdns
 
-.PHONY: all build test lint
+.PHONY: all build test lint smoke
 
 all: build
 
@@ -15,3 +15,6 @@ test:
 
 lint:
 	go tool golangci-lint run ./...
+
+smoke: build
+	@./scripts/smoke.sh
