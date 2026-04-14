@@ -24,6 +24,12 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/view"
 )
 
+func TestVersionVariable_HasDefault(t *testing.T) {
+	if version == "" {
+		t.Fatal("version variable should have a non-empty default value")
+	}
+}
+
 func TestRunRequiresNamedConfPath(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 	opts := runOptions{

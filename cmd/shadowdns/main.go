@@ -25,6 +25,10 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
 
+// version is set at build time via -ldflags="-X main.version=<tag>".
+// It defaults to "dev" for local development builds.
+var version = "dev"
+
 // reload re-reads configuration and zone data, then atomically swaps the
 // server state and dispatches NOTIFY messages. GeoIP databases are reused
 // from startup. On any error the old state is preserved and the error is
