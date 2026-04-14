@@ -78,6 +78,7 @@ Response sent to client
 - DNSSEC — signing, NSEC/NSEC3, DS records
 - IPv6 listener
 - DNS Cookies (RFC 7873) — server-side cookie validation to mitigate source IP spoofing
+- Response Rate Limiting (RRL) — throttle excessive responses to mitigate DNS amplification attacks
 - EDNS Client Subnet (ECS, RFC 7871) — improved GeoIP accuracy when queries arrive via resolvers
 - Access logging — structured log file for query/response auditing
 - Health check endpoint — HTTP `/healthz` for load balancer probes
@@ -107,6 +108,7 @@ Response sent to client
 | DNSSEC                        | Yes           | Planned      |
 | IPv6 listener                 | Yes           | Planned      |
 | DNS Cookies (RFC 7873)        | No            | Planned      |
+| Response Rate Limiting (RRL)  | No            | Planned      |
 | EDNS Client Subnet (ECS)      | No            | Planned      |
 | Access logging                | Yes           | Planned      |
 | Health check endpoint         | No            | Planned      |
