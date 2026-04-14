@@ -9,7 +9,6 @@ import (
 	"github.com/miekg/dns"
 )
 
-
 // testHandler is an slog.Handler that captures log records for assertions.
 type testHandler struct {
 	records []slog.Record

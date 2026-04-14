@@ -6,7 +6,6 @@ import (
 	"github.com/miekg/dns"
 )
 
-
 func TestZone_LookupByOwner(t *testing.T) {
 	content := `$TTL 3600
 @ IN SOA ns1.root.com. root.ns1.root.com. ( 1 300 120 86400 3600 )

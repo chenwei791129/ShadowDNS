@@ -1,4 +1,3 @@
-//
 // Approach (b) from the spec: for ACL tests, build ServerState by-hand rather
 // than reading from named.conf, so we can control the allow-transfer list.
 // This matches the pattern used in internal/server/server_test.go.

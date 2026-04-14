@@ -1,4 +1,3 @@
-//
 // All tests use loopback (127.0.0.1) as source IP, which is matched by
 // view-other's "any" rule.  Per-view routing is covered by unit tests in
 // internal/server/server_test.go.

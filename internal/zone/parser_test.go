@@ -22,7 +22,6 @@ func writeZoneFile(t *testing.T, content string) string {
 	return path
 }
 
-
 func TestParseFile_SOAMultiLine(t *testing.T) {
 	content := `$TTL 3600
 @ IN SOA ns1.root.com. root.ns1.root.com. (
@@ -152,7 +151,6 @@ func TestParseFile_ParseError_IncludesFilePath(t *testing.T) {
 		t.Errorf("error %q does not mention file path %q", err.Error(), path)
 	}
 }
-
 
 // TestParseFile_OutOfZoneOwner_Skipped verifies that out-of-zone records are
 // silently skipped (matching BIND 9 behaviour) rather than causing a fatal

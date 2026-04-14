@@ -1,4 +1,3 @@
-//
 // All queries use loopback (127.0.0.1) → view-other.
 // Tests verify:
 //   - NXDOMAIN contains SOA in authority section (RFC 2308)

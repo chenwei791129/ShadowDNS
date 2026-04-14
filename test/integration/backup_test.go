@@ -1,4 +1,3 @@
-//
 // All queries use loopback (127.0.0.1) → view-other.
 // Tests verify:
 //   - Owner names are rewritten to backup namespace
