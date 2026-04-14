@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -59,6 +61,44 @@ func reload(
 	return nil
 }
 
+// runReload sends SIGHUP to a running ShadowDNS instance by reading the PID
+// from the pid-file configured in named.conf.
+func runReload(opts runOptions) error {
+	if opts.NamedConfPath == "" {
+		return fmt.Errorf("-named-conf is required for -reload")
+	}
+
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	cfg, err := config.LoadNamedConf(opts.NamedConfPath, logger)
+	if err != nil {
+		return fmt.Errorf("loading named.conf: %w", err)
+	}
+
+	if cfg.Options.PidFile == "" {
+		return fmt.Errorf("pid-file not configured in named.conf; cannot determine server PID")
+	}
+
+	data, err := os.ReadFile(cfg.Options.PidFile)
+	if err != nil {
+		return fmt.Errorf("reading pid-file %q: %w", cfg.Options.PidFile, err)
+	}
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return fmt.Errorf("parsing PID from %q: %w", cfg.Options.PidFile, err)
+	}
+
+	if err := syscall.Kill(pid, syscall.SIGHUP); err != nil {
+		return fmt.Errorf("sending SIGHUP to PID %d: %w", pid, err)
+	}
+
+	return nil
+}
+
 // notifyDeadline caps the total time a single NOTIFY goroutine can run.
 // The backoff chain (1s+2s+4s) plus per-attempt exchange timeouts can
 // exceed this, so later retries may be cut short — that is intentional.
@@ -80,9 +120,21 @@ func main() {
 	flag.StringVar(&opts.AliasesPath, "aliases", "", "path to aliases.yaml (optional; missing file is tolerated)")
 	flag.StringVar(&opts.ListenAddr, "listen", ":53", "UDP/TCP listen address")
 	flag.BoolVar(&opts.DryRun, "dry-run", false, "load configuration and zones, log a summary, then exit without starting listeners")
+
+	var reloadFlag bool
+	flag.BoolVar(&reloadFlag, "reload", false, "send SIGHUP to a running server (requires -named-conf)")
+
 	flag.Parse()
 
 	opts.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	if reloadFlag {
+		if err := runReload(opts); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	// SIGINT and SIGTERM both trigger graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -155,9 +207,29 @@ func run(ctx context.Context, opts runOptions) error {
 
 	srv := server.NewServer(state, logger)
 
+	// Bind listeners before writing the PID file so the port is guaranteed
+	// to be available when the PID file appears on disk.
+	if err := srv.Bind(opts.ListenAddr); err != nil {
+		return err
+	}
+
 	// Fire NOTIFY messages for every loaded root zone in background goroutines.
 	// These are best-effort; failures are logged but do not block startup.
 	dispatchNotifies(ctx, state.RootZones, logger)
+
+	// Write PID file if configured. Failure is non-fatal — log a warning and
+	// continue so the server still starts even if the directory is missing.
+	if pidPath := cfg.Options.PidFile; pidPath != "" {
+		if werr := os.WriteFile(pidPath, fmt.Appendf(nil, "%d\n", os.Getpid()), 0o644); werr != nil {
+			logger.Warn("failed to write PID file", "path", pidPath, "err", werr)
+		} else {
+			defer func() {
+				if rerr := os.Remove(pidPath); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+					logger.Warn("failed to remove PID file", "path", pidPath, "err", rerr)
+				}
+			}()
+		}
+	}
 
 	// Listen for SIGHUP to trigger graceful reload.
 	sighupCh := make(chan os.Signal, 1)
@@ -185,7 +257,7 @@ func run(ctx context.Context, opts runOptions) error {
 	}()
 
 	logger.Info("shadowdns ready", "views", len(cfg.Views), "listen", opts.ListenAddr)
-	return srv.Start(ctx, opts.ListenAddr)
+	return srv.Serve(ctx)
 }
 
 // dispatchNotifies sends NOTIFY messages for every loaded root zone in the

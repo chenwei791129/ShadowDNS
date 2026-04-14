@@ -28,6 +28,7 @@ func TestParseOptions_StandardBlock(t *testing.T) {
         version          none;
         hostname         none;
         transfer-format  many-answers;
+        pid-file         "/var/run/named/pid";
 };`)
 
 	block, end, err := ParseOptions(input, 0, "named.conf", slog.Default())
@@ -73,6 +74,24 @@ func TestParseOptions_StandardBlock(t *testing.T) {
 	}
 	if block.TransferFormat != "many-answers" {
 		t.Errorf("TransferFormat: got %q, want %q", block.TransferFormat, "many-answers")
+	}
+	if block.PidFile != "/var/run/named/pid" {
+		t.Errorf("PidFile: got %q, want %q", block.PidFile, "/var/run/named/pid")
+	}
+}
+
+// TestParseOptions_PidFileAbsent verifies pid-file defaults to empty when not specified.
+func TestParseOptions_PidFileAbsent(t *testing.T) {
+	input := []byte(`options {
+        directory "/tmp";
+        geoip-directory "/tmp/geoip";
+};`)
+	block, _, err := ParseOptions(input, 0, "named.conf", slog.Default())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if block.PidFile != "" {
+		t.Errorf("PidFile: got %q, want empty string", block.PidFile)
 	}
 }
 

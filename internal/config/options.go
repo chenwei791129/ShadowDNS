@@ -19,6 +19,7 @@ type OptionsBlock struct {
 	Version          string   // "none" or quoted string content
 	Hostname         string
 	TransferFormat   string // e.g. "many-answers"
+	PidFile          string // path to PID file; empty means no PID file
 }
 
 // ParseOptions parses an `options { ... };` block from the input, starting at the
@@ -156,6 +157,13 @@ func ParseOptions(input []byte, startOffset int, path string, logger *slog.Logge
 				return block, startOffset, e
 			}
 			block.TransferFormat = val
+
+		case "pid-file":
+			val, e := lx.readScalarValue(path)
+			if e != nil {
+				return block, startOffset, e
+			}
+			block.PidFile = val
 
 		default:
 			// Unknown option: emit warning and skip until next ';' or balanced '{ };'.

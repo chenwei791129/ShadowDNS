@@ -7,7 +7,10 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -483,6 +486,282 @@ func TestSIGHUP_ReloadIntegration(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("run did not exit within 2s after cancel")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PID file lifecycle tests
+// ---------------------------------------------------------------------------
+
+// TestPidFile_WrittenOnStartup verifies that run() writes a PID file when
+// pid-file is configured, and removes it after shutdown.
+func TestPidFile_WrittenOnStartup(t *testing.T) {
+	dir := setupReloadTestDir(t)
+
+	pidPath := filepath.Join(dir, "shadowdns.pid")
+	patchNamedConfPidFile(t, dir, pidPath)
+
+	// Find a free UDP port, then release it so run() can bind it.
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("bind free port: %v", err)
+	}
+	port := pc.LocalAddr().(*net.UDPAddr).Port
+	_ = pc.Close()
+
+	// Also release the TCP side of the same port.
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err == nil {
+		_ = ln.Close()
+	}
+
+	listenAddr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	opts := runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		AliasesPath:   "",
+		ListenAddr:    listenAddr,
+		Logger:        logger,
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, opts) }()
+
+	// Wait for run() to bind listeners and write the PID file.
+	time.Sleep(200 * time.Millisecond)
+
+	// PID file must exist and contain a valid integer PID.
+	pidData, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("PID file not found after startup: %v", err)
+	}
+	pidStr := strings.TrimSpace(string(pidData))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil || pid <= 0 {
+		t.Fatalf("PID file does not contain a valid PID: %q", pidStr)
+	}
+
+	// Cancel the context and wait for run() to finish.
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil && err != context.Canceled {
+			t.Fatalf("run returned unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not return within 2s after context cancellation")
+	}
+
+	// PID file must be removed after shutdown.
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Fatalf("expected PID file to be removed after shutdown, stat err: %v", err)
+	}
+}
+
+// TestPidFile_NotWrittenWhenEmpty verifies that run() does not create a PID
+// file when pid-file is not configured in named.conf.
+func TestPidFile_NotWrittenWhenEmpty(t *testing.T) {
+	dir := setupReloadTestDir(t)
+
+	// setupReloadTestDir does not include pid-file; define a path to check.
+	pidPath := filepath.Join(dir, "shadowdns.pid")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	opts := runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		AliasesPath:   "",
+		ListenAddr:    "127.0.0.1:0",
+		Logger:        logger,
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, opts) }()
+
+	// Wait for run() to start up fully.
+	time.Sleep(200 * time.Millisecond)
+
+	// PID file must NOT exist since pid-file was not configured.
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Fatalf("expected PID file to be absent when pid-file not configured, stat err: %v", err)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil && err != context.Canceled {
+			t.Fatalf("run returned unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not return within 2s after context cancellation")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// runReload CLI tests
+// ---------------------------------------------------------------------------
+
+// patchNamedConfPidFile rewrites the named.conf in dir to inject a pid-file
+// directive pointing at pidPath. It replaces the first occurrence of
+// "recursion no;" so the result is valid and self-consistent.
+func patchNamedConfPidFile(t *testing.T, dir, pidPath string) {
+	t.Helper()
+	namedConf := filepath.Join(dir, "named.conf")
+	data, err := os.ReadFile(namedConf)
+	if err != nil {
+		t.Fatalf("read named.conf: %v", err)
+	}
+	patched := strings.Replace(
+		string(data),
+		"recursion no;",
+		fmt.Sprintf("pid-file %q;\n    recursion no;", pidPath),
+		1,
+	)
+	if err := os.WriteFile(namedConf, []byte(patched), 0o644); err != nil {
+		t.Fatalf("write patched named.conf: %v", err)
+	}
+}
+
+// TestRunReload_Success verifies that runReload returns nil when named.conf
+// contains a valid pid-file option and the PID file holds the current PID.
+// We register a signal.Notify channel for SIGHUP before calling runReload so
+// the signal sent to the test process is absorbed rather than terminating it.
+func TestRunReload_Success(t *testing.T) {
+	dir := setupReloadTestDir(t)
+
+	pidPath := filepath.Join(dir, "shadowdns.pid")
+	patchNamedConfPidFile(t, dir, pidPath)
+
+	// Write the current process PID so runReload can find it.
+	if err := os.WriteFile(pidPath, fmt.Appendf(nil, "%d\n", os.Getpid()), 0o644); err != nil {
+		t.Fatalf("write pid file: %v", err)
+	}
+
+	// Install a SIGHUP handler to absorb the signal that runReload will send.
+	// Without this the default action (process termination) would kill the test.
+	sighupCh := make(chan os.Signal, 1)
+	signal.Notify(sighupCh, syscall.SIGHUP)
+	defer signal.Stop(sighupCh)
+
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	opts := runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		Logger:        logger,
+	}
+
+	if err := runReload(opts); err != nil {
+		t.Fatalf("runReload returned unexpected error: %v", err)
+	}
+}
+
+// TestRunReload_MissingNamedConf verifies that runReload returns an error
+// containing "-named-conf is required" when NamedConfPath is empty.
+func TestRunReload_MissingNamedConf(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	opts := runOptions{
+		Logger: logger,
+	}
+
+	err := runReload(opts)
+	if err == nil {
+		t.Fatal("expected error when NamedConfPath is empty")
+	}
+	if !strings.Contains(err.Error(), "-named-conf is required") {
+		t.Errorf("expected error to contain %q, got: %v", "-named-conf is required", err)
+	}
+}
+
+// TestRunReload_NoPidFileConfigured verifies that runReload returns an error
+// mentioning "pid-file" when named.conf has no pid-file option.
+func TestRunReload_NoPidFileConfigured(t *testing.T) {
+	dir := setupReloadTestDir(t)
+
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	opts := runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		Logger:        logger,
+	}
+
+	err := runReload(opts)
+	if err == nil {
+		t.Fatal("expected error when pid-file is not configured")
+	}
+	if !strings.Contains(err.Error(), "pid-file") {
+		t.Errorf("expected error to contain %q, got: %v", "pid-file", err)
+	}
+}
+
+// TestRunReload_PidFileNotFound verifies that runReload returns an error when
+// the pid-file path in named.conf does not exist on disk.
+func TestRunReload_PidFileNotFound(t *testing.T) {
+	dir := setupReloadTestDir(t)
+
+	// Point to a path that will never exist.
+	patchNamedConfPidFile(t, dir, "/nonexistent/path/pid")
+
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	opts := runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		Logger:        logger,
+	}
+
+	err := runReload(opts)
+	if err == nil {
+		t.Fatal("expected error when pid file does not exist")
+	}
+}
+
+// TestRunReload_InvalidPidContent verifies that runReload returns an error
+// when the pid-file exists but contains non-numeric content.
+func TestRunReload_InvalidPidContent(t *testing.T) {
+	dir := setupReloadTestDir(t)
+
+	pidPath := filepath.Join(dir, "shadowdns.pid")
+	patchNamedConfPidFile(t, dir, pidPath)
+
+	// Write garbage content — not a valid PID integer.
+	if err := os.WriteFile(pidPath, []byte("not-a-number\n"), 0o644); err != nil {
+		t.Fatalf("write pid file: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	opts := runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		Logger:        logger,
+	}
+
+	err := runReload(opts)
+	if err == nil {
+		t.Fatal("expected error when pid file contains non-numeric content")
+	}
+}
+
+// TestRunReload_ProcessNotRunning verifies that runReload returns an error
+// when the PID file contains a valid integer but no process with that PID exists.
+func TestRunReload_ProcessNotRunning(t *testing.T) {
+	dir := setupReloadTestDir(t)
+
+	pidPath := filepath.Join(dir, "shadowdns.pid")
+	patchNamedConfPidFile(t, dir, pidPath)
+
+	// Write a PID that is almost certainly not in use.
+	if err := os.WriteFile(pidPath, []byte("999999999\n"), 0o644); err != nil {
+		t.Fatalf("write pid file: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	opts := runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		Logger:        logger,
+	}
+
+	err := runReload(opts)
+	if err == nil {
+		t.Fatal("expected error when PID does not correspond to a running process")
 	}
 }
 
