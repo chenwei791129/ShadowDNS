@@ -1,6 +1,8 @@
 package zone
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,7 +36,7 @@ func TestParseFile_SOAMultiLine(t *testing.T) {
 @ IN NS ns1.root.com.
 `
 	path := writeZoneFile(t, content)
-	z, err := ParseFile(path, "root.com.")
+	z, err := ParseFile(path, "root.com.", nil)
 	if err != nil {
 		t.Fatalf("ParseFile error: %v", err)
 	}
@@ -76,7 +78,7 @@ func TestParseFile_AtShorthand_NS(t *testing.T) {
 @ IN NS ns1.root.com.
 `
 	path := writeZoneFile(t, content)
-	z, err := ParseFile(path, "root.com.")
+	z, err := ParseFile(path, "root.com.", nil)
 	if err != nil {
 		t.Fatalf("ParseFile error: %v", err)
 	}
@@ -103,7 +105,7 @@ func TestParseFile_BlankAndCommentLines_Skipped(t *testing.T) {
 @ IN NS ns1.root.com.
 `
 	path := writeZoneFile(t, content)
-	z, err := ParseFile(path, "root.com.")
+	z, err := ParseFile(path, "root.com.", nil)
 	if err != nil {
 		t.Fatalf("ParseFile error: %v", err)
 	}
@@ -125,7 +127,7 @@ func TestParseFile_CommentedOutRecord_NotEmitted(t *testing.T) {
 @ IN NS ns1.root.com.
 `
 	path := writeZoneFile(t, content)
-	z, err := ParseFile(path, "root.com.")
+	z, err := ParseFile(path, "root.com.", nil)
 	if err != nil {
 		t.Fatalf("ParseFile error: %v", err)
 	}
@@ -143,7 +145,7 @@ func TestParseFile_ParseError_IncludesFilePath(t *testing.T) {
 @ IN NOTAREALTYPE foobar
 `
 	path := writeZoneFile(t, content)
-	_, err := ParseFile(path, "root.com.")
+	_, err := ParseFile(path, "root.com.", nil)
 	if err == nil {
 		t.Fatal("expected error for malformed zone, got nil")
 	}
@@ -154,26 +156,38 @@ func TestParseFile_ParseError_IncludesFilePath(t *testing.T) {
 
 // ---- Task 3.4: Out-of-zone owner name ----
 
-func TestParseFile_OutOfZoneOwner_Error(t *testing.T) {
+// TestParseFile_OutOfZoneOwner_Skipped verifies that out-of-zone records are
+// silently skipped (matching BIND 9 behaviour) rather than causing a fatal
+// error. The zone should load successfully without the offending record.
+func TestParseFile_OutOfZoneOwner_Skipped(t *testing.T) {
 	content := `$TTL 3600
 @ IN SOA ns1.root.com. root.ns1.root.com. ( 1 300 120 86400 3600 )
+@ IN NS  ns1.root.com.
 example.org. IN A 1.2.3.4
+www          IN A 192.0.2.1
 `
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
 	path := writeZoneFile(t, content)
-	_, err := ParseFile(path, "root.com.")
-	if err == nil {
-		t.Fatal("expected error for out-of-zone owner, got nil")
+	z, err := ParseFile(path, "root.com.", logger)
+	if err != nil {
+		t.Fatalf("ParseFile should succeed with out-of-zone record, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), path) {
-		t.Errorf("error %q does not mention file path %q", err.Error(), path)
+
+	// The out-of-zone record must NOT be in the zone.
+	if rrs := z.Lookup("example.org.", dns.TypeA); len(rrs) != 0 {
+		t.Errorf("out-of-zone record should be skipped, got %d records", len(rrs))
 	}
-	if !strings.Contains(err.Error(), "out-of-zone") {
-		t.Errorf("error %q does not mention out-of-zone", err.Error())
+
+	// Good records must still be loaded.
+	if rrs := z.Lookup("www.root.com.", dns.TypeA); len(rrs) != 1 {
+		t.Errorf("expected 1 A record for www.root.com., got %d", len(rrs))
 	}
-	// Per zone-parser spec: "returns a fatal error citing the file and line".
-	// The offending record sits on line 3 of the fixture above.
-	if !strings.Contains(err.Error(), ":3:") {
-		t.Errorf("error %q does not cite line 3", err.Error())
+
+	// A warning must have been logged.
+	if !strings.Contains(buf.String(), "out-of-zone") {
+		t.Errorf("expected warning log with 'out-of-zone', got: %s", buf.String())
 	}
 }
 
@@ -184,7 +198,7 @@ func TestParseFile_UnknownRRType_Error(t *testing.T) {
 @ IN NOTAREALTYPE foobar
 `
 	path := writeZoneFile(t, content)
-	_, err := ParseFile(path, "root.com.")
+	_, err := ParseFile(path, "root.com.", nil)
 	if err == nil {
 		t.Fatal("expected error for unknown RR type, got nil")
 	}

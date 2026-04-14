@@ -3,6 +3,7 @@ package zone
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -13,22 +14,24 @@ import (
 
 // ParseFile parses a single RFC 1035 zone file and returns the parsed Zone.
 // path is the absolute path to the zone file.
-// origin is the zone's apex name (e.g. "example.com.") supplied by the caller
-// (LoadNamedConf already knows the origin from the zone block in named.conf).
+// origin is the zone's apex name (e.g. "example.com.") supplied by the caller.
 //
-// Wraps github.com/miekg/dns ZoneParser. Errors include file path and line
-// number — syntax errors from miekg already embed line info; out-of-zone
-// owner errors trigger a second-pass scan to locate the offending line.
+// Records whose owner name falls outside the zone origin are logged as
+// warnings and silently skipped, matching BIND 9's behaviour. Syntax errors
+// are still fatal.
 //
 // MUST NOT panic on any input.
-func ParseFile(path string, origin string) (*Zone, error) {
+func ParseFile(path string, origin string, logger *slog.Logger) (*Zone, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("zone: open %q: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
 
-	// Normalize origin: lowercase + trailing dot.
 	canonOrigin := dnsutil.Canonicalize(origin)
 
 	z := &Zone{
@@ -44,10 +47,19 @@ func ParseFile(path string, origin string) (*Zone, error) {
 	zp.SetIncludeAllowed(true)
 
 	for rr, ok := zp.Next(); ok; rr, ok = zp.Next() {
-		// Validate that the owner name is within the zone origin.
 		ownerName := strings.ToLower(rr.Header().Name)
-		if err := checkInZone(ownerName, canonOrigin, path); err != nil {
-			return nil, err
+		if !dnsutil.IsInZone(ownerName, canonOrigin) {
+			line := findOwnerLine(path, ownerName)
+			if line > 0 {
+				logger.Warn("ignoring out-of-zone data",
+					"file", path, "line", line,
+					"owner", ownerName, "zone", canonOrigin)
+			} else {
+				logger.Warn("ignoring out-of-zone data",
+					"file", path,
+					"owner", ownerName, "zone", canonOrigin)
+			}
+			continue
 		}
 		z.AddRR(rr)
 	}
@@ -57,17 +69,6 @@ func ParseFile(path string, origin string) (*Zone, error) {
 	}
 
 	return z, nil
-}
-
-func checkInZone(owner, origin, path string) error {
-	if dnsutil.IsInZone(owner, origin) {
-		return nil
-	}
-	line := findOwnerLine(path, owner)
-	if line > 0 {
-		return fmt.Errorf("zone: %s:%d: out-of-zone owner name %q (zone origin: %q)", path, line, owner, origin)
-	}
-	return fmt.Errorf("zone: %s: out-of-zone owner name %q (zone origin: %q)", path, owner, origin)
 }
 
 // findOwnerLine returns the 1-based line number of the first record whose
@@ -82,8 +83,6 @@ func findOwnerLine(path, name string) int {
 
 	needle := trimTrailingDot(strings.ToLower(name))
 	scanner := bufio.NewScanner(f)
-	// Raise the line cap so pathological records (e.g. long TLSA/TXT strings)
-	// don't silently truncate the scan and lose the match.
 	scanner.Buffer(make([]byte, 0, 4096), 1<<20)
 
 	lineNo := 0

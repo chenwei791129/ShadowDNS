@@ -41,7 +41,7 @@ func BuildState(
 
 		for _, z := range v.Zones {
 			origin := z.Name + "."
-			parsed, err := zone.ParseFile(z.File, origin)
+			parsed, err := zone.ParseFile(z.File, origin, logger)
 			if err != nil {
 				return ServerState{}, fmt.Errorf("view %q zone %q: %w", v.Name, z.Name, err)
 			}

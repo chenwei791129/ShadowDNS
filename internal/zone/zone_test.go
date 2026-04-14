@@ -17,7 +17,7 @@ www IN A 1.2.3.4
 mail IN A 5.6.7.8
 `
 	path := writeZoneFile(t, content)
-	z, err := ParseFile(path, "root.com.")
+	z, err := ParseFile(path, "root.com.", nil)
 	if err != nil {
 		t.Fatalf("ParseFile error: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestZone_SOAPointerSet(t *testing.T) {
 @ IN NS ns1.root.com.
 `
 	path := writeZoneFile(t, content)
-	z, err := ParseFile(path, "root.com.")
+	z, err := ParseFile(path, "root.com.", nil)
 	if err != nil {
 		t.Fatalf("ParseFile error: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestZone_DefaultTTLFromDirective(t *testing.T) {
 www IN A 1.2.3.4
 `
 	path := writeZoneFile(t, content)
-	z, err := ParseFile(path, "root.com.")
+	z, err := ParseFile(path, "root.com.", nil)
 	if err != nil {
 		t.Fatalf("ParseFile error: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestZone_PerRecordTTLOverridesDefault(t *testing.T) {
 www 600 IN A 1.2.3.4
 `
 	path := writeZoneFile(t, content)
-	z, err := ParseFile(path, "root.com.")
+	z, err := ParseFile(path, "root.com.", nil)
 	if err != nil {
 		t.Fatalf("ParseFile error: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestZone_LookupNoMatch_ReturnsEmptySlice(t *testing.T) {
 @ IN NS ns1.root.com.
 `
 	path := writeZoneFile(t, content)
-	z, err := ParseFile(path, "root.com.")
+	z, err := ParseFile(path, "root.com.", nil)
 	if err != nil {
 		t.Fatalf("ParseFile error: %v", err)
 	}

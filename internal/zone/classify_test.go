@@ -44,7 +44,7 @@ func TestClassify_RootZone_AllRecordsRetained(t *testing.T) {
 www IN TXT "hello"
 `
 	path := writeZoneFile(t, content)
-	z, err := ParseFile(path, "root.com.")
+	z, err := ParseFile(path, "root.com.", nil)
 	if err != nil {
 		t.Fatalf("ParseFile error: %v", err)
 	}
@@ -83,7 +83,7 @@ www IN CNAME root.com.
 mail IN MX 10 mail.root.com.
 `
 	path := writeZoneFile(t, content)
-	z, err := ParseFile(path, "backup.com.")
+	z, err := ParseFile(path, "backup.com.", nil)
 	if err != nil {
 		t.Fatalf("ParseFile error: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestClassify_BackupZone_EmptyOverrideSet(t *testing.T) {
 @ IN NS ns1.backup.com.
 `
 	path := writeZoneFile(t, content)
-	z, err := ParseFile(path, "backup.com.")
+	z, err := ParseFile(path, "backup.com.", nil)
 	if err != nil {
 		t.Fatalf("ParseFile error: %v", err)
 	}
