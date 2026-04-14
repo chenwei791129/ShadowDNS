@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -27,6 +28,48 @@ import (
 func TestVersionVariable_HasDefault(t *testing.T) {
 	if version == "" {
 		t.Fatal("version variable should have a non-empty default value")
+	}
+}
+
+func TestVersionFlag_PrintsVersion(t *testing.T) {
+	binPath := filepath.Join(t.TempDir(), "shadowdns")
+	build := exec.Command("go", "build", "-ldflags", "-X main.version=v1.2.3-test", "-o", binPath, ".")
+	build.Dir = "."
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	out, err := exec.Command(binPath, "-version").CombinedOutput()
+	if err != nil {
+		t.Fatalf("-version failed: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "v1.2.3-test" {
+		t.Errorf("expected %q, got %q", "v1.2.3-test", got)
+	}
+}
+
+func TestStartupLog_IncludesVersion(t *testing.T) {
+	dir := setupReloadTestDir(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	opts := runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ListenAddr:    "127.0.0.1:0",
+		Logger:        logger,
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, opts) }()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+
+	output := buf.String()
+	if !strings.Contains(output, "version=") {
+		t.Errorf("startup log should contain version, got: %s", output)
 	}
 }
 

@@ -128,7 +128,15 @@ func main() {
 	var reloadFlag bool
 	flag.BoolVar(&reloadFlag, "reload", false, "send SIGHUP to a running server (requires -named-conf)")
 
+	var showVersion bool
+	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	opts.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -163,6 +171,7 @@ func run(ctx context.Context, opts runOptions) error {
 	}
 
 	logger.Info("shadowdns starting",
+		"version", version,
 		"named_conf", opts.NamedConfPath,
 		"aliases", opts.AliasesPath,
 		"listen", opts.ListenAddr,
