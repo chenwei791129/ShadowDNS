@@ -78,7 +78,6 @@ Response sent to client
 - DNSSEC — signing, NSEC/NSEC3, DS records
 - IPv6 listener — matches `listen-on-v6 { none; }` in current deployments
 - Dynamic Update (RFC 2136)
-- Hot reload / SIGHUP — configuration reload requires a process restart
 - Recursion — ShadowDNS is authoritative-only; `recursion no` is always in effect
 - `type slave` or `type forward` zones — rejected at startup with a fatal error
 - `allow-update`, `dnssec-enable` directives — rejected at startup
@@ -99,7 +98,7 @@ Response sent to client
 | DNSSEC                        | Yes           | No (v1)      |
 | IPv6 listener                 | Yes           | No (v1)      |
 | Dynamic Update                | Yes           | No (v1)      |
-| Hot reload (SIGHUP)           | Yes           | No (v1)      |
+| Hot reload (SIGHUP)           | Yes           | Yes          |
 | Recursion                     | Configurable  | Always off   |
 
 ## Quick start
@@ -211,7 +210,6 @@ This software has not yet been deployed to production. Integration testing again
 
 Known limitations to address before production use:
 
-- No hot reload: configuration changes require a process restart.
 - No Prometheus metrics or structured access logging in v1.
 - IXFR is not supported; slaves perform a full AXFR on each NOTIFY.
 
