@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
+	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/view"
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
@@ -1270,5 +1272,107 @@ func TestSwapState_ConcurrentQueriesConsistent(t *testing.T) {
 		if ip != "1.2.3.4" && ip != "5.6.7.8" {
 			t.Errorf("goroutine %d: unexpected IP %q (want 1.2.3.4 or 5.6.7.8)", i, ip)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Metrics integration tests
+// ---------------------------------------------------------------------------
+
+// TestServeDNS_Metrics_RecordsRequestAndResponse verifies that when Metrics is
+// set on the Server, DNS queries result in incremented counters and histogram
+// observations.
+func TestServeDNS_Metrics_RecordsRequestAndResponse(t *testing.T) {
+	m := metrics.New()
+
+	rootZ := buildRootZone("root.com.",
+		makeARecord("www.root.com.", "1.2.3.4", 300),
+	)
+
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+	}, nil)
+	srv.Metrics = m
+
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "www.root.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+
+	// Gather metrics and verify.
+	mfs, err := m.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	families := make(map[string]*dto.MetricFamily, len(mfs))
+	for _, mf := range mfs {
+		families[mf.GetName()] = mf
+	}
+
+	// Verify requests_total was incremented.
+	reqMF, ok := families["shadowdns_dns_requests_total"]
+	if !ok {
+		t.Fatal("shadowdns_dns_requests_total not found")
+	}
+	if len(reqMF.GetMetric()) == 0 {
+		t.Fatal("no metric entries in shadowdns_dns_requests_total")
+	}
+
+	// Verify responses_total was incremented with NOERROR.
+	respMF, ok := families["shadowdns_dns_responses_total"]
+	if !ok {
+		t.Fatal("shadowdns_dns_responses_total not found")
+	}
+	var foundNoError bool
+	for _, metric := range respMF.GetMetric() {
+		for _, lp := range metric.GetLabel() {
+			if lp.GetName() == "rcode" && lp.GetValue() == "NOERROR" {
+				foundNoError = true
+			}
+		}
+	}
+	if !foundNoError {
+		t.Error("expected responses_total entry with rcode=NOERROR")
+	}
+
+	// Verify duration histogram was observed.
+	durMF, ok := families["shadowdns_dns_request_duration_seconds"]
+	if !ok {
+		t.Fatal("shadowdns_dns_request_duration_seconds not found")
+	}
+	if len(durMF.GetMetric()) == 0 {
+		t.Fatal("no entries in duration histogram")
+	}
+	count := durMF.GetMetric()[0].GetHistogram().GetSampleCount()
+	if count != 1 {
+		t.Errorf("expected 1 duration sample, got %d", count)
+	}
+}
+
+// TestServeDNS_NilMetrics_NoPanic verifies that the server does not panic
+// when Metrics is nil (the default for existing tests).
+func TestServeDNS_NilMetrics_NoPanic(t *testing.T) {
+	rootZ := buildRootZone("root.com.",
+		makeARecord("www.root.com.", "1.2.3.4", 300),
+	)
+
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+	}, nil)
+	// srv.Metrics is intentionally nil.
+
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "www.root.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Errorf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
 	}
 }

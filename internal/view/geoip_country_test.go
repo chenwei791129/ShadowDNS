@@ -56,3 +56,32 @@ func TestOpenCountryDB_MissingFile(t *testing.T) {
 		t.Error("expected error for missing file, got nil")
 	}
 }
+
+func TestCountryDB_Metadata_ReturnsMetadata(t *testing.T) {
+	path := buildCountryMMDB(t)
+
+	db, err := OpenCountryDB(path)
+	if err != nil {
+		t.Fatalf("OpenCountryDB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	meta := db.Metadata()
+	if meta.DatabaseType == "" {
+		t.Error("expected non-empty DatabaseType, got empty string")
+	}
+	if meta.BuildEpoch == 0 {
+		t.Error("expected BuildEpoch > 0, got 0")
+	}
+}
+
+func TestCountryDB_Metadata_NilReceiver(t *testing.T) {
+	var nilDB *CountryDB
+	meta := nilDB.Metadata()
+	if meta.DatabaseType != "" {
+		t.Errorf("expected empty DatabaseType for nil receiver, got %q", meta.DatabaseType)
+	}
+	if meta.BuildEpoch != 0 {
+		t.Errorf("expected BuildEpoch 0 for nil receiver, got %d", meta.BuildEpoch)
+	}
+}
