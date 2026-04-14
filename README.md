@@ -72,11 +72,18 @@ Response sent to client
 - Split-horizon responses (different answers per view for the same query)
 - SOA inheritance for backup zones (serial tracks the root zone; slaves detect changes correctly)
 
-### Not supported in v1
+### Planned
 
-- IXFR (incremental zone transfer) — slaves receive a full AXFR on each NOTIFY
+- IXFR (incremental zone transfer) — slaves currently receive a full AXFR on each NOTIFY
 - DNSSEC — signing, NSEC/NSEC3, DS records
-- IPv6 listener — matches `listen-on-v6 { none; }` in current deployments
+- IPv6 listener
+- DNS Cookies (RFC 7873) — server-side cookie validation to mitigate source IP spoofing
+- EDNS Client Subnet (ECS, RFC 7871) — improved GeoIP accuracy when queries arrive via resolvers
+- Access logging — structured log file for query/response auditing
+- Health check endpoint — HTTP `/healthz` for load balancer probes
+
+### Not supported
+
 - Dynamic Update (RFC 2136) — not planned; all record changes go through zone file edits and reload
 - Recursion — ShadowDNS is authoritative-only; `recursion no` is always in effect
 - `type slave` or `type forward` zones — rejected at startup with a fatal error
@@ -84,7 +91,7 @@ Response sent to client
 
 ### Feature comparison
 
-| Feature                        | BIND (master) | ShadowDNS v1 |
+| Feature                        | BIND (master) | ShadowDNS    |
 |-------------------------------|---------------|--------------|
 | RFC 1035 zone file parsing    | Yes           | Yes          |
 | Split-horizon views           | Yes           | Yes          |
@@ -94,12 +101,16 @@ Response sent to client
 | AXFR                          | Yes           | Yes          |
 | NOTIFY                        | Yes           | Yes          |
 | Zone aliasing (backup domain) | No            | Yes          |
-| IXFR                          | Yes           | No (v1)      |
-| DNSSEC                        | Yes           | No (v1)      |
-| IPv6 listener                 | Yes           | No (v1)      |
-| Dynamic Update                | Yes           | No            |
 | Hot reload (SIGHUP)           | Yes           | Yes          |
 | Prometheus metrics            | No            | Yes          |
+| IXFR                          | Yes           | Planned      |
+| DNSSEC                        | Yes           | Planned      |
+| IPv6 listener                 | Yes           | Planned      |
+| DNS Cookies (RFC 7873)        | No            | Planned      |
+| EDNS Client Subnet (ECS)      | No            | Planned      |
+| Access logging                | Yes           | Planned      |
+| Health check endpoint         | No            | Planned      |
+| Dynamic Update                | Yes           | No           |
 | Recursion                     | Configurable  | Always off   |
 
 ## Quick start
