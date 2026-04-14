@@ -1,3 +1,18 @@
+# Project Build Commands
+
+- `make build` — Build the ShadowDNS binary to `bin/shadowdns`
+- `make test` — Run unit tests
+- `make lint` — Run golangci-lint
+- `make smoke` — Smoke test with `--dry-run`
+- `make deb` — Build `.deb` package (requires nfpm via `go tool`)
+- `make test-deb` — End-to-end container test of `.deb` package (requires podman or docker)
+
+# Project Structure
+
+- `packaging/` — Debian packaging assets (systemd service, example configs, install scripts)
+- `scripts/` — Build and test helper scripts
+- `nfpm.yaml` — nfpm configuration for `.deb` packaging
+
 <!-- SPECTRA:START v1.0.1 -->
 
 # Spectra Instructions
