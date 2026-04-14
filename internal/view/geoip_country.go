@@ -50,6 +50,15 @@ func (c *CountryDB) Lookup(ip netip.Addr) (string, bool) {
 	return rec.Country.ISOCode, true
 }
 
+// Metadata returns the mmdb file metadata. Returns a zero-value Metadata
+// if the receiver or its database is nil.
+func (c *CountryDB) Metadata() maxminddb.Metadata {
+	if c == nil || c.db == nil {
+		return maxminddb.Metadata{}
+	}
+	return c.db.Metadata
+}
+
 // Close releases the mmdb file handle.
 func (c *CountryDB) Close() error {
 	if c == nil || c.db == nil {

@@ -10,6 +10,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
+	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
 	"github.com/chenwei791129/ShadowDNS/internal/view"
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
@@ -69,6 +70,9 @@ func (s *ServerState) sanitize() {
 type Server struct {
 	state  atomic.Pointer[ServerState]
 	Logger *slog.Logger
+	// Metrics enables Prometheus metrics collection when non-nil.
+	// A nil value disables all instrumentation (safe for tests).
+	Metrics *metrics.Metrics
 
 	udp *dns.Server
 	tcp *dns.Server
@@ -94,4 +98,22 @@ func NewServer(state ServerState, logger *slog.Logger) *Server {
 func (s *Server) SwapState(state ServerState) {
 	state.sanitize()
 	s.state.Store(&state)
+	s.updateZoneMetrics(&state)
+}
+
+// updateZoneMetrics pushes per-view zone counts to the Prometheus gauges.
+// No-op when s.Metrics is nil.
+func (s *Server) updateZoneMetrics(st *ServerState) {
+	if s.Metrics == nil {
+		return
+	}
+	root := make(map[string]int, len(st.RootZones))
+	for v, zones := range st.RootZones {
+		root[v] = len(zones)
+	}
+	backup := make(map[string]int, len(st.BackupZones))
+	for v, zones := range st.BackupZones {
+		backup[v] = len(zones)
+	}
+	s.Metrics.SetZoneCounts(root, backup)
 }

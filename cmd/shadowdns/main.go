@@ -11,14 +11,17 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
+	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
 	"github.com/chenwei791129/ShadowDNS/internal/view"
@@ -114,6 +117,7 @@ type runOptions struct {
 	NamedConfPath string
 	AliasesPath   string
 	ListenAddr    string
+	MetricsAddr   string
 	DryRun        bool
 	Logger        *slog.Logger
 }
@@ -123,6 +127,7 @@ func main() {
 	flag.StringVar(&opts.NamedConfPath, "named-conf", "", "path to named.conf (required)")
 	flag.StringVar(&opts.AliasesPath, "aliases", "", "path to aliases.yaml (optional; missing file is tolerated)")
 	flag.StringVar(&opts.ListenAddr, "listen", ":53", "UDP/TCP listen address")
+	flag.StringVar(&opts.MetricsAddr, "metrics-addr", ":9153", "Prometheus /metrics HTTP listen address (empty string disables)")
 	flag.BoolVar(&opts.DryRun, "dry-run", false, "load configuration and zones, log a summary, then exit without starting listeners")
 
 	var reloadFlag bool
@@ -219,6 +224,48 @@ func run(ctx context.Context, opts runOptions) error {
 	}
 
 	srv := server.NewServer(state, logger)
+
+	// Prometheus metrics (disabled when -metrics-addr is empty).
+	if opts.MetricsAddr != "" {
+		m := metrics.New()
+		m.SetBuildInfo(version, runtime.Version())
+		// GeoIP metadata is set once at startup; databases are not reloaded
+		// on SIGHUP, so these values remain stable for the server lifetime.
+		m.SetGeoIPInfo(map[string]uint{
+			"country": country.Metadata().BuildEpoch,
+			"asn":     asn.Metadata().BuildEpoch,
+		})
+		srv.Metrics = m
+		// Trigger initial zone gauge update. NewServer can't do this
+		// because Metrics is assigned after construction.
+		rootCounts := make(map[string]int, len(state.RootZones))
+		for v, zones := range state.RootZones {
+			rootCounts[v] = len(zones)
+		}
+		backupCounts := make(map[string]int, len(state.BackupZones))
+		for v, zones := range state.BackupZones {
+			backupCounts[v] = len(zones)
+		}
+		m.SetZoneCounts(rootCounts, backupCounts)
+
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", m.Handler())
+		metricsSrv := &http.Server{Addr: opts.MetricsAddr, Handler: mux}
+
+		go func() {
+			logger.Info("metrics server starting", "addr", opts.MetricsAddr)
+			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("metrics server failed", "err", err)
+			}
+		}()
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+				logger.Warn("metrics server shutdown error", "err", err)
+			}
+		}()
+	}
 
 	// Bind listeners before writing the PID file so the port is guaranteed
 	// to be available when the PID file appears on disk.

@@ -47,6 +47,15 @@ func (a *ASNDB) Lookup(ip netip.Addr) (uint32, bool) {
 	return uint32(rec.ASN), true
 }
 
+// Metadata returns the mmdb file metadata. Returns a zero-value Metadata
+// if the receiver or its database is nil.
+func (a *ASNDB) Metadata() maxminddb.Metadata {
+	if a == nil || a.db == nil {
+		return maxminddb.Metadata{}
+	}
+	return a.db.Metadata
+}
+
 // Close releases the mmdb file handle.
 func (a *ASNDB) Close() error {
 	if a == nil || a.db == nil {

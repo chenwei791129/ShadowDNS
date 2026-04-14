@@ -5,20 +5,49 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/miekg/dns"
 
 	"github.com/chenwei791129/ShadowDNS/internal/alias"
 	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
+	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
 
 // ServeDNS implements dns.Handler. It is the entry point for every DNS query.
 func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
+	var mw *metrics.ResponseWriter
+	var clientIP netip.Addr
+	viewLabel := "refused"
+
+	if s.Metrics != nil {
+		origW := w
+		mw = metrics.NewResponseWriter(w, s.Metrics, "refused", time.Now())
+		w = mw
+
+		defer func() {
+			proto := "tcp"
+			if dnsutil.IsUDP(origW) {
+				proto = "udp"
+			}
+			qtypeStr := "unknown"
+			if len(req.Question) == 1 {
+				if name, ok := dns.TypeToString[req.Question[0].Qtype]; ok {
+					qtypeStr = name
+				}
+			}
+			s.Metrics.RecordRequest(proto, addrFamily(clientIP), qtypeStr, viewLabel)
+		}()
+	}
+
 	// Recover from any panic so the server never crashes.
 	defer func() {
 		if r := recover(); r != nil {
+			if s.Metrics != nil {
+				s.Metrics.RecordPanic()
+			}
 			s.Logger.Error("panic in DNS handler; recovering",
 				"panic", fmt.Sprintf("%v", r),
 			)
@@ -71,13 +100,16 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	st := s.state.Load()
 
 	// Zone transfer requests (AXFR / IXFR) are handled separately.
+	// Note: transfers are counted under view="refused" in metrics because
+	// clientIP and viewName are resolved inside handleTransfer, not here.
 	if qtype == dns.TypeAXFR || qtype == dns.TypeIXFR {
 		s.handleTransfer(w, req, qname, st)
 		return
 	}
 
 	// Extract client IP for view resolution.
-	clientIP, err := addrFromRemote(w)
+	var err error
+	clientIP, err = addrFromRemote(w)
 	if err != nil {
 		s.Logger.Warn("cannot parse client IP; replying REFUSED",
 			"remote", w.RemoteAddr().String(),
@@ -96,6 +128,12 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		)
 		replyRcode(w, req, dns.RcodeRefused)
 		return
+	}
+
+	// View resolved — update metrics labels.
+	viewLabel = viewName
+	if mw != nil {
+		mw.SetView(viewName)
 	}
 
 	// Determine zone using longest-suffix match + alias map.
@@ -392,4 +430,16 @@ func udpMaxSize(req *dns.Msg) int {
 		return int(opt.UDPSize())
 	}
 	return dns.MinMsgSize
+}
+
+// addrFamily returns "ipv4" or "ipv6" for the given address.
+// Returns "unknown" for zero-value (early-exit paths before IP is parsed).
+func addrFamily(ip netip.Addr) string {
+	if !ip.IsValid() {
+		return "unknown"
+	}
+	if ip.Is4() || ip.Is4In6() {
+		return "ipv4"
+	}
+	return "ipv6"
 }
