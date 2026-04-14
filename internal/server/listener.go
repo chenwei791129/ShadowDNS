@@ -9,27 +9,22 @@ import (
 	"github.com/miekg/dns"
 )
 
-// Start begins serving DNS on listenAddr over both UDP and TCP.
-// It returns when ctx is cancelled or either listener experiences a fatal error.
-//
-// The function pre-binds both listeners before spawning goroutines so that the
-// listening ports are available immediately after Start returns (useful in tests
-// that need to know the actual bound address).
-func (s *Server) Start(ctx context.Context, listenAddr string) error {
-	// Pre-bind UDP so callers can discover the actual port immediately.
+// Bind pre-binds UDP and TCP listeners on listenAddr without starting the
+// serve loop. After Bind returns successfully, UDPAddr() and TCPAddr() are
+// available. Call Serve to begin accepting queries.
+func (s *Server) Bind(listenAddr string) error {
 	pc, err := net.ListenPacket("udp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("bind UDP %s: %w", listenAddr, err)
 	}
 
-	// Pre-bind TCP listener.
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		_ = pc.Close()
 		return fmt.Errorf("bind TCP %s: %w", listenAddr, err)
 	}
 
-	udpServer := &dns.Server{
+	s.udp = &dns.Server{
 		PacketConn:   pc,
 		Net:          "udp",
 		Handler:      s,
@@ -38,7 +33,7 @@ func (s *Server) Start(ctx context.Context, listenAddr string) error {
 		WriteTimeout: 0,
 	}
 
-	tcpServer := &dns.Server{
+	s.tcp = &dns.Server{
 		Listener:     ln,
 		Net:          "tcp",
 		Handler:      s,
@@ -46,9 +41,13 @@ func (s *Server) Start(ctx context.Context, listenAddr string) error {
 		WriteTimeout: 0,
 	}
 
-	s.udp = udpServer
-	s.tcp = tcpServer
+	return nil
+}
 
+// Serve starts the serve loop on already-bound listeners and blocks until ctx
+// is cancelled or a listener encounters a fatal error. Bind must be called
+// before Serve.
+func (s *Server) Serve(ctx context.Context) error {
 	errCh := make(chan error, 2)
 
 	var wg sync.WaitGroup
@@ -56,14 +55,14 @@ func (s *Server) Start(ctx context.Context, listenAddr string) error {
 
 	go func() {
 		defer wg.Done()
-		if err := udpServer.ActivateAndServe(); err != nil {
+		if err := s.udp.ActivateAndServe(); err != nil {
 			errCh <- fmt.Errorf("UDP listener: %w", err)
 		}
 	}()
 
 	go func() {
 		defer wg.Done()
-		if err := tcpServer.ActivateAndServe(); err != nil {
+		if err := s.tcp.ActivateAndServe(); err != nil {
 			errCh <- fmt.Errorf("TCP listener: %w", err)
 		}
 	}()
@@ -77,8 +76,8 @@ func (s *Server) Start(ctx context.Context, listenAddr string) error {
 		// One listener died; shut down the other.
 	}
 
-	_ = udpServer.Shutdown()
-	_ = tcpServer.Shutdown()
+	_ = s.udp.Shutdown()
+	_ = s.tcp.Shutdown()
 
 	wg.Wait()
 
@@ -86,6 +85,14 @@ func (s *Server) Start(ctx context.Context, listenAddr string) error {
 		return firstErr
 	}
 	return ctx.Err()
+}
+
+// Start is a convenience method that calls Bind followed by Serve.
+func (s *Server) Start(ctx context.Context, listenAddr string) error {
+	if err := s.Bind(listenAddr); err != nil {
+		return err
+	}
+	return s.Serve(ctx)
 }
 
 // UDPAddr returns the local UDP address the server is bound to.
