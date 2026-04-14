@@ -77,7 +77,7 @@ Response sent to client
 - IXFR (incremental zone transfer) — slaves receive a full AXFR on each NOTIFY
 - DNSSEC — signing, NSEC/NSEC3, DS records
 - IPv6 listener — matches `listen-on-v6 { none; }` in current deployments
-- Dynamic Update (RFC 2136)
+- Dynamic Update (RFC 2136) — not planned; all record changes go through zone file edits and reload
 - Recursion — ShadowDNS is authoritative-only; `recursion no` is always in effect
 - `type slave` or `type forward` zones — rejected at startup with a fatal error
 - `allow-update`, `dnssec-enable` directives — rejected at startup
@@ -97,7 +97,7 @@ Response sent to client
 | IXFR                          | Yes           | No (v1)      |
 | DNSSEC                        | Yes           | No (v1)      |
 | IPv6 listener                 | Yes           | No (v1)      |
-| Dynamic Update                | Yes           | No (v1)      |
+| Dynamic Update                | Yes           | No            |
 | Hot reload (SIGHUP)           | Yes           | Yes          |
 | Prometheus metrics            | No            | Yes          |
 | Recursion                     | Configurable  | Always off   |
