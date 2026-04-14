@@ -1,0 +1,27 @@
+# aliases.yaml - ShadowDNS Alias Domain Configuration
+#
+# This file maps root domains to their backup (alias) domains.
+# ShadowDNS uses this mapping to serve backup domains by rewriting
+# incoming queries to the root domain, without loading separate zone data.
+#
+# Format:
+#   <root-domain>:
+#     - <backup-domain-1>
+#     - <backup-domain-2>
+#
+# Rules:
+#   - Each key is a root domain that has a fully-loaded zone in ShadowDNS.
+#   - Each value is a list of backup domains that alias to that root domain.
+#   - A backup domain may appear under exactly one root domain.
+#   - A domain cannot alias itself (e.g., example.com cannot be its own backup).
+
+example.com:
+  - backup-example.com
+  - mirror-example.com
+
+another-root.org:
+  - backup-another.org
+  - failover-another.org
+
+service.example.net:
+  - shadow-service.net

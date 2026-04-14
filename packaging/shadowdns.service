@@ -1,0 +1,22 @@
+[Unit]
+Description=ShadowDNS Authoritative DNS Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/shadowdns --named-conf /etc/shadowdns/named.conf --aliases /etc/shadowdns/aliases.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+User=shadowdns
+Group=shadowdns
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+ProtectSystem=strict
+ReadWritePaths=/var/log/shadowdns
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

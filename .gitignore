@@ -8,6 +8,9 @@ openspec/.vector-search.db*
 *.out
 coverage.txt
 
+# Packaging artifacts
+*.deb
+
 # Local dev
 .local/
 *.swp

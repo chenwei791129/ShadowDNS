@@ -1,0 +1,95 @@
+// named.conf.example — ShadowDNS starter configuration
+//
+// Copy this file to your working directory and adjust the values below.
+// ShadowDNS parses a BIND-compatible named.conf subset; see the project
+// README for a full list of supported directives.
+//
+// IP addresses in this file use the documentation ranges defined by RFC 5737
+// (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) and RFC 3849
+// (2001:db8::/32). Replace them with your real addresses before deploying.
+
+// ---------------------------------------------------------------------------
+// Global options
+// ---------------------------------------------------------------------------
+options {
+    // Working directory for all relative paths used in zone "file" directives.
+    // Change this to wherever you store your zone data files.
+    directory "/etc/namedb";
+
+    // Path to the directory containing GeoLite2-Country.mmdb and
+    // GeoLite2-ASN.mmdb.  Download these from MaxMind and place them here.
+    // ShadowDNS will refuse to start if either .mmdb file is missing.
+    geoip-directory "/usr/local/share/GeoIP/";
+
+    // Accept DNS queries on all IPv4 interfaces.
+    // Replace "any" with a specific address to bind to a single interface,
+    // e.g.:  listen-on { 192.0.2.1; };
+    listen-on { any; };
+
+    // Disable IPv6 listening.  Change to "any" if you need dual-stack.
+    listen-on-v6 { none; };
+
+    // ShadowDNS is an authoritative-only server; do not forward queries.
+    recursion no;
+
+    // Suppress unnecessary authority/additional sections in responses.
+    minimal-responses yes;
+
+    // Hide the BIND version string from CHAOS TXT queries.
+    version none;
+
+    // Hide the server hostname from CHAOS TXT queries.
+    hostname none;
+
+    // Secondaries that are allowed to pull zone data via AXFR.
+    // Add one line per secondary nameserver.  Use RFC 5737 addresses here;
+    // replace with your real secondary IPs in production.
+    allow-transfer {
+        192.0.2.10;   // secondary ns1
+        192.0.2.11;   // secondary ns2
+    };
+};
+
+// ---------------------------------------------------------------------------
+// Zone views
+//
+// Views are evaluated in order from top to bottom.  The first view whose
+// match-clients clause matches the client IP is used for that query.
+//
+// Each view should cover exactly the same set of zone names so that every
+// client receives an authoritative answer regardless of which view matches.
+// ---------------------------------------------------------------------------
+
+// View for clients geolocated to Thailand (TH).
+// ShadowDNS evaluates "geoip country XX" against GeoLite2-Country.mmdb.
+// You can list multiple match criteria; a client matches if ANY of them match.
+view "view-th" {
+    match-clients {
+        geoip country TH;                     // Thailand by country code
+        geoip asnum "AS64500 Example ISP";    // specific ASN (optional)
+    };
+    recursion no;
+
+    // Zone for the primary domain, served from a Thailand-specific zone file.
+    // The "file" path is relative to the "directory" option above.
+    zone "example.com" {
+        type master;
+        file "master/example.com_view-th.fwd";
+    };
+};
+
+// Default / catch-all view.  Must be the last view listed.
+// "any" matches every client that was not matched by an earlier view.
+view "view-other" {
+    match-clients {
+        any;
+    };
+    recursion no;
+
+    // Same zone name as above, but pointing to a different zone file that
+    // returns globally appropriate records (e.g. Anycast or CDN addresses).
+    zone "example.com" {
+        type master;
+        file "master/example.com_view-other.fwd";
+    };
+};

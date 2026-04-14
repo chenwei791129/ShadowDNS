@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://nfpm.goreleaser.com/schema.json
+
+name: shadowdns
+arch: amd64
+platform: linux
+version: 0.1.0
+section: net
+priority: optional
+maintainer: ShadowDNS Maintainers <shadowdns@example.com>
+description: |
+  Authoritative DNS server with first-class zone aliasing for
+  memory-efficient backup-domain serving.
+vendor: ShadowDNS
+homepage: https://github.com/chenwei791129/ShadowDNS
+license: TBD
+
+contents:
+  # Binary
+  - src: ./bin/shadowdns
+    dst: /usr/bin/shadowdns
+    file_info:
+      mode: 0755
+
+  # systemd service unit
+  - src: ./packaging/shadowdns.service
+    dst: /lib/systemd/system/shadowdns.service
+
+  # Example configuration files
+  - src: ./packaging/named.conf.example
+    dst: /etc/shadowdns/named.conf.example
+
+  - src: ./packaging/aliases.yaml.example
+    dst: /etc/shadowdns/aliases.yaml.example
+
+scripts:
+  postinstall: ./packaging/postinstall.sh
