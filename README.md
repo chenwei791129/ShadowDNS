@@ -1,4 +1,10 @@
+<p align="center">
+  <img src="assets/logo.png" alt="ShadowDNS Logo" width="480">
+</p>
+
 # ShadowDNS
+
+[![CI](https://github.com/chenwei791129/ShadowDNS/actions/workflows/ci.yml/badge.svg)](https://github.com/chenwei791129/ShadowDNS/actions/workflows/ci.yml)
 
 An authoritative DNS server with first-class zone aliasing for memory-efficient backup-domain serving.
 
