@@ -97,6 +97,23 @@ tests:
   - internal/transfer/notify_test.go
 -->
 
+
+<!-- @trace
+source: notify-toggle
+updated: 2026-04-15
+code:
+  - internal/config/options.go
+  - CHANGELOG.md
+  - README.md
+  - cmd/shadowdns/main.go
+  - packaging/named.conf.example
+  - .release-please-manifest.json
+tests:
+  - internal/config/options_test.go
+  - cmd/shadowdns/main_test.go
+  - test/integration/notify_test.go
+-->
+
 ### Requirement: Parse view and zone declarations from master.zones
 
 The config-loader SHALL parse `view "<name>" { match-clients { ... }; zone "<domain>" { type master; file "<path>"; }; ... };` blocks from any file included by `named.conf` (e.g., `master.zones`). For each view, it SHALL preserve the declaration order of `match-clients` rules and of the zones within that view.
@@ -509,7 +526,6 @@ The config-loader SHALL reject directives that would change DNS behavior in ways
 
 ## Requirements
 
-
 <!-- @trace
 source: shadowdns-foundation
 updated: 2026-04-14
@@ -589,7 +605,9 @@ tests:
 
 ### Requirement: Parse named.conf options block
 
-The config-loader SHALL parse the `options { ... }` block of `named.conf` and extract at minimum the following fields: `directory`, `geoip-directory`, `listen-on`, `listen-on-v6`, `allow-transfer`, `recursion`, `minimal-responses`, `version`, `hostname`, `transfer-format`. Unknown options SHALL be ignored with a warning log entry rather than causing a parse failure.
+The config-loader SHALL parse the `options { ... }` block of `named.conf` and extract at minimum the following fields: `directory`, `geoip-directory`, `listen-on`, `listen-on-v6`, `allow-transfer`, `recursion`, `minimal-responses`, `version`, `hostname`, `transfer-format`, `notify`. Unknown options SHALL be ignored with a warning log entry rather than causing a parse failure.
+
+The `notify` directive SHALL accept exactly two values: `yes` or `no` (case-insensitive). Any other value SHALL produce a parse error that includes the file path and line number. When the `notify` directive is absent from the options block, the parsed options record SHALL indicate "not set" in a form distinguishable from both `yes` and `no` (so that downstream precedence logic can apply a default).
 
 #### Scenario: Standard options block loads successfully
 
@@ -605,6 +623,26 @@ The config-loader SHALL parse the `options { ... }` block of `named.conf` and ex
 
 - **WHEN** `named.conf` has an unmatched `{` or missing `;` inside the options block
 - **THEN** the loader returns an error that includes the file path and the line number of the first unparseable token
+
+#### Scenario: notify yes parses to enabled state
+
+- **WHEN** `named.conf` contains `options { notify yes; };`
+- **THEN** the loader produces an options record whose `notify` field indicates "set to true"
+
+#### Scenario: notify no parses to disabled state
+
+- **WHEN** `named.conf` contains `options { notify no; };`
+- **THEN** the loader produces an options record whose `notify` field indicates "set to false"
+
+#### Scenario: notify absent parses to not-set state
+
+- **WHEN** `named.conf` options block omits the `notify` directive
+- **THEN** the loader produces an options record whose `notify` field indicates "not set" (distinguishable from both true and false)
+
+#### Scenario: invalid notify value fails with actionable error
+
+- **WHEN** `named.conf` contains `options { notify bogus; };`
+- **THEN** the loader returns an error that includes the file path, the line number, and the invalid value
 
 ---
 ### Requirement: Parse view and zone declarations from master.zones
