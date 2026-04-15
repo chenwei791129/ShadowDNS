@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.2.1...v0.3.0) (2026-04-15)
+
+
+### Features
+
+* **view:** support GeoIP2/GeoLite2 mmdb fallback chain ([caa9aa0](https://github.com/chenwei791129/ShadowDNS/commit/caa9aa08131896871e21b451fe5f15e44d5ad69f))
+* **zone:** support BIND-compatible quoted $INCLUDE syntax ([397182e](https://github.com/chenwei791129/ShadowDNS/commit/397182e98c1a073a260dd7cab393b95ce4c11329))
+
+
+### Bug Fixes
+
+* **smoke:** copy entire master/ tree recursively ([f17e14e](https://github.com/chenwei791129/ShadowDNS/commit/f17e14eac0a189a057a33a60811ef5ed185a5f86))
+
 ## [0.2.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.2.0...v0.2.1) (2026-04-14)
 
 
