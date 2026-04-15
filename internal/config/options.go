@@ -20,6 +20,11 @@ type OptionsBlock struct {
 	Hostname         string
 	TransferFormat   string // e.g. "many-answers"
 	PidFile          string // path to PID file; empty means no PID file
+	// Notify is a tri-state reflecting the `notify yes|no;` directive:
+	// nil means the directive was absent, &true means `notify yes;`,
+	// &false means `notify no;`. The pointer lets downstream precedence
+	// logic distinguish "config did not set this" from "config set it to false".
+	Notify *bool
 }
 
 // ParseOptions parses an `options { ... };` block from the input, starting at the
@@ -165,6 +170,20 @@ func ParseOptions(input []byte, startOffset int, path string, logger *slog.Logge
 			}
 			block.PidFile = val
 
+		case "notify":
+			val, e := lx.readScalarValue(path)
+			if e != nil {
+				return block, startOffset, e
+			}
+			switch strings.ToLower(val) {
+			case "yes":
+				block.Notify = boolPtr(true)
+			case "no":
+				block.Notify = boolPtr(false)
+			default:
+				return block, startOffset, fmt.Errorf("%s:%d: invalid value %q for 'notify', expected yes/no", path, keyLine, val)
+			}
+
 		default:
 			// Unknown option: emit warning and skip until next ';' or balanced '{ };'.
 			logger.Warn("unknown option in options block",
@@ -178,6 +197,10 @@ func ParseOptions(input []byte, startOffset int, path string, logger *slog.Logge
 		}
 	}
 }
+
+// boolPtr returns a pointer to b. Used by parsers that need to distinguish
+// "set to false" from "not set" via a *bool field.
+func boolPtr(b bool) *bool { return &b }
 
 // ---------------------------------------------------------------------------
 // Lexer

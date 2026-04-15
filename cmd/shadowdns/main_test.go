@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -811,6 +812,202 @@ func TestRunReload_ProcessNotRunning(t *testing.T) {
 	err := runReload(opts)
 	if err == nil {
 		t.Fatal("expected error when PID does not correspond to a running process")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// run() NOTIFY guard tests
+// ---------------------------------------------------------------------------
+
+// patchNamedConfNotify injects a `notify yes|no;` directive into the options
+// block of the named.conf in dir. `value` MUST be "yes" or "no". Called from
+// tests that exercise the options.notify path.
+func patchNamedConfNotify(t *testing.T, dir, value string) {
+	t.Helper()
+	namedConf := filepath.Join(dir, "named.conf")
+	data, err := os.ReadFile(namedConf)
+	if err != nil {
+		t.Fatalf("read named.conf: %v", err)
+	}
+	patched := strings.Replace(
+		string(data),
+		"recursion no;",
+		"notify "+value+";\n    recursion no;",
+		1,
+	)
+	if err := os.WriteFile(namedConf, []byte(patched), 0o644); err != nil {
+		t.Fatalf("write patched named.conf: %v", err)
+	}
+}
+
+// runRunAndCaptureLogs starts run() in a goroutine with a captured logger,
+// polls for the "notify state resolved" log line to appear, then cancels
+// context and waits for run() to return. Returns the captured log output.
+// Polling (rather than a fixed sleep) keeps the test fast locally and
+// resilient on slow CI runners.
+func runRunAndCaptureLogs(t *testing.T, dir string, explicitNoNotify bool) string {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	buf := &threadSafeBuffer{}
+	logger := slog.New(slog.NewTextHandler(buf, nil))
+	opts := runOptions{
+		NamedConfPath:    filepath.Join(dir, "named.conf"),
+		ListenAddr:       "127.0.0.1:0",
+		Logger:           logger,
+		NoNotifyExplicit: explicitNoNotify,
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, opts) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(buf.String(), "notify state resolved") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not return within 2s after context cancellation")
+	}
+	return buf.String()
+}
+
+// threadSafeBuffer wraps bytes.Buffer with a mutex so a logger writing from
+// run()'s goroutine and the test's polling reader can share it safely.
+type threadSafeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *threadSafeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *threadSafeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestRun_NotifyGuard_FlagExplicit verifies that when -no-notify is set,
+// run() resolves notify=false with source=flag regardless of what config says.
+// Config is set to notify yes; explicit flag MUST win.
+func TestRun_NotifyGuard_FlagExplicit(t *testing.T) {
+	dir := setupReloadTestDir(t)
+	patchNamedConfNotify(t, dir, "yes")
+
+	output := runRunAndCaptureLogs(t, dir, true)
+
+	if !strings.Contains(output, "notify state resolved") {
+		t.Fatalf("expected notify-state log, got: %s", output)
+	}
+	if !strings.Contains(output, "enabled=false") {
+		t.Errorf("expected enabled=false (flag overrides config yes), got: %s", output)
+	}
+	if !strings.Contains(output, "source=flag") {
+		t.Errorf("expected source=flag, got: %s", output)
+	}
+}
+
+// TestRun_NotifyGuard_ConfigYes verifies that `options { notify yes; };` with
+// no CLI flag resolves to enabled=true source=config.
+func TestRun_NotifyGuard_ConfigYes(t *testing.T) {
+	dir := setupReloadTestDir(t)
+	patchNamedConfNotify(t, dir, "yes")
+
+	output := runRunAndCaptureLogs(t, dir, false)
+
+	if !strings.Contains(output, "enabled=true") {
+		t.Errorf("expected enabled=true for `notify yes;`, got: %s", output)
+	}
+	if !strings.Contains(output, "source=config") {
+		t.Errorf("expected source=config, got: %s", output)
+	}
+}
+
+// TestRun_NotifyGuard_ConfigNo verifies that `options { notify no; };` with
+// no CLI flag resolves to enabled=false source=config.
+func TestRun_NotifyGuard_ConfigNo(t *testing.T) {
+	dir := setupReloadTestDir(t)
+	patchNamedConfNotify(t, dir, "no")
+
+	output := runRunAndCaptureLogs(t, dir, false)
+
+	if !strings.Contains(output, "enabled=false") {
+		t.Errorf("expected enabled=false for `notify no;`, got: %s", output)
+	}
+	if !strings.Contains(output, "source=config") {
+		t.Errorf("expected source=config, got: %s", output)
+	}
+}
+
+// TestRun_NotifyGuard_Default verifies that with neither -no-notify nor a
+// notify directive in config, run() resolves to enabled=true source=default
+// (preserving pre-change behavior).
+func TestRun_NotifyGuard_Default(t *testing.T) {
+	dir := setupReloadTestDir(t) // setupReloadTestDir does not set notify.
+
+	output := runRunAndCaptureLogs(t, dir, false)
+
+	if !strings.Contains(output, "enabled=true") {
+		t.Errorf("expected enabled=true by default, got: %s", output)
+	}
+	if !strings.Contains(output, "source=default") {
+		t.Errorf("expected source=default, got: %s", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolveNotifyEnabled precedence tests
+// ---------------------------------------------------------------------------
+
+// TestResolveNotifyEnabled_AllCombinations covers every (flag × config) input
+// combination defined by the precedence rule: explicit flag > config > default.
+//
+// The 6 rows are:
+//
+//	flag explicit=true,  config=nil    → false (flag wins)
+//	flag explicit=true,  config=&true  → false (flag overrides config yes)
+//	flag explicit=true,  config=&false → false (flag and config agree)
+//	flag explicit=false, config=nil    → true  (default)
+//	flag explicit=false, config=&true  → true  (config yes)
+//	flag explicit=false, config=&false → false (config no)
+func TestResolveNotifyEnabled_AllCombinations(t *testing.T) {
+	truePtr := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name       string
+		explicit   bool
+		config     *bool
+		wantEnable bool
+		wantSource string
+	}{
+		{"flag-explicit / config-nil", true, nil, false, "flag"},
+		{"flag-explicit / config-true", true, truePtr(true), false, "flag"},
+		{"flag-explicit / config-false", true, truePtr(false), false, "flag"},
+		{"flag-absent / config-nil", false, nil, true, "default"},
+		{"flag-absent / config-true", false, truePtr(true), true, "config"},
+		{"flag-absent / config-false", false, truePtr(false), false, "config"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			enabled, source := resolveNotifyEnabled(tc.explicit, tc.config)
+			if enabled != tc.wantEnable {
+				t.Errorf("enabled: got %v, want %v", enabled, tc.wantEnable)
+			}
+			if source != tc.wantSource {
+				t.Errorf("source: got %q, want %q", source, tc.wantSource)
+			}
+		})
 	}
 }
 

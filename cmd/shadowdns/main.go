@@ -62,7 +62,7 @@ func reload(
 	}
 
 	srv.SwapState(state)
-	dispatchNotifies(ctx, state.RootZones, logger)
+	maybeDispatchNotifies(ctx, opts, cfg.Options.Notify, state.RootZones, logger)
 
 	// Detect listen-address drift between what is currently bound and what
 	// the newly reloaded config would resolve to. We deliberately do NOT
@@ -143,7 +143,48 @@ type runOptions struct {
 	ListenAddr    string
 	MetricsAddr   string
 	DryRun        bool
-	Logger        *slog.Logger
+	// NoNotifyExplicit records whether -no-notify was explicitly passed on the
+	// command line (detected via flag.Visit). This is process-lifetime sticky:
+	// a SIGHUP reload never re-reads the CLI, so this value remains constant
+	// after startup and guarantees "flag > config" precedence even after an
+	// operator edits named.conf mid-run.
+	NoNotifyExplicit bool
+	Logger           *slog.Logger
+}
+
+// resolveNotifyEnabled implements the precedence rule for NOTIFY dispatch:
+// an explicit -no-notify CLI flag disables NOTIFY regardless of config;
+// otherwise the options.notify directive from named.conf applies; otherwise
+// NOTIFY defaults to enabled (preserving pre-change behavior).
+//
+// Returns the resolved enable state and the source that decided it:
+// "flag" | "config" | "default". The source is emitted in the startup/reload
+// INFO log so operators can see which input took effect.
+func resolveNotifyEnabled(noNotifyExplicit bool, configNotify *bool) (enabled bool, source string) {
+	if noNotifyExplicit {
+		return false, "flag"
+	}
+	if configNotify != nil {
+		return *configNotify, "config"
+	}
+	return true, "default"
+}
+
+// maybeDispatchNotifies resolves the effective notify state, logs it, and
+// dispatches NOTIFY only when enabled. Shared by the startup and reload
+// paths so the log format and guard stay in lock-step.
+func maybeDispatchNotifies(
+	ctx context.Context,
+	opts runOptions,
+	cfgNotify *bool,
+	rootZones map[string]map[string]*zone.Zone,
+	logger *slog.Logger,
+) {
+	enabled, source := resolveNotifyEnabled(opts.NoNotifyExplicit, cfgNotify)
+	logger.Info("notify state resolved", "enabled", enabled, "source", source)
+	if enabled {
+		dispatchNotifies(ctx, rootZones, logger)
+	}
 }
 
 func main() {
@@ -157,6 +198,21 @@ func main() {
 	flag.StringVar(&opts.MetricsAddr, "metrics-addr", ":9153", "Prometheus /metrics HTTP listen address (empty string disables)")
 	flag.BoolVar(&opts.DryRun, "dry-run", false, "load configuration and zones, log a summary, then exit without starting listeners")
 
+	// -no-notify is a "set-only" switch: presence disables NOTIFY for the
+	// entire process lifetime. It takes precedence over named.conf's
+	// options.notify directive and persists across SIGHUP reloads. Omit this
+	// flag to let named.conf (or the default "enabled") decide.
+	//
+	// The noNotifyFlag variable is required by flag.BoolVar's signature but
+	// its runtime value is intentionally never read: distinguishing "flag
+	// not passed" from "flag passed as -no-notify=false" is impossible from
+	// the value alone, so explicit-pass detection happens exclusively via
+	// flag.Visit below. Do NOT replace the flag.Visit block with a direct
+	// read of noNotifyFlag — that would silently defeat the flag > config
+	// precedence rule.
+	var noNotifyFlag bool
+	flag.BoolVar(&noNotifyFlag, "no-notify", false, "disable NOTIFY dispatch for the entire process lifetime (overrides named.conf options.notify; sticky across SIGHUP)")
+
 	var reloadFlag bool
 	flag.BoolVar(&reloadFlag, "reload", false, "send SIGHUP to a running server (requires -named-conf)")
 
@@ -164,6 +220,15 @@ func main() {
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 
 	flag.Parse()
+
+	// Detect explicit -no-notify via flag.Visit: it callbacks only for flags
+	// the user actually passed, so we can distinguish "not set" from
+	// "set to false". This is the linchpin of the flag > config precedence.
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "no-notify" {
+			opts.NoNotifyExplicit = true
+		}
+	})
 
 	if showVersion {
 		fmt.Println(version)
@@ -311,7 +376,9 @@ func run(ctx context.Context, opts runOptions) error {
 
 	// Fire NOTIFY messages for every loaded root zone in background goroutines.
 	// These are best-effort; failures are logged but do not block startup.
-	dispatchNotifies(ctx, state.RootZones, logger)
+	// NOTIFY may be suppressed by -no-notify or options.notify=no; when
+	// suppressed, no goroutines, no retries, no network I/O occur.
+	maybeDispatchNotifies(ctx, opts, cfg.Options.Notify, state.RootZones, logger)
 
 	// Write PID file if configured. Failure is non-fatal — log a warning and
 	// continue so the server still starts even if the directory is missing.

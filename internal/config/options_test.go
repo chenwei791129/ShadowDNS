@@ -276,6 +276,106 @@ func TestParseOptions_UnmatchedBrace(t *testing.T) {
 	}
 }
 
+// TestParseOptions_NotifyYes verifies that `notify yes;` parses to a pointer
+// whose target is true.
+func TestParseOptions_NotifyYes(t *testing.T) {
+	input := []byte(`options { notify yes; };`)
+	block, _, err := ParseOptions(input, 0, "named.conf", slog.Default())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if block.Notify == nil {
+		t.Fatal("Notify should be non-nil for `notify yes;`")
+	}
+	if *block.Notify != true {
+		t.Errorf("Notify: got %v, want true", *block.Notify)
+	}
+}
+
+// TestParseOptions_NotifyNo verifies that `notify no;` parses to a pointer
+// whose target is false.
+func TestParseOptions_NotifyNo(t *testing.T) {
+	input := []byte(`options { notify no; };`)
+	block, _, err := ParseOptions(input, 0, "named.conf", slog.Default())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if block.Notify == nil {
+		t.Fatal("Notify should be non-nil for `notify no;`")
+	}
+	if *block.Notify != false {
+		t.Errorf("Notify: got %v, want false", *block.Notify)
+	}
+}
+
+// TestParseOptions_NotifyAbsent verifies that omitting the `notify` directive
+// leaves Notify as nil, distinguishing "not set" from both true and false.
+func TestParseOptions_NotifyAbsent(t *testing.T) {
+	input := []byte(`options {
+        directory "/etc/namedb";
+        recursion no;
+};`)
+	block, _, err := ParseOptions(input, 0, "named.conf", slog.Default())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if block.Notify != nil {
+		t.Errorf("Notify: got %v, want nil (directive absent)", *block.Notify)
+	}
+}
+
+// TestParseOptions_NotifyCaseInsensitive verifies that YES and NO (any case)
+// are accepted, matching BIND's case-insensitive behavior.
+func TestParseOptions_NotifyCaseInsensitive(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"uppercase YES", `options { notify YES; };`, true},
+		{"mixed-case Yes", `options { notify Yes; };`, true},
+		{"uppercase NO", `options { notify NO; };`, false},
+		{"mixed-case No", `options { notify No; };`, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			block, _, err := ParseOptions([]byte(tc.input), 0, "named.conf", slog.Default())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if block.Notify == nil {
+				t.Fatalf("Notify should be non-nil for %q", tc.input)
+			}
+			if *block.Notify != tc.want {
+				t.Errorf("Notify: got %v, want %v", *block.Notify, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseOptions_NotifyInvalidValue verifies that a value other than yes/no
+// produces a parse error mentioning the file path, line number, and bad value.
+func TestParseOptions_NotifyInvalidValue(t *testing.T) {
+	input := []byte(`options {
+        directory "/etc/namedb";
+        notify bogus;
+};`)
+	_, _, err := ParseOptions(input, 0, "/etc/namedb/named.conf", slog.Default())
+	if err == nil {
+		t.Fatal("expected error for invalid notify value, got nil")
+	}
+	if !strings.Contains(err.Error(), "/etc/namedb/named.conf") {
+		t.Errorf("error should mention file path, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "bogus") {
+		t.Errorf("error should mention the invalid value %q, got: %v", "bogus", err)
+	}
+	// Line number: the `notify bogus;` line is line 3 of the input.
+	if !strings.ContainsAny(err.Error(), "0123456789") {
+		t.Errorf("error should mention a line number, got: %v", err)
+	}
+}
+
 // Test 10: endOffset points past the closing }; of the options block.
 func TestParseOptions_EndOffsetCorrect(t *testing.T) {
 	suffix := []byte("\n// after options")
