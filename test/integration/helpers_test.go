@@ -254,31 +254,16 @@ func copyFixtures(t *testing.T, dstDir string) {
 		dstPath := filepath.Join(dstDir, e.Name())
 
 		if e.IsDir() {
-			// Only copy the master/ subdirectory; skip geoip/ (built in-test).
+			// Skip geoip/ — generated in-test from synthetic mmdb data.
 			if e.Name() == "geoip" {
 				continue
 			}
-			if err := os.MkdirAll(dstPath, 0o755); err != nil {
-				t.Fatalf("mkdir %s: %v", dstPath, err)
+			if err := os.CopyFS(dstPath, os.DirFS(srcPath)); err != nil {
+				t.Fatalf("copyFS %s: %v", srcPath, err)
 			}
-			copyDir(t, srcPath, dstPath)
 		} else {
 			copyFile(t, srcPath, dstPath)
 		}
-	}
-}
-
-func copyDir(t *testing.T, src, dst string) {
-	t.Helper()
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		t.Fatalf("readdir %s: %v", src, err)
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		copyFile(t, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()))
 	}
 }
 
