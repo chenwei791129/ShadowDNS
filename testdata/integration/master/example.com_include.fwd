@@ -1,0 +1,21 @@
+; Zone fixture exercising the BIND $INCLUDE compatibility layer.
+; Origin is include-test.example. (RFC 6761 reserved) to avoid clashing with
+; the existing example.com fixtures. Both quoted and bare $include forms are
+; present so the parser must accept both syntaxes.
+$TTL 300
+@ IN SOA ns1.include-test.example. hostmaster.include-test.example. (
+    2026041501  ; serial
+    3600        ; refresh
+    600         ; retry
+    604800      ; expire
+    300         ; minimum
+)
+
+@         IN NS    ns1.include-test.example.
+ns1       IN A     192.0.2.1
+
+; BIND-style quoted $include — the syntax this change is adding support for.
+$include "cnames/example.com_cname"
+
+; Original bare $include — must continue to work without regression.
+$include cnames/example.com_cname

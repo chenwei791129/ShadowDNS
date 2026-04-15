@@ -126,6 +126,89 @@ func TestBackup_MX_Override(t *testing.T) {
 	}
 }
 
+// TestBackup_QuotedInclude_TXT verifies that a TXT record pulled into a
+// backup-classified zone via the BIND-style quoted `$include "..."`
+// directive is retained alongside the inline TXT — both should appear
+// in answer to a TXT query for the backup zone apex, while the root
+// SPF TXT remains suppressed by the override.
+func TestBackup_QuotedInclude_TXT(t *testing.T) {
+	srv, cancel := newTestServer(t)
+	defer cancel()
+	addr := udpAddr(srv)
+
+	resp := queryUDP(t, addr, "backup.example.", dns.TypeTXT)
+
+	assertNoError(t, resp)
+	assertAuthoritative(t, resp)
+	if len(resp.Answer) == 0 {
+		t.Fatal("expected TXT records in answer")
+	}
+
+	inlineFound := false
+	includeFound := false
+	spfFound := false
+	for _, rr := range resp.Answer {
+		txt, ok := rr.(*dns.TXT)
+		if !ok {
+			continue
+		}
+		for _, s := range txt.Txt {
+			switch {
+			case strings.Contains(s, "BACKUP_VIEW_OTHER_VERIFY_TOKEN"):
+				inlineFound = true
+			case strings.Contains(s, "include-loaded-marker=via-quoted-include"):
+				includeFound = true
+			case strings.HasPrefix(s, "v=spf1"):
+				spfFound = true
+			}
+		}
+	}
+	if !inlineFound {
+		t.Errorf("expected inline TXT (BACKUP_VIEW_OTHER_VERIFY_TOKEN); got: %v", resp.Answer)
+	}
+	if !includeFound {
+		t.Errorf("expected $include-loaded TXT (include-loaded-marker); got: %v", resp.Answer)
+	}
+	if spfFound {
+		t.Errorf("root SPF TXT must remain suppressed by backup override; got: %v", resp.Answer)
+	}
+}
+
+// TestBackup_QuotedInclude_SRV verifies that the BIND-style quoted
+// `$include "..."` directive works inside a backup-classified zone file:
+// records pulled in from the fragment are subject to the same backup
+// filtering as the main file, so the SRV record (an overridable type)
+// from backup.example_overrides is queryable under the backup namespace.
+//
+// This is the backup-zone counterpart to TestQuery_QuotedInclude_LoadsCNAME.
+func TestBackup_QuotedInclude_SRV(t *testing.T) {
+	srv, cancel := newTestServer(t)
+	defer cancel()
+	addr := udpAddr(srv)
+
+	resp := queryUDP(t, addr, "_sip._tcp.backup.example.", dns.TypeSRV)
+
+	assertNoError(t, resp)
+	assertAuthoritative(t, resp)
+	if len(resp.Answer) == 0 {
+		t.Fatal("expected SRV records in answer")
+	}
+
+	found := false
+	for _, rr := range resp.Answer {
+		if s, ok := rr.(*dns.SRV); ok {
+			if s.Priority == 10 && s.Weight == 5 && s.Port == 5060 &&
+				strings.EqualFold(s.Target, "sip-backup.example.net.") {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected SRV 10 5 5060 sip-backup.example.net. (loaded via $include); got: %v", resp.Answer)
+	}
+}
+
 // TestBackup_SOA verifies that a SOA query for backup.example returns a
 // synthesised SOA:
 //   - Owner: backup.example.

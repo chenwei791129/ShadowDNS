@@ -1,0 +1,6 @@
+; CNAME include fragment used by example.com_include.fwd to exercise the BIND
+; $INCLUDE compatibility layer. Owners are relative to the including zone's
+; origin (include-test.example.); targets use RFC 6761 reserved domains.
+alias  IN  CNAME  www.example.com.
+mail   IN  CNAME  mx.example.org.
+help   IN  CNAME  support.example.net.

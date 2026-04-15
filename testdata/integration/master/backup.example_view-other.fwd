@@ -9,3 +9,7 @@ $TTL 300
 
 @   IN TXT   "google-site-verification=BACKUP_VIEW_OTHER_VERIFY_TOKEN"
 @   IN MX    20 mx-backup.example.net.
+
+; Pull in additional override records via a BIND-style quoted $include —
+; exercises the include compatibility layer on a backup-classified zone.
+$include "backup.example_overrides"

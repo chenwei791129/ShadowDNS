@@ -31,4 +31,9 @@ view "view-other" {
         type master;
         file "master/backup.example_view-other.fwd";
     };
+
+    zone "include-test.example" {
+        type master;
+        file "master/example.com_include.fwd";
+    };
 };

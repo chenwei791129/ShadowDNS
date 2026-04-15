@@ -190,6 +190,30 @@ func TestQuery_NS_TCP(t *testing.T) {
 	assertAnswerCount(t, resp, nsCount)
 }
 
+// TestQuery_QuotedInclude_LoadsCNAME verifies the BIND-compatible
+// `$include "path"` directive end-to-end: a zone file using the quoted
+// form pulls in a CNAME fragment, and the included record is queryable
+// over DNS through the running server.
+//
+// Fixture wiring:
+//   - testdata/integration/master/example.com_include.fwd has both quoted
+//     and bare $include directives pointing at the same fragment
+//   - testdata/integration/master/cnames/example.com_cname provides
+//     three CNAMEs (alias, mail, help) under origin include-test.example.
+//   - testdata/integration/master.zones registers the zone in view-other
+//     so loopback queries reach it
+func TestQuery_QuotedInclude_LoadsCNAME(t *testing.T) {
+	srv, cancel := newTestServer(t)
+	defer cancel()
+	addr := udpAddr(srv)
+
+	resp := queryUDP(t, addr, "alias.include-test.example.", dns.TypeCNAME)
+
+	assertNoError(t, resp)
+	assertAuthoritative(t, resp)
+	assertHasCNAME(t, resp, "alias.include-test.example.", "www.example.com.")
+}
+
 // TestQuery_SOA verifies that an explicit SOA query returns the SOA in the
 // answer section with AA=1.
 func TestQuery_SOA(t *testing.T) {

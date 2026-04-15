@@ -1,0 +1,6 @@
+; Override fragment included by backup.example_view-other.fwd via the
+; BIND-style quoted $include directive. TXT and SRV are both among the
+; overridable types (TXT/MX/SRV) that backup zones may declare
+; independently of the root, and both must survive the include path.
+@         IN TXT "include-loaded-marker=via-quoted-include"
+_sip._tcp IN SRV 10 5 5060 sip-backup.example.net.
