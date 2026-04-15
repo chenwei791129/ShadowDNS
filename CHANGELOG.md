@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.4.0...v0.5.0) (2026-04-15)
+
+
+### Features
+
+* **notify:** add -no-notify flag and options.notify directive ([41f30c8](https://github.com/chenwei791129/ShadowDNS/commit/41f30c8bcf283da713d74c78605f10090c6d0eb9))
+
 ## [0.4.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.3.0...v0.4.0) (2026-04-15)
 
 
