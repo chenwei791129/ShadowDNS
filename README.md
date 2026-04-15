@@ -61,7 +61,7 @@ Response sent to client
 
 ### Supported
 
-- `named.conf` options block (`directory`, `geoip-directory`, `listen-on`, `allow-transfer`, `recursion`, `minimal-responses`, `version`, `hostname`, `transfer-format`)
+- `named.conf` options block (`directory`, `geoip-directory`, `listen-on`, `allow-transfer`, `recursion`, `minimal-responses`, `version`, `hostname`, `transfer-format`, `notify`)
 - `listen-on { any; }` and explicit IPv4 address lists from `named.conf` are honored via per-address binding. Individual bind failures (e.g. a `127.0.0.x` alias occupied by `systemd-resolved`) log a warning and are skipped; the server starts as long as at least one listener binds. See [docs/migration.md](docs/migration.md) for the precedence rules between `-listen` and `listen-on`
 - `view "<name>" { match-clients { ... }; ... }` with first-match semantics
 - `match-clients` rule types: `geoip country <ISO-2>`, `geoip asnum "AS<N> <description>"`, bare IPv4 address, IPv4 CIDR prefix, `any`
@@ -69,7 +69,7 @@ Response sent to client
 - `$INCLUDE` / `$include` directive with both bare path (`$include /path/to/file`) and BIND-style double-quoted path (`$include "/path/to/file"`); the directive name is case-insensitive. Limitations: the path itself MUST NOT contain whitespace (a fundamental miekg/dns scanner limit, not lifted by quoting), and the quoted form is recognised only on the top-level zone file — fragments pulled in via `$INCLUDE` are read directly by the underlying parser and must use the bare form internally
 - `type master;` zones
 - AXFR (full zone transfer over TCP) for both root zones and alias zones
-- NOTIFY outbound to slave nameservers on startup and after reload
+- NOTIFY outbound to slave nameservers on startup and after reload (can be disabled via `-no-notify` CLI flag or `options { notify no; };`)
 - `allow-transfer` ACL enforcement
 - Split-horizon responses (different answers per view for the same query)
 - SOA inheritance for backup zones (serial tracks the root zone; slaves detect changes correctly)
@@ -169,6 +169,7 @@ ShadowDNS listens on `:53` (UDP and TCP) by default. Use `-listen` to override.
 | `-metrics-addr`   | `:9153` | No       | Prometheus `/metrics` HTTP listen address. Empty string disables. |
 | `-dry-run`        | `false` | No       | Load configuration and zones, log a summary, then exit without starting listeners. |
 | `-reload`         | `false` | No       | Send SIGHUP to a running server. Requires `-named-conf`. |
+| `-no-notify`      | absent  | No       | Disable NOTIFY dispatch for the entire process lifetime. When omitted, NOTIFY follows `options.notify` in `named.conf` (default: enabled). When passed, overrides the config directive; sticky across SIGHUP reloads. |
 | `-version`        | `false` | No       | Print version and exit.                                  |
 
 ### aliases.yaml schema
@@ -269,6 +270,21 @@ A successful exit (code 0) confirms that every zone file parses without error an
 ### 4. NOTIFY outbound targets
 
 ShadowDNS sends NOTIFY to the NS records of each zone (BIND default behaviour). If your deployment requires `also-notify` targets that are not in NS records, add those hosts to the NS records or wait for a future version that supports `also-notify`.
+
+**Disabling NOTIFY.** Single-server deployments without secondaries, or test environments where startup noise is unwanted, can disable NOTIFY via either:
+
+- CLI flag: `shadowdns -no-notify ...` — applies for the process lifetime and persists across SIGHUP reloads even if `named.conf` later enables NOTIFY
+- Config directive: `options { notify no; };` — applies at load time; changes take effect on SIGHUP reload
+
+When NOTIFY is disabled, ShadowDNS builds no NOTIFY messages, spawns no goroutines, and performs no retries. A single INFO log line records the resolved state and its source at startup and after each reload: `notify state resolved enabled=<bool> source=<flag|config|default>`.
+
+**Precedence.** When both the flag and the config directive are set, the rules are:
+
+1. Explicit `-no-notify` flag → NOTIFY disabled for the process lifetime
+2. Otherwise, `options.notify` from `named.conf` wins (`yes` or `no`)
+3. Otherwise, NOTIFY defaults to enabled (preserving pre-existing behaviour)
+
+The flag is intentionally "set-only" — `-no-notify` can only disable NOTIFY. To enable NOTIFY when previously disabled, restart the process without the flag. This avoids the confusion of a double-negative "-no-notify=false" appearing to force-enable NOTIFY.
 
 ## License
 

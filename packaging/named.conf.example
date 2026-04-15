@@ -48,6 +48,14 @@ options {
         192.0.2.10;   // secondary ns1
         192.0.2.11;   // secondary ns2
     };
+
+    // Send NOTIFY messages to secondaries on startup and after reload.
+    // Set to "no" to disable NOTIFY dispatch; set to "yes" (the default)
+    // to enable it. The `-no-notify` CLI flag overrides this directive
+    // for the entire process lifetime (sticky across SIGHUP).
+    //
+    // Precedence: explicit `-no-notify` flag > this `notify` directive > default (yes)
+    notify yes;
 };
 
 // ---------------------------------------------------------------------------
