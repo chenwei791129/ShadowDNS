@@ -37,12 +37,12 @@
    go build -o shadowdns ./cmd/shadowdns
    ```
 
-4. 執行啟動煙霧測試（待 `--dry-run` flag 完成後使用），確認設定解析無錯誤：
+4. 執行啟動煙霧測試（待 `-dry-run` flag 完成後使用），確認設定解析無錯誤：
 
    ```bash
    ./shadowdns \
-       --named-conf /path/to/named.conf \
-       --aliases    /path/to/aliases.yaml
+       -named-conf /path/to/named.conf \
+       -aliases    /path/to/aliases.yaml
    ```
 
 5. 觀察啟動 log，確認：
@@ -91,9 +91,9 @@
 
    ```bash
    ./shadowdns \
-       --named-conf /etc/namedb/named.conf \
-       --aliases    /etc/namedb/aliases.yaml \
-       --listen     192.0.2.20:53
+       -named-conf /etc/namedb/named.conf \
+       -aliases    /etc/namedb/aliases.yaml \
+       -listen     192.0.2.20:53
    ```
 
 2. 確認 ShadowDNS 啟動成功，log 無錯誤。
@@ -366,6 +366,69 @@ ShadowDNS 在啟動時會拒絕部分 BIND 指令（如 `type slave`、`type for
 
 1. 確認 `aliases.yaml` 有完整列出所有 backup domain，沒有 backup domain 被誤當成 root 全量載入。
 2. 用 `ps aux` 或 `cat /proc/<pid>/status | grep VmRSS` 觀察 RSS（常駐記憶體），避免與 VSZ（虛擬記憶體）混淆。
+
+---
+
+## 監聽位址行為（Listen address behavior）
+
+ShadowDNS 讀取 `named.conf` 的 `listen-on` 指令，決定要綁在哪些 IP 上。行為與 BIND9 相容：**每個位址各開一個 socket**，單一位址 bind 失敗（例如 systemd-resolved 已佔住 `127.0.0.53:53`）時只會 log WARN 並繼續，不會讓整個 server 起不來。
+
+### 位址來源優先順序
+
+| 情境 | `-listen` | `listen-on` | 實際綁定 |
+|------|------------|-------------|----------|
+| 預設 | `:53` | 未指定 | 所有 IPv4 介面位址（隱含 `any`） |
+| 預設 + 指定 listen-on | `:53` | `{ 10.0.0.1; 10.0.0.2; }` | `10.0.0.1:53`、`10.0.0.2:53` |
+| Override | `127.0.0.1:5353` | 任意 | `127.0.0.1:5353`（忽略 listen-on） |
+| Port hint | `:5353` | `{ 10.0.0.1; }` | `10.0.0.1:5353`（port 從 `-listen` 繼承） |
+
+**關鍵規則**：`-listen` **有 host component 才是 override**（例如 `127.0.0.1:5353`）；`:PORT` 形式只提供 port，位址仍從 `listen-on` 取得。這讓 `-listen :0`（測試用 ephemeral port）+ `listen-on { 127.0.0.1; }` 能正確配合。
+
+### 不支援的 listen-on 語法
+
+下列 BIND 語法目前會被 log WARN 並跳過，不會影響解析：
+
+- Exclusion syntax：`listen-on { !10.0.0.1; any; };`（`!addr` 排除）
+- ACL 參照：`listen-on { trusted-net; };`
+- Port override：`listen-on port 5353 { ... };`（請改用 `-listen :5353`）
+- `interface` keyword
+
+### 與 systemd-resolved 的互動
+
+在 Ubuntu 24.04 / Debian 12 等預設啟用 systemd-resolved 的發行版上，`127.0.0.53:53` 和 `127.0.0.54:53` 已被 stub listener 佔住。ShadowDNS 在展開 `listen-on { any; };` 時會嘗試綁那些位址、收到 `EADDRINUSE`，並 log 一筆帶 hint 的 WARN：
+
+```
+level=WARN msg="listener bind failed; skipping address"
+  addr=127.0.0.53:53
+  err="bind UDP 127.0.0.53:53: ... address already in use"
+  hint="likely systemd-resolved stub on loopback; set DNSStubListener=no
+         in /etc/systemd/resolved.conf if this address is expected"
+```
+
+**這是預期行為，不是錯誤**。對外介面（`10.x.x.x`、`192.168.x.x` 等）仍會成功綁上，對外 DNS 服務正常。若你需要 ShadowDNS 真的監聽 `127.0.0.53`，關閉 systemd-resolved stub：
+
+```bash
+sudo sed -i 's/^#DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf
+sudo systemctl restart systemd-resolved
+```
+
+### SIGHUP reload 不會重綁 listener
+
+若 reload 後 `listen-on` 改變，ShadowDNS **不會**重新開 socket。這是刻意的設計，避免 reload 造成短暫的 port 接手空窗。偵測到變動時會 log：
+
+```
+level=INFO msg="reload: listen-address changes require restart to take effect"
+  current_bound=[10.0.0.1:53, 127.0.0.1:53]
+  new_resolved=[10.0.0.2:53]
+```
+
+執行 `systemctl restart shadowdns` 才會套用新的監聽位址。
+
+### BREAKING 行為差異（與 v0.3.0 之前比較）
+
+- 預設綁定從「單一 `0.0.0.0:53` wildcard socket」改為「per-address bind」。視覺上的差別：啟動 log 從 1 筆變成 N 筆 `listener bound`。
+- 新增網卡 / IP alias 不會自動被 pick up；BIND 的 `interface-interval` 動態掃描本版不支援，請用 `systemctl restart shadowdns` 讓新位址進入監聽集合。
+- `-listen` 語意從「綁定目標」改為「override hint + port hint」。若你之前寫 `-listen :53` 是期望 `0.0.0.0` wildcard 行為，現在會被當成「port hint，位址從 listen-on 取（或 any 展開）」——行為在大多數情況一致，但顯式 log 會不同。
 
 ---
 
