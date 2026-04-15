@@ -47,8 +47,9 @@ mkdir -p "${SMOKE_DIR}"
 cp    "${FIXTURE_SRC}/named.conf"    "${SMOKE_DIR}/named.conf"
 cp    "${FIXTURE_SRC}/master.zones"  "${SMOKE_DIR}/master.zones"
 cp    "${FIXTURE_SRC}/aliases.yaml"  "${SMOKE_DIR}/aliases.yaml"
-mkdir -p "${SMOKE_DIR}/master"
-cp    "${FIXTURE_SRC}/master/"*.fwd  "${SMOKE_DIR}/master/"
+# Recursively copy the full master/ tree (zone files plus include fragments
+# that may live in subdirectories such as cnames/).
+cp -R "${FIXTURE_SRC}/master"        "${SMOKE_DIR}/master"
 
 # Substitute TESTDATA_DIR_PLACEHOLDER → SMOKE_DIR.
 sed -i.bak "s|TESTDATA_DIR_PLACEHOLDER|${SMOKE_DIR}|g" "${SMOKE_DIR}/named.conf"
