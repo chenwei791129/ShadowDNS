@@ -74,8 +74,19 @@ type Server struct {
 	// A nil value disables all instrumentation (safe for tests).
 	Metrics *metrics.Metrics
 
-	udp *dns.Server
-	tcp *dns.Server
+	// listeners holds one entry per successfully bound address. Each entry
+	// owns a UDP *dns.Server and a TCP *dns.Server sharing the same address.
+	// Populated by Bind / BindMany; consumed by Serve.
+	listeners []listenerPair
+}
+
+// listenerPair bundles the UDP and TCP dns.Server instances for a single
+// listen address. Both halves are bound as an atomic pair; if either fails
+// the pair is discarded and neither is retained.
+type listenerPair struct {
+	addr string
+	udp  *dns.Server
+	tcp  *dns.Server
 }
 
 // NewServer constructs a Server from pre-loaded state and a logger.

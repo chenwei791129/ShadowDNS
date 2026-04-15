@@ -64,6 +64,30 @@ func reload(
 	srv.SwapState(state)
 	dispatchNotifies(ctx, state.RootZones, logger)
 
+	// Detect listen-address drift between what is currently bound and what
+	// the newly reloaded config would resolve to. We deliberately do NOT
+	// rebind listeners here — that would risk downtime and is considered
+	// an explicit opt-in operation requiring a process restart.
+	//
+	// Drift may come from two sources: (a) the operator edited listen-on
+	// in named.conf, or (b) the set of local IPv4 interfaces changed
+	// since startup (new NIC, IP alias added/removed). Both show up as a
+	// non-empty diff against the originally bound set, and neither is
+	// applied at reload time.
+	currentBound := srv.BoundAddrStrings()
+	resolved, resolveErr := server.ResolveListenAddresses(opts.ListenAddr, cfg.Options.ListenOn, logger)
+	switch {
+	case resolveErr != nil:
+		logger.Warn("reload: could not resolve listen addresses from new config; keeping current listeners",
+			"err", resolveErr)
+	case !server.AddrSetEqual(currentBound, resolved):
+		logger.Info(
+			"reload: listen-address set differs from bound set; restart to apply (cause: listen-on change and/or interface change since startup)",
+			"current_bound", currentBound,
+			"new_resolved", resolved,
+		)
+	}
+
 	logger.Info("reload complete", "views", len(cfg.Views), "zones", state.ZoneCount())
 	return nil
 }
@@ -126,7 +150,10 @@ func main() {
 	var opts runOptions
 	flag.StringVar(&opts.NamedConfPath, "named-conf", "", "path to named.conf (required)")
 	flag.StringVar(&opts.AliasesPath, "aliases", "", "path to aliases.yaml (optional; missing file is tolerated)")
-	flag.StringVar(&opts.ListenAddr, "listen", ":53", "UDP/TCP listen address")
+	flag.StringVar(&opts.ListenAddr, "listen", ":53",
+		"UDP/TCP listen address. Forms with a host component (e.g. \"127.0.0.1:53\") override named.conf's listen-on. "+
+			"Forms without a host (\":PORT\") use the port from -listen but take listen-on addresses from named.conf; "+
+			"when listen-on is absent, all IPv4 interface addresses are used.")
 	flag.StringVar(&opts.MetricsAddr, "metrics-addr", ":9153", "Prometheus /metrics HTTP listen address (empty string disables)")
 	flag.BoolVar(&opts.DryRun, "dry-run", false, "load configuration and zones, log a summary, then exit without starting listeners")
 
@@ -168,7 +195,7 @@ func main() {
 // builds a server, starts listeners, and blocks until ctx is cancelled.
 func run(ctx context.Context, opts runOptions) error {
 	if opts.NamedConfPath == "" {
-		return errors.New("--named-conf is required")
+		return errors.New("-named-conf is required")
 	}
 	logger := opts.Logger
 	if logger == nil {
@@ -214,7 +241,7 @@ func run(ctx context.Context, opts runOptions) error {
 		return fmt.Errorf("building server state: %w", err)
 	}
 
-	// --dry-run: count loaded zones, log summary, and exit without listening.
+	// -dry-run: count loaded zones, log summary, and exit without listening.
 	if opts.DryRun {
 		logger.Info("dry-run: configuration loaded successfully",
 			"views", len(cfg.Views),
@@ -267,9 +294,18 @@ func run(ctx context.Context, opts runOptions) error {
 		}()
 	}
 
+	// Resolve the listen-address set using the precedence described in
+	// design.md: explicit host in -listen overrides everything; otherwise
+	// named.conf's listen-on drives the host list with the port from
+	// -listen; otherwise fall back to all IPv4 interface addresses.
+	listenAddrs, err := server.ResolveListenAddresses(opts.ListenAddr, cfg.Options.ListenOn, logger)
+	if err != nil {
+		return fmt.Errorf("resolving listen addresses: %w", err)
+	}
+
 	// Bind listeners before writing the PID file so the port is guaranteed
 	// to be available when the PID file appears on disk.
-	if err := srv.Bind(opts.ListenAddr); err != nil {
+	if err := srv.BindMany(listenAddrs); err != nil {
 		return err
 	}
 
@@ -316,7 +352,12 @@ func run(ctx context.Context, opts runOptions) error {
 		}
 	}()
 
-	logger.Info("shadowdns ready", "views", len(cfg.Views), "listen", opts.ListenAddr)
+	bound := srv.BoundAddrStrings()
+	logger.Info("shadowdns ready",
+		"views", len(cfg.Views),
+		"bound_addrs", bound,
+		"bound_count", len(bound),
+	)
 	return srv.Serve(ctx)
 }
 
