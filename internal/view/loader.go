@@ -4,39 +4,73 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 )
 
-const (
-	countryMMDBFilename = "GeoLite2-Country.mmdb"
-	asnMMDBFilename     = "GeoLite2-ASN.mmdb"
-)
+// countryMMDBCandidates lists the country mmdb basenames the loader tries in
+// priority order. Paid GeoIP2 first, free GeoLite2 second; mirrors BIND9's
+// bin/named/geoip.c fallback chain so users can drop in either edition.
+var countryMMDBCandidates = []string{
+	"GeoIP2-Country.mmdb",
+	"GeoLite2-Country.mmdb",
+}
 
-// LoadGeoIP opens GeoLite2-Country.mmdb and GeoLite2-ASN.mmdb from dir.
-// If either file is missing or fails mmdb validation, it returns an error
-// whose message names the offending path. The caller (main) should Fatal on it.
+// asnMMDBCandidates lists the ASN mmdb basenames in priority order.
+var asnMMDBCandidates = []string{
+	"GeoIP2-ASN.mmdb",
+	"GeoLite2-ASN.mmdb",
+}
+
+// LoadGeoIP opens a country mmdb and an ASN mmdb from dir. For each database
+// it tries candidate filenames in priority order (GeoIP2 first, then
+// GeoLite2) and accepts the first that opens successfully and passes mmdb
+// validation. Country and ASN are resolved independently, so mixing editions
+// is allowed.
 //
-// On success, logger receives info messages for each successfully opened file.
+// If every candidate for either database fails, the returned error names
+// every attempted path together with the per-attempt failure reason. The
+// caller (main) should treat any error as fatal startup.
+//
+// On success, logger receives an info message per opened file with the full
+// path in the `path` attr so operators can identify the edition in use.
+//
 // MUST NOT panic.
 func LoadGeoIP(dir string, logger *slog.Logger) (country *CountryDB, asn *ASNDB, err error) {
-	countryPath := filepath.Join(dir, countryMMDBFilename)
-	countryDB, err := OpenCountryDB(countryPath)
+	countryDB, countryPath, err := openFirstMMDB(dir, countryMMDBCandidates, "country", OpenCountryDB)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to open GeoIP country database %q: %w", countryPath, err)
+		return nil, nil, err
 	}
 	if logger != nil {
 		logger.Info("loaded GeoIP country database", "path", countryPath)
 	}
 
-	asnPath := filepath.Join(dir, asnMMDBFilename)
-	asnDB, err := OpenASNDB(asnPath)
+	asnDB, asnPath, err := openFirstMMDB(dir, asnMMDBCandidates, "ASN", OpenASNDB)
 	if err != nil {
-		// Close the already-opened country DB to avoid leaking the file handle.
+		// Avoid leaking the country file handle when the ASN open fails.
 		_ = countryDB.Close()
-		return nil, nil, fmt.Errorf("failed to open GeoIP ASN database %q: %w", asnPath, err)
+		return nil, nil, err
 	}
 	if logger != nil {
 		logger.Info("loaded GeoIP ASN database", "path", asnPath)
 	}
 
 	return countryDB, asnDB, nil
+}
+
+// openFirstMMDB walks candidates in priority order, returning the first DB
+// that opens successfully along with its full path. On total failure the
+// error lists every attempted path with its underlying reason.
+func openFirstMMDB[T any](dir string, candidates []string, kind string, open func(string) (T, error)) (T, string, error) {
+	var zero T
+	attempts := make([]string, 0, len(candidates))
+	for _, name := range candidates {
+		path := filepath.Join(dir, name)
+		db, err := open(path)
+		if err == nil {
+			return db, path, nil
+		}
+		attempts = append(attempts, fmt.Sprintf("%q: %v", path, err))
+	}
+	return zero, "", fmt.Errorf("failed to open GeoIP %s database; tried %s",
+		kind, strings.Join(attempts, ", "))
 }

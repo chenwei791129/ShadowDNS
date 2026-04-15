@@ -6,12 +6,13 @@ import (
 	"github.com/oschwald/maxminddb-golang"
 )
 
-// ASNDB wraps a MaxMind GeoLite2-ASN mmdb reader.
+// ASNDB wraps a MaxMind ASN mmdb reader (GeoIP2 or GeoLite2 edition; the
+// on-disk format is identical).
 type ASNDB struct {
 	db *maxminddb.Reader
 }
 
-// OpenASNDB opens a GeoLite2-ASN.mmdb at path.
+// OpenASNDB opens an ASN mmdb (GeoIP2 or GeoLite2) at path.
 // Returns an error if the file is missing or fails mmdb validation.
 // The caller is expected to treat this as a fatal startup condition.
 func OpenASNDB(path string) (*ASNDB, error) {

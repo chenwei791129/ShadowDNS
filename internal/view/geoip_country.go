@@ -6,12 +6,13 @@ import (
 	"github.com/oschwald/maxminddb-golang"
 )
 
-// CountryDB wraps a MaxMind GeoLite2-Country mmdb reader.
+// CountryDB wraps a MaxMind Country mmdb reader (GeoIP2 or GeoLite2 edition;
+// the on-disk format is identical).
 type CountryDB struct {
 	db *maxminddb.Reader
 }
 
-// OpenCountryDB opens a GeoLite2-Country.mmdb at path.
+// OpenCountryDB opens a Country mmdb (GeoIP2 or GeoLite2) at path.
 // Returns an error if the file is missing or fails mmdb validation.
 // The caller is expected to treat this as a fatal startup condition.
 func OpenCountryDB(path string) (*CountryDB, error) {
