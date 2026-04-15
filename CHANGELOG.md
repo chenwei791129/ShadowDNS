@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.3.0...v0.4.0) (2026-04-15)
+
+
+### Features
+
+* **server:** honor named.conf listen-on with per-address binding ([d027f96](https://github.com/chenwei791129/ShadowDNS/commit/d027f963ec2a5afc25af467846cecd03d6303f2f))
+
 ## [0.3.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.2.1...v0.3.0) (2026-04-15)
 
 
