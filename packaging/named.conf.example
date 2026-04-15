@@ -21,6 +21,16 @@ options {
     // ShadowDNS will refuse to start if either .mmdb file is missing.
     geoip-directory "/usr/local/share/GeoIP/";
 
+    // PID file used by `shadowdns -reload` to locate the running server and
+    // send it SIGHUP. If this option is omitted, no PID file is written and
+    // `-reload` will be unavailable.
+    //
+    // The parent directory must exist and be writable by the shadowdns
+    // service user. The bundled systemd unit provisions /var/run/shadowdns
+    // automatically via `RuntimeDirectory=shadowdns`, so the default path
+    // below works out of the box when running under systemd.
+    pid-file "/var/run/shadowdns/pid";
+
     // Accept DNS queries on all IPv4 interfaces.
     // Replace "any" with a specific address to bind to a single interface,
     // e.g.:  listen-on { 192.0.2.1; };
