@@ -218,7 +218,7 @@ The project SHALL include a `make test-deb` target that performs end-to-end vali
 #### Scenario: make test-deb validates binary execution
 
 - **WHEN** `make test-deb` is executed
-- **THEN** the target SHALL run `shadowdns --dry-run` inside the container and confirm it exits with code 0
+- **THEN** the target SHALL run `shadowdns -dry-run` inside the container and confirm it exits with code 0
 
 #### Scenario: make test-deb validates DNS query
 

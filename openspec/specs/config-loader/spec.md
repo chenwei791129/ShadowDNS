@@ -417,7 +417,7 @@ The config-loader SHALL parse an `aliases.yaml` file that declares root-to-backu
 
 #### Scenario: Missing aliases.yaml is tolerated
 
-- **WHEN** the `--aliases` flag is not provided or the file does not exist
+- **WHEN** the `-aliases` flag is not provided or the file does not exist
 - **THEN** the loader returns an empty alias map AND logs an info message; the server still starts normally
 
 
@@ -696,7 +696,7 @@ The config-loader SHALL parse an `aliases.yaml` file that declares root-to-backu
 
 #### Scenario: Missing aliases.yaml is tolerated
 
-- **WHEN** the `--aliases` flag is not provided or the file does not exist
+- **WHEN** the `-aliases` flag is not provided or the file does not exist
 - **THEN** the loader returns an empty alias map AND logs an info message; the server still starts normally
 
 ---

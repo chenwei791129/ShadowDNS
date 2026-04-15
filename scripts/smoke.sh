@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# smoke.sh — smoke test for ShadowDNS --dry-run mode.
+# smoke.sh — smoke test for ShadowDNS -dry-run mode.
 #
 # Builds the binary, copies testdata/integration into /tmp/shadowdns-smoke,
 # substitutes TESTDATA_DIR_PLACEHOLDER with the real path, generates minimal
-# GeoIP mmdb files using Go, and runs the binary with --dry-run.
+# GeoIP mmdb files using Go, and runs the binary with -dry-run.
 #
 # Memory is measured via /usr/bin/time on both macOS and Linux.
 #
@@ -139,9 +139,9 @@ GOEOF
 info "GeoIP files ready."
 
 # ---------------------------------------------------------------------------
-# 4. Run the binary with --dry-run, measuring memory.
+# 4. Run the binary with -dry-run, measuring memory.
 # ---------------------------------------------------------------------------
-info "Running shadowdns --dry-run..."
+info "Running shadowdns -dry-run..."
 
 TIME_CMD="/usr/bin/time"
 if [[ "$(uname)" == "Darwin" ]]; then
@@ -156,9 +156,9 @@ OUTPUT_FILE="${SMOKE_DIR}/dry_run_output.txt"
 
 # Run with time; capture combined output.
 "${TIME_CMD}" ${TIME_ARGS} "${BINARY}" \
-	--named-conf "${SMOKE_DIR}/named.conf" \
-	--aliases    "${SMOKE_DIR}/aliases.yaml" \
-	--dry-run    \
+	-named-conf "${SMOKE_DIR}/named.conf" \
+	-aliases    "${SMOKE_DIR}/aliases.yaml" \
+	-dry-run    \
 	2>&1 | tee "${OUTPUT_FILE}"
 
 info "Smoke test passed."

@@ -117,7 +117,7 @@ else
 fi
 
 # -------------------------------------------------------------------
-# Step 7: Copy testdata and run --dry-run
+# Step 7: Copy testdata and run -dry-run
 # -------------------------------------------------------------------
 echo "--- Dry-run test ---"
 $CTR exec "$CONTAINER_NAME" sh -c '
@@ -128,10 +128,10 @@ $CTR exec "$CONTAINER_NAME" sh -c '
     cp -r /tmp/testdata/geoip /etc/shadowdns/geoip
 '
 $CTR exec "$CONTAINER_NAME" shadowdns \
-    --named-conf /etc/shadowdns/named.conf \
-    --aliases /etc/shadowdns/aliases.yaml \
-    --dry-run
-echo "  [OK] --dry-run exited successfully"
+    -named-conf /etc/shadowdns/named.conf \
+    -aliases /etc/shadowdns/aliases.yaml \
+    -dry-run
+echo "  [OK] -dry-run exited successfully"
 
 # -------------------------------------------------------------------
 # Step 8: Start server and query DNS
@@ -141,9 +141,9 @@ $CTR exec "$CONTAINER_NAME" apt-get update -qq >/dev/null 2>&1
 $CTR exec "$CONTAINER_NAME" apt-get install -y -qq dnsutils >/dev/null 2>&1
 
 $CTR exec -d "$CONTAINER_NAME" shadowdns \
-    --named-conf /etc/shadowdns/named.conf \
-    --aliases /etc/shadowdns/aliases.yaml \
-    --listen 127.0.0.1:1053
+    -named-conf /etc/shadowdns/named.conf \
+    -aliases /etc/shadowdns/aliases.yaml \
+    -listen 127.0.0.1:1053
 
 # Wait for the server to start accepting queries.
 sleep 2
