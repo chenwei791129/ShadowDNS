@@ -340,3 +340,98 @@ func TestParseFile_UnknownRRType_Error(t *testing.T) {
 		t.Errorf("error %q does not mention file path %q", err.Error(), path)
 	}
 }
+
+// TestParseFile_WildcardOwnerName verifies that the parser correctly stores
+// wildcard owner names in the zone's Records map, acting as a regression guard
+// for wildcard support.
+func TestParseFile_WildcardOwnerName(t *testing.T) {
+	t.Run("bare wildcard A record stored under *.example.com.", func(t *testing.T) {
+		// Scenario (a): bare "*" owner with A record, must be keyed as *.example.com.
+		content := `$TTL 3600
+@ IN SOA ns1.example.com. root.ns1.example.com. ( 1 300 120 86400 3600 )
+@ IN NS  ns1.example.com.
+* IN A   1.2.3.4
+`
+		path := writeZoneFile(t, content)
+		z, err := ParseFile(path, "example.com.", nil)
+		if err != nil {
+			t.Fatalf("ParseFile error: %v", err)
+		}
+
+		const wantKey = "*.example.com."
+		rrs := z.Records[wantKey]
+		if len(rrs) != 1 {
+			t.Fatalf("expected 1 record at %q, got %d", wantKey, len(rrs))
+		}
+		a, ok := rrs[0].(*dns.A)
+		if !ok {
+			t.Fatal("record is not *dns.A")
+		}
+		if a.A.String() != "1.2.3.4" {
+			t.Errorf("A rdata: got %q, want %q", a.A.String(), "1.2.3.4")
+		}
+	})
+
+	t.Run("sub-label wildcard CNAME stored under *.sub.example.com.", func(t *testing.T) {
+		// Scenario (b): "*.sub" owner with CNAME record, must be keyed as *.sub.example.com.
+		content := `$TTL 3600
+@ IN SOA ns1.example.com. root.ns1.example.com. ( 1 300 120 86400 3600 )
+@ IN NS  ns1.example.com.
+*.sub IN CNAME target.
+`
+		path := writeZoneFile(t, content)
+		z, err := ParseFile(path, "example.com.", nil)
+		if err != nil {
+			t.Fatalf("ParseFile error: %v", err)
+		}
+
+		const wantKey = "*.sub.example.com."
+		rrs := z.Records[wantKey]
+		if len(rrs) != 1 {
+			t.Fatalf("expected 1 record at %q, got %d", wantKey, len(rrs))
+		}
+		cname, ok := rrs[0].(*dns.CNAME)
+		if !ok {
+			t.Fatal("record is not *dns.CNAME")
+		}
+		if cname.Target != "target." {
+			t.Errorf("CNAME target: got %q, want %q", cname.Target, "target.")
+		}
+	})
+
+	t.Run("multiple A records at same wildcard owner are all stored", func(t *testing.T) {
+		// Scenario (c): two A records under the same wildcard owner must both be appended.
+		content := `$TTL 3600
+@ IN SOA ns1.example.com. root.ns1.example.com. ( 1 300 120 86400 3600 )
+@ IN NS  ns1.example.com.
+* IN A   1.2.3.4
+* IN A   5.6.7.8
+`
+		path := writeZoneFile(t, content)
+		z, err := ParseFile(path, "example.com.", nil)
+		if err != nil {
+			t.Fatalf("ParseFile error: %v", err)
+		}
+
+		const wantKey = "*.example.com."
+		rrs := z.Records[wantKey]
+		if len(rrs) != 2 {
+			t.Fatalf("expected 2 records at %q, got %d", wantKey, len(rrs))
+		}
+
+		// Collect both RDATA values and verify both addresses are present.
+		seen := make(map[string]bool)
+		for _, rr := range rrs {
+			a, ok := rr.(*dns.A)
+			if !ok {
+				t.Fatalf("record is not *dns.A: %T", rr)
+			}
+			seen[a.A.String()] = true
+		}
+		for _, addr := range []string{"1.2.3.4", "5.6.7.8"} {
+			if !seen[addr] {
+				t.Errorf("expected A record with rdata %q, not found in %v", addr, seen)
+			}
+		}
+	})
+}

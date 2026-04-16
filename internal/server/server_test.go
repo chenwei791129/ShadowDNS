@@ -1460,6 +1460,167 @@ func TestServeDNS_Metrics_RecordsRequestAndResponse(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Wildcard matching (RFC 4592)
+// ---------------------------------------------------------------------------
+
+// TestWildcard_RootZone_AQuery verifies wildcard A match: the answer owner
+// name must be the original qname, not the "*" label.
+func TestWildcard_RootZone_AQuery(t *testing.T) {
+	rootZ := buildRootZone("root.com.")
+	rootZ.AddRR(&dns.A{
+		Hdr: dns.RR_Header{Name: "*.root.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+		A:   net.ParseIP("10.0.0.99").To4(),
+	})
+
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}, nil)
+
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "foo.root.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if !resp.Authoritative {
+		t.Error("expected AA=1")
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(resp.Answer))
+	}
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatal("answer is not A")
+	}
+	// Owner must be the original qname, not "*.root.com."
+	if a.Hdr.Name != "foo.root.com." {
+		t.Errorf("owner: expected foo.root.com., got %s", a.Hdr.Name)
+	}
+	if a.A.String() != "10.0.0.99" {
+		t.Errorf("expected 10.0.0.99, got %s", a.A.String())
+	}
+}
+
+// TestWildcard_ENTBlocking verifies that an ENT prevents wildcard matching → NXDOMAIN.
+func TestWildcard_ENTBlocking(t *testing.T) {
+	rootZ := buildRootZone("root.com.")
+	rootZ.AddRR(&dns.A{
+		Hdr: dns.RR_Header{Name: "*.root.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+		A:   net.ParseIP("10.0.0.99").To4(),
+	})
+	// sub.root.com. exists → ENT blocker
+	rootZ.AddRR(&dns.TXT{
+		Hdr: dns.RR_Header{Name: "sub.root.com.", Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 300},
+		Txt: []string{"ent"},
+	})
+
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}, nil)
+
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "other.sub.root.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeNameError {
+		t.Errorf("expected NXDOMAIN, got %s", dns.RcodeToString[resp.Rcode])
+	}
+}
+
+// TestWildcard_ExactRecordTakesPrecedence verifies exact match beats wildcard.
+func TestWildcard_ExactRecordTakesPrecedence(t *testing.T) {
+	rootZ := buildRootZone("root.com.")
+	rootZ.AddRR(&dns.A{
+		Hdr: dns.RR_Header{Name: "*.root.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+		A:   net.ParseIP("10.0.0.99").To4(),
+	})
+	rootZ.AddRR(&dns.A{
+		Hdr: dns.RR_Header{Name: "www.root.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+		A:   net.ParseIP("1.2.3.4").To4(),
+	})
+
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}, nil)
+
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "www.root.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(resp.Answer))
+	}
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatal("answer is not A")
+	}
+	// Must be the exact record, not the wildcard.
+	if a.A.String() != "1.2.3.4" {
+		t.Errorf("expected exact match 1.2.3.4, got %s", a.A.String())
+	}
+}
+
+// TestWildcard_BackupZone verifies wildcard match through backup zone alias.
+func TestWildcard_BackupZone(t *testing.T) {
+	rootZ := buildRootZone("root.com.")
+	rootZ.AddRR(&dns.A{
+		Hdr: dns.RR_Header{Name: "*.root.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+		A:   net.ParseIP("10.0.0.99").To4(),
+	})
+	aliases := config.AliasMap{"backup.com.": "root.com."}
+
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com.", "backup.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{"default": {}},
+		Aliases:     aliases,
+	}, nil)
+
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "foo.backup.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(resp.Answer))
+	}
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatal("answer is not A")
+	}
+	// Owner must be in backup namespace.
+	if a.Hdr.Name != "foo.backup.com." {
+		t.Errorf("owner: expected foo.backup.com., got %s", a.Hdr.Name)
+	}
+	if a.A.String() != "10.0.0.99" {
+		t.Errorf("expected 10.0.0.99, got %s", a.A.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Metrics integration tests (continued)
+// ---------------------------------------------------------------------------
+
 // TestServeDNS_NilMetrics_NoPanic verifies that the server does not panic
 // when Metrics is nil (the default for existing tests).
 func TestServeDNS_NilMetrics_NoPanic(t *testing.T) {

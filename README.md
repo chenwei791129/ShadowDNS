@@ -36,6 +36,9 @@ Client query
 [ Zone Lookup ]
      |   Finds the matching owner entry in the selected view's in-memory
      |   zone tree (a map[ownerName][]RR). O(1) lookup per owner name.
+     |   If no exact match is found, wildcard matching per RFC 4592 is
+     |   attempted: labels are stripped left-to-right until a `*.<parent>`
+     |   entry is found or an existing name blocks the search (ENT rule).
      |
      v
 [ In-Bailiwick Rewrite ]
@@ -53,7 +56,7 @@ Response sent to client
 
 **Alias Resolver**: At query time, the resolver performs a longest-suffix match against the alias map (built from `aliases.yaml` at startup). A backup zone entry is a thin pointer — the resolver strips the backup suffix, replaces it with the root suffix, and hands the rewritten name to the zone lookup. The original backup name is retained so the rewrite stage can restore it.
 
-**Zone Lookup**: Zone data is stored as `map[viewName]map[zoneName]*Zone`. Each `Zone` holds a `map[ownerName][]dns.RR`. All structures are read-only after startup; no locking is required on the read path. Backup override records (TXT, MX, SRV from a backup zone's own file, if provided) are stored separately and merged in after the root lookup.
+**Zone Lookup**: Zone data is stored as `map[viewName]map[zoneName]*Zone`. Each `Zone` holds a `map[ownerName][]dns.RR`. All structures are read-only after startup; no locking is required on the read path. When an exact match returns no records, the server falls back to wildcard matching per RFC 4592: it strips one DNS label at a time from the query name and probes for a `*.<parent>` entry in the map, stopping at the zone origin or at an existing name that blocks further traversal (the empty non-terminal rule). Backup override records (TXT, MX, SRV from a backup zone's own file, if provided) are stored separately and merged in after the root lookup.
 
 **In-Bailiwick Rewrite**: The rewrite rule is intentionally conservative. Owner names are always rewritten (they are always in-bailiwick by definition). RDATA names are rewritten only when they point into the root zone — ensuring that the rewritten name will also resolve correctly through the same alias mechanism. A/AAAA records carry IP addresses and are never rewritten. TXT RDATA is opaque and is never rewritten, even if it contains a string that matches the root domain name.
 
@@ -65,6 +68,7 @@ Response sent to client
 - `listen-on { any; }` and explicit IPv4 address lists from `named.conf` are honored via per-address binding. Individual bind failures (e.g. a `127.0.0.x` alias occupied by `systemd-resolved`) log a warning and are skipped; the server starts as long as at least one listener binds. See [docs/migration.md](docs/migration.md) for the precedence rules between `-listen` and `listen-on`
 - `view "<name>" { match-clients { ... }; ... }` with first-match semantics
 - `match-clients` rule types: `geoip country <ISO-2>`, `geoip asnum "AS<N> <description>"`, bare IPv4 address, IPv4 CIDR prefix, `any`
+- Wildcard record matching per RFC 4592 — closest-encloser algorithm with empty non-terminal (ENT) blocking, CNAME wildcard synthesis, and correct owner name rewriting in responses
 - Zone files in RFC 1035 master file format (`$TTL`, `$ORIGIN`, `@`, multi-line `(...)`, `;` comments)
 - `$INCLUDE` / `$include` directive with both bare path (`$include /path/to/file`) and BIND-style double-quoted path (`$include "/path/to/file"`); the directive name is case-insensitive. Limitations: the path itself MUST NOT contain whitespace (a fundamental miekg/dns scanner limit, not lifted by quoting), and the quoted form is recognised only on the top-level zone file — fragments pulled in via `$INCLUDE` are read directly by the underlying parser and must use the bare form internally
 - `type master;` zones
@@ -104,6 +108,7 @@ Response sent to client
 | IP / CIDR match               | Yes           | Yes          |
 | AXFR                          | Yes           | Yes          |
 | NOTIFY                        | Yes           | Yes          |
+| Wildcard records (RFC 4592)   | Yes           | Yes          |
 | Zone aliasing (backup domain) | No            | Yes          |
 | Hot reload (SIGHUP)           | Yes           | Yes          |
 | Prometheus metrics            | No            | Yes          |

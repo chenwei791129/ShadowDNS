@@ -32,6 +32,27 @@ func Resolve(qname string, qtype uint16, backupOrigin string, backupZone *zone.Z
 		rootRRs = rootZone.Lookup(rootQName, dns.TypeCNAME)
 	}
 
+	// Wildcard fallback per RFC 4592.
+	if len(rootRRs) == 0 {
+		wRRs, wFound := rootZone.LookupWildcard(rootQName, qtype)
+		if wFound && len(wRRs) == 0 && qtype != dns.TypeCNAME {
+			wRRs, _ = rootZone.LookupWildcard(rootQName, dns.TypeCNAME)
+		}
+		if len(wRRs) > 0 {
+			// RewriteRR handles the deep copy and RDATA name rewrite.
+			// Override the owner to the backup-namespace qname directly
+			// because RewriteName would map "*.root" → "*.backup" rather
+			// than the desired "foo.backup".
+			result := make([]dns.RR, 0, len(wRRs))
+			for _, rr := range wRRs {
+				rewritten := RewriteRR(rr, rootZone.Origin, backupOrigin)
+				rewritten.Header().Name = qname
+				result = append(result, rewritten)
+			}
+			return result
+		}
+	}
+
 	result := make([]dns.RR, 0, len(rootRRs))
 	for _, rr := range rootRRs {
 		result = append(result, RewriteRR(rr, rootZone.Origin, backupOrigin))

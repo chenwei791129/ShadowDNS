@@ -198,6 +198,19 @@ func (s *Server) handleRootQuery(
 		}
 	}
 
+	// Wildcard fallback per RFC 4592.
+	wRRs, wFound := rootZone.LookupWildcard(qname, qtype)
+	if wFound && len(wRRs) > 0 {
+		replyWithAnswer(w, req, rewriteWildcardOwner(wRRs, qname))
+		return
+	}
+	if qtype != dns.TypeCNAME {
+		if wCNAMEs, _ := rootZone.LookupWildcard(qname, dns.TypeCNAME); len(wCNAMEs) > 0 {
+			replyWithAnswer(w, req, rewriteWildcardOwner(wCNAMEs, qname))
+			return
+		}
+	}
+
 	s.negativeReply(w, req, rootZone, nil, match, qname, rootZone.SOA)
 }
 
@@ -271,6 +284,8 @@ func (s *Server) negativeReply(
 		// For root: check if any record exists at qname under any type.
 		if _, exists := rootZone.Records[qname]; exists {
 			rcode = dns.RcodeSuccess // NODATA
+		} else if rootZone.HasWildcard(qname) {
+			rcode = dns.RcodeSuccess // Wildcard NODATA
 		}
 	}
 
@@ -306,6 +321,11 @@ func backupZoneHasName(backupZone *zone.Zone, rootZone *zone.Zone, match alias.M
 	// Check the root zone by rewriting qname to the root namespace.
 	rootQName := alias.RewriteQName(qname, match.MatchedZone, match.RootZone)
 	if _, exists := rootZone.Records[rootQName]; exists {
+		return true
+	}
+
+	// Check wildcard match in root zone.
+	if rootZone.HasWildcard(rootQName) {
 		return true
 	}
 
@@ -367,6 +387,18 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 		rootZone := st.RootZones[viewName][match.MatchedZone]
 		transfer.HandleAXFR(w, req, rootZone)
 	}
+}
+
+// rewriteWildcardOwner returns copies of the given RRs with the owner name
+// set to qname. Used to synthesize wildcard responses per RFC 4592 §2.2.
+func rewriteWildcardOwner(rrs []dns.RR, qname string) []dns.RR {
+	result := make([]dns.RR, len(rrs))
+	for i, rr := range rrs {
+		cp := dns.Copy(rr)
+		cp.Header().Name = qname
+		result[i] = cp
+	}
+	return result
 }
 
 // cappedSOA returns a copy of soa with Hdr.Ttl set to min(Hdr.Ttl, Minttl)

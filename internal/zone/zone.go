@@ -42,13 +42,74 @@ func (z *Zone) AddRR(rr dns.RR) {
 	}
 }
 
-// Lookup returns all records at owner with the given qtype, or an empty (non-nil) slice.
-// owner is expected to be canonicalized (lowercased + trailing dot) by the caller.
-func (z *Zone) Lookup(owner string, qtype uint16) []dns.RR {
-	rrs, ok := z.Records[owner]
-	if !ok {
-		return []dns.RR{}
+// LookupWildcard attempts wildcard matching per RFC 4592 when exact lookup
+// fails. Starting from qname it strips the leftmost label and checks for a
+// wildcard owner "*.<parent>" at each level. If a wildcard is found, the
+// matching records are filtered by qtype and returned with found=true. If an
+// existing name (empty non-terminal) is encountered during traversal, the
+// search stops and returns found=false. The search stops when parent equals
+// the zone origin.
+//
+// The returned RRs still carry the wildcard owner name ("*." prefix); the
+// caller is responsible for rewriting the owner to the original qname.
+func (z *Zone) LookupWildcard(qname string, qtype uint16) ([]dns.RR, bool) {
+	if qname == z.Origin {
+		return nil, false
 	}
+
+	originSuffix := "." + z.Origin
+
+	// Walk up the label tree from qname toward the zone origin.
+	name := qname
+	for {
+		idx := strings.Index(name, ".")
+		if idx < 0 {
+			break
+		}
+		parent := name[idx+1:]
+
+		if parent == z.Origin {
+			break
+		}
+
+		// Guard: stop if we've traversed past the zone origin.
+		if !strings.HasSuffix(parent, originSuffix) {
+			return nil, false
+		}
+
+		wildcard := "*." + parent
+		if wRRs, ok := z.Records[wildcard]; ok {
+			return filterByQtype(wRRs, qtype), true
+		}
+
+		// ENT blocker: if the parent name itself has records, stop.
+		if _, exists := z.Records[parent]; exists {
+			return nil, false
+		}
+
+		name = parent
+	}
+
+	// Check wildcard at the zone origin level: "*.<origin>".
+	wildcard := "*." + z.Origin
+	if wRRs, ok := z.Records[wildcard]; ok {
+		return filterByQtype(wRRs, qtype), true
+	}
+
+	return nil, false
+}
+
+// HasWildcard reports whether any wildcard owner covers qname per RFC 4592,
+// regardless of record type. It is a convenience wrapper around LookupWildcard
+// for callers that only need to know if the name falls under a wildcard (e.g.,
+// to distinguish NODATA from NXDOMAIN).
+func (z *Zone) HasWildcard(qname string) bool {
+	_, found := z.LookupWildcard(qname, 0)
+	return found
+}
+
+// filterByQtype returns only the RRs matching the given query type.
+func filterByQtype(rrs []dns.RR, qtype uint16) []dns.RR {
 	result := make([]dns.RR, 0, len(rrs))
 	for _, rr := range rrs {
 		if rr.Header().Rrtype == qtype {
@@ -56,4 +117,14 @@ func (z *Zone) Lookup(owner string, qtype uint16) []dns.RR {
 		}
 	}
 	return result
+}
+
+// Lookup returns all records at owner with the given qtype, or an empty (non-nil) slice.
+// owner is expected to be canonicalized (lowercased + trailing dot) by the caller.
+func (z *Zone) Lookup(owner string, qtype uint16) []dns.RR {
+	rrs, ok := z.Records[owner]
+	if !ok {
+		return []dns.RR{}
+	}
+	return filterByQtype(rrs, qtype)
 }

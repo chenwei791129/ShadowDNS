@@ -15,12 +15,14 @@ import (
 
 // TestNegative_NXDOMAIN_RootZone verifies that a query for a nonexistent name
 // in the root zone returns RCODE=NXDOMAIN with SOA(example.com.) in authority.
+// The query uses a name under ent.example.com. (an ENT that blocks the zone's
+// wildcard), so the result is NXDOMAIN rather than a wildcard match.
 func TestNegative_NXDOMAIN_RootZone(t *testing.T) {
 	srv, cancel := newTestServer(t)
 	defer cancel()
 	addr := udpAddr(srv)
 
-	resp := queryUDP(t, addr, "nonexistent.example.com.", dns.TypeA)
+	resp := queryUDP(t, addr, "nonexistent.ent.example.com.", dns.TypeA)
 
 	if resp.Rcode != dns.RcodeNameError {
 		t.Errorf("expected NXDOMAIN, got %s", dns.RcodeToString[resp.Rcode])
@@ -75,12 +77,13 @@ func TestNegative_NODATA_RootZone(t *testing.T) {
 
 // TestNegative_NXDOMAIN_BackupZone verifies that a query for a nonexistent name
 // in the backup zone returns RCODE=NXDOMAIN with SOA(backup.example.) in authority.
+// Uses a name under ent.backup.example. so the root zone's ENT blocks the wildcard.
 func TestNegative_NXDOMAIN_BackupZone(t *testing.T) {
 	srv, cancel := newTestServer(t)
 	defer cancel()
 	addr := udpAddr(srv)
 
-	resp := queryUDP(t, addr, "nonexistent.backup.example.", dns.TypeA)
+	resp := queryUDP(t, addr, "nonexistent.ent.backup.example.", dns.TypeA)
 
 	if resp.Rcode != dns.RcodeNameError {
 		t.Errorf("expected NXDOMAIN, got %s", dns.RcodeToString[resp.Rcode])
@@ -109,12 +112,13 @@ func TestNegative_NXDOMAIN_BackupZone(t *testing.T) {
 
 // TestNegative_SOA_TTL_Capped verifies the RFC 2308 TTL cap on the authority SOA
 // for a root-zone NXDOMAIN.  With $TTL 300 and SOA Minttl=300, the capped TTL is 300.
+// Uses a name under the ent.example.com. ENT to avoid the zone's wildcard.
 func TestNegative_SOA_TTL_Capped(t *testing.T) {
 	srv, cancel := newTestServer(t)
 	defer cancel()
 	addr := udpAddr(srv)
 
-	resp := queryUDP(t, addr, "no-such-name.example.com.", dns.TypeA)
+	resp := queryUDP(t, addr, "no-such-name.ent.example.com.", dns.TypeA)
 
 	if resp.Rcode != dns.RcodeNameError {
 		t.Fatalf("expected NXDOMAIN, got %s", dns.RcodeToString[resp.Rcode])

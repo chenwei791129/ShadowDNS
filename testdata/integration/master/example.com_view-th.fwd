@@ -14,6 +14,10 @@ $TTL 300
 @         IN MX    10 mx1.example.com.
 @         IN TXT   "v=spf1 ip4:203.0.113.0/24 -all"
 
+*         IN A     10.99.99.1
+*.sub     IN CNAME target.example.com.
+ent       IN TXT   "blocker"
+
 ns1       IN A     203.0.113.1
 mx1       IN A     203.0.113.20
 www       IN A     203.0.113.30
