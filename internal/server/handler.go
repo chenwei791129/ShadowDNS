@@ -190,6 +190,14 @@ func (s *Server) handleRootQuery(
 		return
 	}
 
+	// CNAME fallback per RFC 1034 §3.6.2.
+	if qtype != dns.TypeCNAME {
+		if cnames := rootZone.Lookup(qname, dns.TypeCNAME); len(cnames) > 0 {
+			replyWithAnswer(w, req, cnames)
+			return
+		}
+	}
+
 	s.negativeReply(w, req, rootZone, nil, match, qname, rootZone.SOA)
 }
 

@@ -796,6 +796,112 @@ func TestChaos_RandomQuery(t *testing.T) {
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// CNAME synthesis (RFC 1034 §3.6.2)
+// ---------------------------------------------------------------------------
+
+// makeCNAMERecord builds a CNAME record.
+func makeCNAMERecord(name, target string, ttl uint32) *dns.CNAME {
+	return &dns.CNAME{
+		Hdr: dns.RR_Header{
+			Name:   name,
+			Rrtype: dns.TypeCNAME,
+			Class:  dns.ClassINET,
+			Ttl:    ttl,
+		},
+		Target: target,
+	}
+}
+
+// TestCNAMESynthesis_RootZone verifies CNAME synthesis for various query types
+// against a zone where alias.root.com. has only a CNAME record.
+func TestCNAMESynthesis_RootZone(t *testing.T) {
+	rootZ := buildRootZone("root.com.",
+		makeCNAMERecord("alias.root.com.", "target.other.com.", 300),
+	)
+
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}, nil)
+
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	cases := []struct {
+		name      string
+		qname     string
+		qtype     uint16
+		wantRcode int
+		wantCNAME bool // expect CNAME in answer
+	}{
+		{"A at CNAME name", "alias.root.com.", dns.TypeA, dns.RcodeSuccess, true},
+		{"AAAA at CNAME name", "alias.root.com.", dns.TypeAAAA, dns.RcodeSuccess, true},
+		{"MX at CNAME name", "alias.root.com.", dns.TypeMX, dns.RcodeSuccess, true},
+		{"explicit CNAME query", "alias.root.com.", dns.TypeCNAME, dns.RcodeSuccess, true},
+		{"NXDOMAIN unchanged", "nonexistent.root.com.", dns.TypeA, dns.RcodeNameError, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := query(t, "udp", udpAddr, tc.qname, tc.qtype)
+			if resp.Rcode != tc.wantRcode {
+				t.Errorf("expected %s, got %s", dns.RcodeToString[tc.wantRcode], dns.RcodeToString[resp.Rcode])
+			}
+			if tc.wantCNAME {
+				if !resp.Authoritative {
+					t.Error("expected AA=1")
+				}
+				if len(resp.Answer) != 1 {
+					t.Fatalf("expected 1 answer (CNAME), got %d", len(resp.Answer))
+				}
+				cname, ok := resp.Answer[0].(*dns.CNAME)
+				if !ok {
+					t.Fatalf("expected CNAME record, got %T", resp.Answer[0])
+				}
+				if cname.Target != "target.other.com." {
+					t.Errorf("CNAME target: got %q, want target.other.com.", cname.Target)
+				}
+			}
+		})
+	}
+}
+
+// TestCNAMESynthesis_RootZone_NODATA_Unchanged verifies NODATA when name has A
+// but not AAAA and no CNAME — uses a different zone fixture than the table above.
+func TestCNAMESynthesis_RootZone_NODATA_Unchanged(t *testing.T) {
+	rootZ := buildRootZone("root.com.",
+		makeARecord("www.root.com.", "1.2.3.4", 300),
+	)
+
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}, nil)
+
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "www.root.com.", dns.TypeAAAA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Errorf("NODATA: expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 0 {
+		t.Errorf("NODATA: expected empty answer, got %d", len(resp.Answer))
+	}
+	if len(resp.Ns) == 0 {
+		t.Error("NODATA: expected SOA in authority")
+	}
+}
+
+// ---------------------------------------------------------------------------
+
 // TestMinimal_NoAuthorityOnPositive verifies authority section is empty on positive answers.
 func TestMinimal_NoAuthorityOnPositive(t *testing.T) {
 	rootZ := buildRootZone("root.com.", makeARecord("www.root.com.", "1.2.3.4", 300))

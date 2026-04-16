@@ -26,6 +26,12 @@ func Resolve(qname string, qtype uint16, backupOrigin string, backupZone *zone.Z
 	rootQName := RewriteQName(qname, backupOrigin, rootZone.Origin)
 	rootRRs := rootZone.Lookup(rootQName, qtype)
 
+	// CNAME fallback per RFC 1034 §3.6.2 (root-zone path only;
+	// backup overridable-type hits are returned early above).
+	if len(rootRRs) == 0 && qtype != dns.TypeCNAME {
+		rootRRs = rootZone.Lookup(rootQName, dns.TypeCNAME)
+	}
+
 	result := make([]dns.RR, 0, len(rootRRs))
 	for _, rr := range rootRRs {
 		result = append(result, RewriteRR(rr, rootZone.Origin, backupOrigin))

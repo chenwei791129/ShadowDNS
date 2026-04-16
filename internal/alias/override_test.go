@@ -143,6 +143,42 @@ func TestResolve_NoMatchInRootZone(t *testing.T) {
 	}
 }
 
+func TestResolve_CNAMESynthesis_BackupZone(t *testing.T) {
+	// root zone has sub.root.com. → CNAME target.other.com.
+	rootCNAME := newCNAME("sub.root.com.", "target.other.com.")
+	rootZone := buildZone("root.com.", rootCNAME)
+
+	backupZone := buildZone("backup.com.") // no overrides
+
+	// Query A for sub.backup.com. → should get CNAME with owner rewritten.
+	rrs := Resolve("sub.backup.com.", dns.TypeA, "backup.com.", backupZone, rootZone)
+
+	if len(rrs) != 1 {
+		t.Fatalf("expected 1 CNAME record, got %d", len(rrs))
+	}
+	cname, ok := rrs[0].(*dns.CNAME)
+	if !ok {
+		t.Fatalf("expected *dns.CNAME, got %T", rrs[0])
+	}
+	if cname.Hdr.Name != "sub.backup.com." {
+		t.Errorf("CNAME owner: got %q, want sub.backup.com.", cname.Hdr.Name)
+	}
+	if cname.Target != "target.other.com." {
+		t.Errorf("CNAME target: got %q, want target.other.com.", cname.Target)
+	}
+}
+
+func TestResolve_CNAMESynthesis_NoCNAMENoA_ReturnsEmpty(t *testing.T) {
+	rootZone := buildZone("root.com.") // no records at sub.root.com.
+	backupZone := buildZone("backup.com.")
+
+	rrs := Resolve("sub.backup.com.", dns.TypeA, "backup.com.", backupZone, rootZone)
+
+	if len(rrs) != 0 {
+		t.Errorf("expected empty result, got %d records", len(rrs))
+	}
+}
+
 func TestResolve_NilRootZone_DoesNotPanic(t *testing.T) {
 	// Should not panic even with nil rootZone.
 	defer func() {
