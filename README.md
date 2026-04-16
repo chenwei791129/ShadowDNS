@@ -80,7 +80,6 @@ Response sent to client
 
 ### Planned
 
-- IXFR (incremental zone transfer) — slaves currently receive a full AXFR on each NOTIFY
 - DNSSEC — signing, NSEC/NSEC3, DS records
 - IPv6 listener
 - DNS Cookies (RFC 7873) — server-side cookie validation to mitigate source IP spoofing
@@ -92,6 +91,7 @@ Response sent to client
 
 ### Not supported
 
+- IXFR (incremental zone transfer) — not planned; slaves receive a full AXFR on each NOTIFY, which is the protocol-defined fallback per RFC 1995
 - Dynamic Update (RFC 2136) — not planned; all record changes go through zone file edits and reload
 - Recursion — ShadowDNS is authoritative-only; `recursion no` is always in effect
 - `type slave` or `type forward` zones — rejected at startup with a fatal error
@@ -112,7 +112,7 @@ Response sent to client
 | Zone aliasing (backup domain) | No            | Yes          |
 | Hot reload (SIGHUP)           | Yes           | Yes          |
 | Prometheus metrics            | No            | Yes          |
-| IXFR                          | Yes           | Planned      |
+| IXFR                          | Yes           | No           |
 | DNSSEC                        | Yes           | Planned      |
 | IPv6 listener                 | Yes           | Planned      |
 | DNS Cookies (RFC 7873)        | No            | Planned      |
@@ -236,9 +236,9 @@ ShadowDNS v1 is a foundation implementation. The config loader, zone parser, vie
 
 This software has not yet been deployed to production. Integration testing against a production-scale dataset (12,000+ zone files across 7 views) is planned before any production cutover. See the full architectural decisions and four-phase migration plan at [openspec/changes/shadowdns-foundation/design.md](openspec/changes/shadowdns-foundation/design.md).
 
-Known limitations to address before production use:
+Design decisions:
 
-- IXFR is not supported; slaves perform a full AXFR on each NOTIFY.
+- IXFR is intentionally not supported; slaves perform a full AXFR on each NOTIFY (RFC 1995 fallback).
 
 ## Pre-deployment Checklist
 
