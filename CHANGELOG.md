@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.5.0...v0.6.0) (2026-04-16)
+
+
+### Features
+
+* **dns:** match wildcard records per RFC 4592 ([4265738](https://github.com/chenwei791129/ShadowDNS/commit/42657384b856f5efe5d5733da572fed2a3fd5c2f))
+
+
+### Bug Fixes
+
+* **config:** add pid-file option for shadowdns service ([8997a6d](https://github.com/chenwei791129/ShadowDNS/commit/8997a6d5db195a0129ac35f8a897f1ece7a79772))
+* **dns:** synthesize CNAME response per RFC 1034 §3.6.2 ([1b62f1e](https://github.com/chenwei791129/ShadowDNS/commit/1b62f1e926846c858e044d132af38a5a079c448d))
+
 ## [0.5.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.4.0...v0.5.0) (2026-04-15)
 
 
