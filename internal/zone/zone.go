@@ -128,3 +128,67 @@ func (z *Zone) Lookup(owner string, qtype uint16) []dns.RR {
 	}
 	return filterByQtype(rrs, qtype)
 }
+
+// MaxCNAMEDepth limits CNAME chain following to prevent infinite loops
+// from circular zone configurations.
+const MaxCNAMEDepth = 8
+
+// FollowCNAME follows in-zone CNAME targets per RFC 1034 §3.6.2.
+// Starting from the initial CNAME record(s), it checks whether each target
+// is within the same zone (in-bailiwick). If so, it looks up the target for
+// qtype and appends the results. If the target is itself a CNAME, the process
+// repeats up to MaxCNAMEDepth total records.
+func (z *Zone) FollowCNAME(initial []dns.RR, qtype uint16) []dns.RR {
+	answer := make([]dns.RR, 0, MaxCNAMEDepth+1)
+	answer = append(answer, initial...)
+
+	originSuffix := "." + z.Origin
+
+	for range MaxCNAMEDepth - len(initial) {
+		last, ok := answer[len(answer)-1].(*dns.CNAME)
+		if !ok {
+			break
+		}
+		target := strings.ToLower(last.Target)
+
+		if target != z.Origin && !strings.HasSuffix(target, originSuffix) {
+			break
+		}
+
+		if rrs := z.Lookup(target, qtype); len(rrs) > 0 {
+			answer = append(answer, rrs...)
+			break
+		}
+
+		if cnames := z.Lookup(target, dns.TypeCNAME); len(cnames) > 0 {
+			answer = append(answer, cnames...)
+			continue
+		}
+
+		wRRs, wFound := z.LookupWildcard(target, qtype)
+		if wFound && len(wRRs) > 0 {
+			answer = append(answer, copyWithOwner(wRRs, target)...)
+			break
+		}
+
+		if wCNAMEs, _ := z.LookupWildcard(target, dns.TypeCNAME); len(wCNAMEs) > 0 {
+			answer = append(answer, copyWithOwner(wCNAMEs, target)...)
+			continue
+		}
+
+		break
+	}
+
+	return answer
+}
+
+// copyWithOwner returns deep copies of rrs with owner name set to name.
+func copyWithOwner(rrs []dns.RR, name string) []dns.RR {
+	result := make([]dns.RR, len(rrs))
+	for i, rr := range rrs {
+		cp := dns.Copy(rr)
+		cp.Header().Name = name
+		result[i] = cp
+	}
+	return result
+}

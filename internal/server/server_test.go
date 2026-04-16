@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"sync"
@@ -1641,5 +1642,249 @@ func TestServeDNS_NilMetrics_NoPanic(t *testing.T) {
 	resp := query(t, "udp", udpAddr, "www.root.com.", dns.TypeA)
 	if resp.Rcode != dns.RcodeSuccess {
 		t.Errorf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// In-zone CNAME following (RFC 1034 §3.6.2)
+// ---------------------------------------------------------------------------
+
+func TestCNAMEFollowing_RootZone(t *testing.T) {
+	rootZ := buildRootZone("root.com.",
+		makeCNAMERecord("alias.root.com.", "target.root.com.", 300),
+		makeARecord("target.root.com.", "1.2.3.4", 300),
+		// chain: a → b → c (2-hop)
+		makeCNAMERecord("a.root.com.", "b.root.com.", 300),
+		makeCNAMERecord("b.root.com.", "c.root.com.", 300),
+		makeARecord("c.root.com.", "5.6.7.8", 300),
+		// out-of-bailiwick
+		makeCNAMERecord("ext.root.com.", "target.other.com.", 300),
+		// CNAME to a name with A and AAAA (for AAAA success test)
+		makeCNAMERecord("noaaaa.root.com.", "onlya.root.com.", 300),
+		makeARecord("onlya.root.com.", "9.9.9.9", 300),
+	)
+	rootZ.AddRR(&dns.AAAA{
+		Hdr:  dns.RR_Header{Name: "target.root.com.", Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 300},
+		AAAA: net.ParseIP("2001:db8::1"),
+	})
+
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}, nil)
+
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	t.Run("single in-zone CNAME + A", func(t *testing.T) {
+		resp := query(t, "udp", udpAddr, "alias.root.com.", dns.TypeA)
+		if resp.Rcode != dns.RcodeSuccess {
+			t.Fatalf("rcode: got %s, want NOERROR", dns.RcodeToString[resp.Rcode])
+		}
+		if !resp.Authoritative {
+			t.Error("expected AA=1")
+		}
+		if len(resp.Answer) != 2 {
+			t.Fatalf("answer count: got %d, want 2", len(resp.Answer))
+		}
+		cname, ok := resp.Answer[0].(*dns.CNAME)
+		if !ok {
+			t.Fatalf("answer[0]: got %T, want *dns.CNAME", resp.Answer[0])
+		}
+		if cname.Target != "target.root.com." {
+			t.Errorf("CNAME target: got %q, want target.root.com.", cname.Target)
+		}
+		a, ok := resp.Answer[1].(*dns.A)
+		if !ok {
+			t.Fatalf("answer[1]: got %T, want *dns.A", resp.Answer[1])
+		}
+		if a.A.String() != "1.2.3.4" {
+			t.Errorf("A record: got %s, want 1.2.3.4", a.A)
+		}
+	})
+
+	t.Run("CNAME chain 2-hop", func(t *testing.T) {
+		resp := query(t, "udp", udpAddr, "a.root.com.", dns.TypeA)
+		if resp.Rcode != dns.RcodeSuccess {
+			t.Fatalf("rcode: got %s, want NOERROR", dns.RcodeToString[resp.Rcode])
+		}
+		if len(resp.Answer) != 3 {
+			t.Fatalf("answer count: got %d, want 3 (2 CNAME + 1 A)", len(resp.Answer))
+		}
+		// a → b
+		cn1, ok := resp.Answer[0].(*dns.CNAME)
+		if !ok {
+			t.Fatalf("answer[0]: got %T, want *dns.CNAME", resp.Answer[0])
+		}
+		if cn1.Target != "b.root.com." {
+			t.Errorf("answer[0] CNAME target: got %q, want b.root.com.", cn1.Target)
+		}
+		// b → c
+		cn2, ok := resp.Answer[1].(*dns.CNAME)
+		if !ok {
+			t.Fatalf("answer[1]: got %T, want *dns.CNAME", resp.Answer[1])
+		}
+		if cn2.Target != "c.root.com." {
+			t.Errorf("answer[1] CNAME target: got %q, want c.root.com.", cn2.Target)
+		}
+		// c = A
+		a, ok := resp.Answer[2].(*dns.A)
+		if !ok {
+			t.Fatalf("answer[2]: got %T, want *dns.A", resp.Answer[2])
+		}
+		if a.A.String() != "5.6.7.8" {
+			t.Errorf("A record: got %s, want 5.6.7.8", a.A)
+		}
+	})
+
+	t.Run("out-of-bailiwick returns only CNAME", func(t *testing.T) {
+		resp := query(t, "udp", udpAddr, "ext.root.com.", dns.TypeA)
+		if resp.Rcode != dns.RcodeSuccess {
+			t.Fatalf("rcode: got %s, want NOERROR", dns.RcodeToString[resp.Rcode])
+		}
+		if len(resp.Answer) != 1 {
+			t.Fatalf("answer count: got %d, want 1 (CNAME only)", len(resp.Answer))
+		}
+		cname, ok := resp.Answer[0].(*dns.CNAME)
+		if !ok {
+			t.Fatalf("answer[0]: got %T, want *dns.CNAME", resp.Answer[0])
+		}
+		if cname.Target != "target.other.com." {
+			t.Errorf("CNAME target: got %q, want target.other.com.", cname.Target)
+		}
+	})
+
+	t.Run("in-zone target no AAAA returns CNAME only", func(t *testing.T) {
+		resp := query(t, "udp", udpAddr, "noaaaa.root.com.", dns.TypeAAAA)
+		if resp.Rcode != dns.RcodeSuccess {
+			t.Fatalf("rcode: got %s, want NOERROR", dns.RcodeToString[resp.Rcode])
+		}
+		if len(resp.Answer) != 1 {
+			t.Fatalf("answer count: got %d, want 1 (CNAME only, no AAAA at target)", len(resp.Answer))
+		}
+		if _, ok := resp.Answer[0].(*dns.CNAME); !ok {
+			t.Fatalf("answer[0]: got %T, want *dns.CNAME", resp.Answer[0])
+		}
+	})
+
+	t.Run("explicit CNAME query does not follow", func(t *testing.T) {
+		resp := query(t, "udp", udpAddr, "alias.root.com.", dns.TypeCNAME)
+		if resp.Rcode != dns.RcodeSuccess {
+			t.Fatalf("rcode: got %s, want NOERROR", dns.RcodeToString[resp.Rcode])
+		}
+		if len(resp.Answer) != 1 {
+			t.Fatalf("answer count: got %d, want 1 (CNAME only, no following)", len(resp.Answer))
+		}
+	})
+
+	t.Run("AAAA at in-zone CNAME returns CNAME + AAAA", func(t *testing.T) {
+		resp := query(t, "udp", udpAddr, "alias.root.com.", dns.TypeAAAA)
+		if resp.Rcode != dns.RcodeSuccess {
+			t.Fatalf("rcode: got %s, want NOERROR", dns.RcodeToString[resp.Rcode])
+		}
+		if len(resp.Answer) != 2 {
+			t.Fatalf("answer count: got %d, want 2 (CNAME + AAAA)", len(resp.Answer))
+		}
+		if _, ok := resp.Answer[0].(*dns.CNAME); !ok {
+			t.Fatalf("answer[0]: got %T, want *dns.CNAME", resp.Answer[0])
+		}
+		aaaa, ok := resp.Answer[1].(*dns.AAAA)
+		if !ok {
+			t.Fatalf("answer[1]: got %T, want *dns.AAAA", resp.Answer[1])
+		}
+		if aaaa.AAAA.String() != "2001:db8::1" {
+			t.Errorf("AAAA: got %s, want 2001:db8::1", aaaa.AAAA)
+		}
+	})
+}
+
+func TestCNAMEFollowing_DepthLimit(t *testing.T) {
+	// Build a circular chain: c1 → c2 → c3 → ... → c9 → c1
+	rootZ := buildRootZone("root.com.")
+	for i := 1; i <= 9; i++ {
+		next := i + 1
+		if next > 9 {
+			next = 1
+		}
+		rootZ.AddRR(makeCNAMERecord(
+			fmt.Sprintf("c%d.root.com.", i),
+			fmt.Sprintf("c%d.root.com.", next),
+			300,
+		))
+	}
+
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}, nil)
+
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "c1.root.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("rcode: got %s, want NOERROR", dns.RcodeToString[resp.Rcode])
+	}
+	// Initial CNAME (c1→c2) + 7 more followings = 8 total CNAMEs (depth limit)
+	if len(resp.Answer) > 8 {
+		t.Errorf("answer count: got %d, want at most 8 (depth limit)", len(resp.Answer))
+	}
+	if len(resp.Answer) < 1 {
+		t.Fatalf("answer count: got 0, want at least 1")
+	}
+	// All should be CNAME records (no A exists)
+	for i, rr := range resp.Answer {
+		if _, ok := rr.(*dns.CNAME); !ok {
+			t.Errorf("answer[%d]: got %T, want *dns.CNAME", i, rr)
+		}
+	}
+}
+
+func TestCNAMEFollowing_WildcardCNAME_InZone(t *testing.T) {
+	rootZ := buildRootZone("root.com.",
+		makeARecord("service.root.com.", "10.0.0.1", 300),
+	)
+	rootZ.AddRR(makeCNAMERecord("*.root.com.", "service.root.com.", 300))
+
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}, nil)
+
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "foo.root.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("rcode: got %s, want NOERROR", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 2 {
+		t.Fatalf("answer count: got %d, want 2 (CNAME + A)", len(resp.Answer))
+	}
+	cname, ok := resp.Answer[0].(*dns.CNAME)
+	if !ok {
+		t.Fatalf("answer[0]: got %T, want *dns.CNAME", resp.Answer[0])
+	}
+	if cname.Hdr.Name != "foo.root.com." {
+		t.Errorf("CNAME owner: got %q, want foo.root.com.", cname.Hdr.Name)
+	}
+	if cname.Target != "service.root.com." {
+		t.Errorf("CNAME target: got %q, want service.root.com.", cname.Target)
+	}
+	a, ok := resp.Answer[1].(*dns.A)
+	if !ok {
+		t.Fatalf("answer[1]: got %T, want *dns.A", resp.Answer[1])
+	}
+	if a.A.String() != "10.0.0.1" {
+		t.Errorf("A record: got %s, want 10.0.0.1", a.A)
 	}
 }

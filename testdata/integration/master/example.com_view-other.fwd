@@ -27,3 +27,8 @@ cdn       IN CNAME d222222abcdef8.cloudfront.net.
 mail      IN CNAME mx1.example.com.
 _sip._tcp IN SRV   10 5 5060 sip.example.com.
 sip       IN A     198.51.100.40
+
+; CNAME chain for in-zone following tests
+hop1      IN CNAME hop2.example.com.
+hop2      IN CNAME hop3.example.com.
+hop3      IN A     198.51.100.50

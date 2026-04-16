@@ -30,7 +30,8 @@ func TestWildcard_A(t *testing.T) {
 }
 
 // TestWildcard_CNAME_Synthesis verifies that a wildcard CNAME is returned
-// when querying a non-CNAME type for a name matching *.sub.example.com.
+// when querying a non-CNAME type for a name matching *.sub.example.com.,
+// and that in-zone CNAME following resolves the target via wildcard A.
 func TestWildcard_CNAME_Synthesis(t *testing.T) {
 	srv, cancel := newTestServer(t)
 	defer cancel()
@@ -40,8 +41,10 @@ func TestWildcard_CNAME_Synthesis(t *testing.T) {
 
 	assertNoError(t, resp)
 	assertAuthoritative(t, resp)
-	assertAnswerCount(t, resp, 1)
+	assertAnswerCount(t, resp, 2)
 	assertHasCNAME(t, resp, "foo.sub.example.com.", "target.example.com.")
+	// target.example.com. has no exact A; resolved via *.example.com. wildcard.
+	assertHasA(t, resp, "target.example.com.", "10.99.99.1")
 }
 
 // TestWildcard_ENTBlocking verifies that an ENT (ent.example.com.) prevents

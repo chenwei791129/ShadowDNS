@@ -188,3 +188,114 @@ func TestResolve_NilRootZone_DoesNotPanic(t *testing.T) {
 	}()
 	_ = Resolve("backup.com.", dns.TypeA, "backup.com.", nil, nil)
 }
+
+// ---------------------------------------------------------------------------
+// In-zone CNAME following in backup zone resolution
+// ---------------------------------------------------------------------------
+
+func TestResolve_CNAMEFollowing_InZone(t *testing.T) {
+	rootZone := buildZone("root.com.",
+		newCNAME("app.root.com.", "service.root.com."),
+		newA("service.root.com.", "10.0.0.1"),
+	)
+	backupZone := buildZone("backup.com.")
+
+	rrs := Resolve("app.backup.com.", dns.TypeA, "backup.com.", backupZone, rootZone)
+
+	if len(rrs) != 2 {
+		t.Fatalf("expected 2 records (CNAME + A), got %d", len(rrs))
+	}
+	cname, ok := rrs[0].(*dns.CNAME)
+	if !ok {
+		t.Fatalf("rrs[0]: expected *dns.CNAME, got %T", rrs[0])
+	}
+	if cname.Hdr.Name != "app.backup.com." {
+		t.Errorf("CNAME owner: got %q, want app.backup.com.", cname.Hdr.Name)
+	}
+	if cname.Target != "service.backup.com." {
+		t.Errorf("CNAME target: got %q, want service.backup.com.", cname.Target)
+	}
+	a, ok := rrs[1].(*dns.A)
+	if !ok {
+		t.Fatalf("rrs[1]: expected *dns.A, got %T", rrs[1])
+	}
+	if a.Hdr.Name != "service.backup.com." {
+		t.Errorf("A owner: got %q, want service.backup.com.", a.Hdr.Name)
+	}
+	if a.A.String() != "10.0.0.1" {
+		t.Errorf("A IP: got %q, want 10.0.0.1", a.A.String())
+	}
+}
+
+func TestResolve_CNAMEFollowing_Chain(t *testing.T) {
+	rootZone := buildZone("root.com.",
+		newCNAME("a.root.com.", "b.root.com."),
+		newCNAME("b.root.com.", "c.root.com."),
+		newA("c.root.com.", "9.8.7.6"),
+	)
+	backupZone := buildZone("backup.com.")
+
+	rrs := Resolve("a.backup.com.", dns.TypeA, "backup.com.", backupZone, rootZone)
+
+	if len(rrs) != 3 {
+		t.Fatalf("expected 3 records (2 CNAME + 1 A), got %d", len(rrs))
+	}
+	cn1 := rrs[0].(*dns.CNAME)
+	if cn1.Hdr.Name != "a.backup.com." || cn1.Target != "b.backup.com." {
+		t.Errorf("rrs[0]: owner=%q target=%q", cn1.Hdr.Name, cn1.Target)
+	}
+	cn2 := rrs[1].(*dns.CNAME)
+	if cn2.Hdr.Name != "b.backup.com." || cn2.Target != "c.backup.com." {
+		t.Errorf("rrs[1]: owner=%q target=%q", cn2.Hdr.Name, cn2.Target)
+	}
+	a := rrs[2].(*dns.A)
+	if a.Hdr.Name != "c.backup.com." || a.A.String() != "9.8.7.6" {
+		t.Errorf("rrs[2]: owner=%q ip=%s", a.Hdr.Name, a.A)
+	}
+}
+
+func TestResolve_CNAMEFollowing_OutOfBailiwick(t *testing.T) {
+	rootZone := buildZone("root.com.",
+		newCNAME("app.root.com.", "cdn.external.com."),
+	)
+	backupZone := buildZone("backup.com.")
+
+	rrs := Resolve("app.backup.com.", dns.TypeA, "backup.com.", backupZone, rootZone)
+
+	if len(rrs) != 1 {
+		t.Fatalf("expected 1 record (CNAME only), got %d", len(rrs))
+	}
+	cname := rrs[0].(*dns.CNAME)
+	if cname.Hdr.Name != "app.backup.com." {
+		t.Errorf("CNAME owner: got %q, want app.backup.com.", cname.Hdr.Name)
+	}
+	if cname.Target != "cdn.external.com." {
+		t.Errorf("CNAME target: got %q, want cdn.external.com.", cname.Target)
+	}
+}
+
+func TestResolve_CNAMEFollowing_WildcardInZone(t *testing.T) {
+	rootZone := buildZone("root.com.",
+		newA("service.root.com.", "10.0.0.1"),
+	)
+	rootZone.AddRR(newCNAME("*.root.com.", "service.root.com."))
+
+	backupZone := buildZone("backup.com.")
+
+	rrs := Resolve("any.backup.com.", dns.TypeA, "backup.com.", backupZone, rootZone)
+
+	if len(rrs) != 2 {
+		t.Fatalf("expected 2 records (CNAME + A), got %d", len(rrs))
+	}
+	cname := rrs[0].(*dns.CNAME)
+	if cname.Hdr.Name != "any.backup.com." {
+		t.Errorf("CNAME owner: got %q, want any.backup.com.", cname.Hdr.Name)
+	}
+	if cname.Target != "service.backup.com." {
+		t.Errorf("CNAME target: got %q, want service.backup.com.", cname.Target)
+	}
+	a := rrs[1].(*dns.A)
+	if a.Hdr.Name != "service.backup.com." {
+		t.Errorf("A owner: got %q, want service.backup.com.", a.Hdr.Name)
+	}
+}

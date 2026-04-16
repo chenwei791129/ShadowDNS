@@ -1,6 +1,7 @@
 package zone
 
 import (
+	"fmt"
 	"net"
 	"testing"
 
@@ -296,5 +297,93 @@ func TestZone_LookupNoMatch_ReturnsEmptySlice(t *testing.T) {
 	rrs = z.Lookup("root.com.", dns.TypeA)
 	if rrs == nil {
 		t.Error("Lookup for wrong type returned nil, want empty slice")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FollowCNAME
+// ---------------------------------------------------------------------------
+
+func newTestCNAME(owner, target string) *dns.CNAME {
+	return &dns.CNAME{
+		Hdr:    dns.RR_Header{Name: owner, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+		Target: target,
+	}
+}
+
+func newTestA(owner, ip string) *dns.A {
+	return &dns.A{
+		Hdr: dns.RR_Header{Name: owner, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+		A:   net.ParseIP(ip).To4(),
+	}
+}
+
+func TestFollowCNAME_InZoneSingleHop(t *testing.T) {
+	z := &Zone{Origin: "root.com.", Records: make(map[string][]dns.RR)}
+	z.AddRR(newTestCNAME("alias.root.com.", "target.root.com."))
+	z.AddRR(newTestA("target.root.com.", "1.2.3.4"))
+
+	initial := z.Lookup("alias.root.com.", dns.TypeCNAME)
+	result := z.FollowCNAME(initial, dns.TypeA)
+
+	if len(result) != 2 {
+		t.Fatalf("got %d records, want 2", len(result))
+	}
+	if _, ok := result[0].(*dns.CNAME); !ok {
+		t.Fatalf("result[0]: got %T, want *dns.CNAME", result[0])
+	}
+	a, ok := result[1].(*dns.A)
+	if !ok {
+		t.Fatalf("result[1]: got %T, want *dns.A", result[1])
+	}
+	if a.A.String() != "1.2.3.4" {
+		t.Errorf("A: got %s, want 1.2.3.4", a.A)
+	}
+}
+
+func TestFollowCNAME_Chain(t *testing.T) {
+	z := &Zone{Origin: "root.com.", Records: make(map[string][]dns.RR)}
+	z.AddRR(newTestCNAME("a.root.com.", "b.root.com."))
+	z.AddRR(newTestCNAME("b.root.com.", "c.root.com."))
+	z.AddRR(newTestA("c.root.com.", "5.6.7.8"))
+
+	initial := z.Lookup("a.root.com.", dns.TypeCNAME)
+	result := z.FollowCNAME(initial, dns.TypeA)
+
+	if len(result) != 3 {
+		t.Fatalf("got %d records, want 3 (2 CNAME + 1 A)", len(result))
+	}
+}
+
+func TestFollowCNAME_OutOfBailiwick(t *testing.T) {
+	z := &Zone{Origin: "root.com.", Records: make(map[string][]dns.RR)}
+	z.AddRR(newTestCNAME("ext.root.com.", "target.other.com."))
+
+	initial := z.Lookup("ext.root.com.", dns.TypeCNAME)
+	result := z.FollowCNAME(initial, dns.TypeA)
+
+	if len(result) != 1 {
+		t.Fatalf("got %d records, want 1 (CNAME only, out-of-bailiwick)", len(result))
+	}
+}
+
+func TestFollowCNAME_DepthLimit(t *testing.T) {
+	z := &Zone{Origin: "root.com.", Records: make(map[string][]dns.RR)}
+	for i := 1; i <= 10; i++ {
+		next := i%10 + 1
+		z.AddRR(newTestCNAME(
+			fmt.Sprintf("c%d.root.com.", i),
+			fmt.Sprintf("c%d.root.com.", next),
+		))
+	}
+
+	initial := z.Lookup("c1.root.com.", dns.TypeCNAME)
+	result := z.FollowCNAME(initial, dns.TypeA)
+
+	if len(result) > MaxCNAMEDepth {
+		t.Errorf("got %d records, want at most %d (depth limit)", len(result), MaxCNAMEDepth)
+	}
+	if len(result) < 1 {
+		t.Fatal("got 0 records, want at least 1")
 	}
 }
