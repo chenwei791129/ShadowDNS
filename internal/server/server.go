@@ -126,6 +126,13 @@ func (s *Server) CurrentState() *ServerState {
 // using their snapshot; new requests will see the replacement.
 // After the swap, it triggers a GC cycle to reclaim memory held by the
 // old state (zone records, matcher structures, etc.).
+//
+// Note: runtime.GC() and debug.FreeOSMemory() run synchronously in the
+// caller's goroutine (typically the SIGHUP handler). At large zone counts
+// this introduces a short stop-the-world pause that briefly stalls query
+// handlers. The trade-off is intentional: returning memory to the OS
+// promptly after reload matters more than absolute latency smoothness
+// during an already-disruptive reload event.
 func (s *Server) SwapState(state ServerState) {
 	state.sanitize()
 	s.state.Store(&state)

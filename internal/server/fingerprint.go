@@ -47,12 +47,13 @@ func (m VerifyMode) String() string {
 }
 
 // zoneFingerprint is a point-in-time snapshot of a zone file's identity.
-// Which fields are meaningful depends on the VerifyMode used when the
-// fingerprint was computed.
+// Which fields participate in the comparison depends on the VerifyMode used:
+// changed() ignores mtime under VerifyModeHash and ignores hash under
+// VerifyModeSize.
 type zoneFingerprint struct {
-	size  int64  // file size in bytes (always populated for non-None modes)
-	mtime int64  // modification time in nanoseconds (populated for VerifyModeSize)
-	hash  uint64 // xxhash64 of full file contents (populated for VerifyModeHash)
+	size  int64  // file size in bytes (populated for all non-None modes)
+	mtime int64  // modification time in nanoseconds (populated for all non-None modes; compared only in VerifyModeSize)
+	hash  uint64 // xxhash64 of full file contents (populated and compared only in VerifyModeHash)
 }
 
 // computeFingerprint computes and returns the fingerprint for the file at path
@@ -62,6 +63,14 @@ type zoneFingerprint struct {
 // For VerifyModeSize only os.Stat is called; the file is not opened.
 // For VerifyModeHash os.Stat is called and the full file is read to compute
 // the xxhash64.
+//
+// Note: a small TOCTOU window exists between os.Stat and os.Open under
+// VerifyModeHash — an atomic rename between the two calls will pair the new
+// file's size with a hash of whichever file os.Open resolved. In the worst
+// case this yields a fingerprint that does not correspond to any single file
+// version; the next reload will compute a fresh fingerprint that does not
+// match, triggering the re-parse. A stale reuse is not possible because the
+// comparison happens against whatever is on disk at the next reload.
 func computeFingerprint(path string, mode VerifyMode) (zoneFingerprint, error) {
 	if mode == VerifyModeNone {
 		return zoneFingerprint{}, nil
