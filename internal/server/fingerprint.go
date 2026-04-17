@@ -19,10 +19,14 @@ const (
 	// contents change.
 	VerifyModeHash VerifyMode = iota
 
-	// VerifyModeSize compares only (mtime, size) without reading file contents.
-	// Faster than hash mode but cannot detect same-size content changes when
-	// the source preserves mtime (e.g. rsync with -t). Use only when the
-	// release pipeline guarantees mtime will differ on every rewrite.
+	// VerifyModeSize compares (mtime, size) without reading file contents.
+	// Despite the name "size", mtime is part of the comparison: both must
+	// match for a zone to be considered unchanged. The name reflects the
+	// CLI flag value (-reload-verify=size) and the contrast with "hash"
+	// (no content read), not the exact set of fields compared.
+	// Faster than hash mode but cannot detect same-size content changes
+	// when the source preserves mtime (e.g. rsync with -t). Use only when
+	// the release pipeline guarantees mtime will differ on every rewrite.
 	VerifyModeSize
 
 	// VerifyModeNone disables fingerprinting entirely. Every reload re-parses
