@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -1928,3 +1929,42 @@ func TestSwapState_GCCalledEachSwap(t *testing.T) {
 	}
 }
 
+// TestReload_FailedBuildDoesNotInvokeGC verifies that when BuildState returns
+// an error (e.g. a zone file becomes unparseable), the caller's contract of
+// skipping SwapState is honored and the GC hook is never invoked. This
+// guarantees the failed reload path does not gratuitously pause the world.
+func TestReload_FailedBuildDoesNotInvokeGC(t *testing.T) {
+	dir := t.TempDir()
+	goodFile := writeBuildTestZoneFile(t, dir, "good.com.zone", "good.com.", "1")
+	badFile := writeBuildTestZoneFile(t, dir, "bad.com.zone", "bad.com.", "1")
+
+	cfg := singleViewConfig([]config.Zone{
+		{Name: "good.com", Type: "master", File: goodFile},
+		{Name: "bad.com", Type: "master", File: badFile},
+	})
+
+	initial, _, err := BuildState(cfg, config.AliasMap{}, nil, VerifyModeHash, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("initial BuildState: %v", err)
+	}
+
+	var callCount int
+	srv := NewServer(initial, nil)
+	srv.gcHook = func() { callCount++ }
+
+	// Corrupt bad.com.zone so the next BuildState fails.
+	if err := os.WriteFile(badFile, []byte("INVALID ZONE CONTENT %%%"), 0o644); err != nil {
+		t.Fatalf("corrupt zone file: %v", err)
+	}
+
+	_, _, err = BuildState(cfg, config.AliasMap{}, &initial, VerifyModeHash, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected BuildState to return an error after corruption; got nil")
+	}
+
+	// The caller (reload()) must not call SwapState on error — so the GC hook
+	// must remain untouched.
+	if callCount != 0 {
+		t.Errorf("gcHook invoked on failed reload path: got %d calls, want 0", callCount)
+	}
+}
