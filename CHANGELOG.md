@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.7.0...v0.8.0) (2026-04-17)
+
+
+### Features
+
+* **server:** diff-based zone reload with fingerprint reuse ([10c1dbc](https://github.com/chenwei791129/ShadowDNS/commit/10c1dbcbe1c53322da2616b68ec59c239595e9d9))
+
+
+### Bug Fixes
+
+* **test:** eliminate flaky pointer lookup in reload diff test ([6c8f16f](https://github.com/chenwei791129/ShadowDNS/commit/6c8f16fb67f73f996ca19b7ea8b2746656eb8e22))
+
 ## [0.7.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.6.0...v0.7.0) (2026-04-16)
 
 
