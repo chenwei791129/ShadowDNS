@@ -139,7 +139,18 @@ func loadZone(
 	}
 
 	if prev != nil && mode != VerifyModeNone {
-		// If alias-membership changed, role must be recomputed — skip reuse.
+		// Alias-membership check: skip reuse only when the origin flipped
+		// between Root and BackupOverride, because zone.Classify would then
+		// produce different z.Role and a different filtered z.Records.
+		//
+		// INVARIANT — safe to reuse across alias target changes: zone.Classify
+		// only reads aliases[z.Origin] as a presence check (key lookup), not
+		// the mapped value. And the query-time fallback target comes from
+		// state.Aliases, which is rebuilt fresh every BuildState and never
+		// reused. So a backup zone whose alias target moved from A → B keeps
+		// its correct z.Records filter, while Detect() at query time sees the
+		// new target B. If zone.Classify ever starts depending on the alias
+		// target (the mapped value), this reuse condition must be tightened.
 		prevIsBackup := prev.BackupZones[viewName][origin] != nil
 		_, nowIsBackup := aliases[origin]
 		if prevIsBackup == nowIsBackup {
