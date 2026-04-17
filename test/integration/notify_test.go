@@ -131,8 +131,8 @@ view "view-other" {
 }
 
 // freeLoopbackPort returns a loopback port that was free at the moment of
-// query. There's an inherent race between close-and-bind, but in practice the
-// OS keeps the port unused long enough for shadowdns to bind it.
+// query. The close-and-bind gap is an inherent TOCTOU race; callers are
+// expected to handle the race (startShadowDNS retries with a fresh port).
 func freeLoopbackPort(t *testing.T) int {
 	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -150,42 +150,137 @@ func freeLoopbackPort(t *testing.T) int {
 	return port
 }
 
-// startShadowDNS launches the built binary with the given extra args and
-// captures its combined stdout+stderr into a buffer. Returns the process,
-// the capture buffer (writes are thread-safe against reads once the process
-// has exited), and a cleanup function the caller MUST defer.
+const (
+	maxStartupAttempts = 3
+	startupWindow      = 3 * time.Second
+	startupPollEvery   = 20 * time.Millisecond
+)
+
+type startupOutcome int
+
+const (
+	startupSuccess startupOutcome = iota
+	startupBindFailed
+	startupChildExit
+	startupHung
+)
+
+func (o startupOutcome) String() string {
+	switch o {
+	case startupSuccess:
+		return "success"
+	case startupBindFailed:
+		return "bind-failed"
+	case startupChildExit:
+		return "child-exit"
+	case startupHung:
+		return "hung"
+	default:
+		return "unknown"
+	}
+}
+
+// startShadowDNS launches the built binary and tolerates transient bind
+// races: each attempt allocates a fresh loopback port, watches child output
+// for success / bind-failure signals, kills + reaps on failure, and retries
+// up to maxStartupAttempts. The caller MUST defer the returned cleanup.
 func startShadowDNS(t *testing.T, namedConf string, extraArgs ...string) (*exec.Cmd, *syncBuffer, func()) {
 	t.Helper()
 
 	bin := buildShadowDNSBinary(t)
-	port := freeLoopbackPort(t)
-	listenAddr := fmt.Sprintf("127.0.0.1:%d", port)
 
-	args := []string{
-		"-named-conf", namedConf,
-		"-listen", listenAddr,
-		"-metrics-addr", "", // disable metrics so we don't fight another free port
+	type attemptLog struct {
+		port    int
+		outcome startupOutcome
+		out     string
 	}
-	args = append(args, extraArgs...)
+	attempts := make([]attemptLog, 0, maxStartupAttempts)
 
-	cmd := exec.Command(bin, args...)
-	var buf syncBuffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	for i := 1; i <= maxStartupAttempts; i++ {
+		port := freeLoopbackPort(t)
+		listenAddr := fmt.Sprintf("127.0.0.1:%d", port)
 
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start shadowdns: %v", err)
-	}
-
-	cleanup := func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Signal(syscall.SIGTERM)
-			// Reap to avoid leaking the process; ignore error (already-exited is fine).
-			_ = cmd.Wait()
+		args := []string{
+			"-named-conf", namedConf,
+			"-listen", listenAddr,
+			"-metrics-addr", "", // disable metrics so we don't fight another free port
 		}
+		args = append(args, extraArgs...)
+
+		cmd := exec.Command(bin, args...)
+		buf := &syncBuffer{}
+		cmd.Stdout = buf
+		cmd.Stderr = buf
+
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start shadowdns (attempt %d): %v", i, err)
+		}
+
+		waitCh := make(chan error, 1)
+		go func() { waitCh <- cmd.Wait() }()
+
+		outcome := awaitStartupOutcome(buf, waitCh)
+
+		if outcome == startupSuccess {
+			cleanup := func() {
+				if cmd.Process != nil {
+					_ = cmd.Process.Signal(syscall.SIGTERM)
+					<-waitCh
+				}
+			}
+			return cmd, buf, cleanup
+		}
+
+		_ = cmd.Process.Signal(syscall.SIGKILL)
+		<-waitCh
+		attempts = append(attempts, attemptLog{port: port, outcome: outcome, out: buf.String()})
 	}
 
-	return cmd, &buf, cleanup
+	// Verbose dump so an operator can tell port contention from an
+	// application-level bug: each attempt's outcome is the tell.
+	var b strings.Builder
+	fmt.Fprintf(&b, "shadowdns failed to start within %d attempts:\n", maxStartupAttempts)
+	for i, a := range attempts {
+		fmt.Fprintf(&b, "--- attempt %d (port %d, %s) ---\n%s\n", i+1, a.port, a.outcome, a.out)
+	}
+	t.Fatalf("%s", b.String())
+	panic("unreachable")
+}
+
+// classifyStartupOutput returns (outcome, true) if buf contains a
+// startup success or bind-failure signal, (0, false) otherwise.
+func classifyStartupOutput(s string) (startupOutcome, bool) {
+	switch {
+	case strings.Contains(s, "shadowdns ready"):
+		return startupSuccess, true
+	case strings.Contains(s, "address already in use"),
+		strings.Contains(s, "bind: no listeners bound"):
+		return startupBindFailed, true
+	default:
+		return 0, false
+	}
+}
+
+func awaitStartupOutcome(buf *syncBuffer, waitCh <-chan error) startupOutcome {
+	deadline := time.Now().Add(startupWindow)
+	for {
+		if o, ok := classifyStartupOutput(buf.String()); ok {
+			return o
+		}
+		select {
+		case <-waitCh:
+			// Re-check: the signal may have landed between poll and exit.
+			if o, ok := classifyStartupOutput(buf.String()); ok {
+				return o
+			}
+			return startupChildExit
+		default:
+		}
+		if !time.Now().Before(deadline) {
+			return startupHung
+		}
+		time.Sleep(startupPollEvery)
+	}
 }
 
 // waitForLog polls buf until `substr` appears or timeout expires. Returns the
