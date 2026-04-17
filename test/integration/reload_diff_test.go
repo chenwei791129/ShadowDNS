@@ -151,21 +151,25 @@ func TestReloadDiff_SameSizeContentChange_HashDetects(t *testing.T) {
 	}
 	defer func() { _ = country.Close(); _ = asn.Close() }()
 
-	// Locate example.com zone file (first zone in the loaded config).
+	// Locate example.com zone file under a specific view. The fixture defines
+	// example.com in multiple views ("view-th" and "view-other"), so we must
+	// pin the test to one view to get deterministic pointer lookups below.
+	const targetView = "view-th"
 	var zoneFilePath string
 	for _, v := range cfg.Views {
+		if v.Name != targetView {
+			continue
+		}
 		for _, z := range v.Zones {
 			if z.Name == "example.com" {
 				zoneFilePath = z.File
 				break
 			}
 		}
-		if zoneFilePath != "" {
-			break
-		}
+		break
 	}
 	if zoneFilePath == "" {
-		t.Fatal("could not find example.com zone file in loaded config")
+		t.Fatalf("could not find example.com zone file for view %q in loaded config", targetView)
 	}
 
 	// --- Build state1 under VerifyModeHash ---
@@ -180,9 +184,10 @@ func TestReloadDiff_SameSizeContentChange_HashDetects(t *testing.T) {
 		t.Fatalf("initial BuildState (size): %v", err)
 	}
 
-	// Record original zone pointer for example.com under the first view.
-	origPtrHash := findExampleComZone(t, &state1Hash)
-	origPtrSize := findExampleComZone(t, &state1Size)
+	// Record original zone pointer for example.com under the target view.
+	const exampleOrigin = "example.com."
+	origPtrHash := findZonePointer(t, &state1Hash, targetView, exampleOrigin)
+	origPtrSize := findZonePointer(t, &state1Size, targetView, exampleOrigin)
 
 	// Rewrite the zone file with content of the exact same byte length but
 	// different content (changed serial: "2024010101" → "2024010102", same width).
@@ -221,7 +226,7 @@ func TestReloadDiff_SameSizeContentChange_HashDetects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload BuildState (hash): %v", err)
 	}
-	newPtrHash := findExampleComZone(t, &state2Hash)
+	newPtrHash := findZonePointer(t, &state2Hash, targetView, exampleOrigin)
 	if newPtrHash == origPtrHash {
 		t.Error("hash mode: expected example.com to be re-parsed (new pointer) after content change, got same pointer")
 	}
@@ -234,7 +239,7 @@ func TestReloadDiff_SameSizeContentChange_HashDetects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload BuildState (size): %v", err)
 	}
-	newPtrSize := findExampleComZone(t, &state2Size)
+	newPtrSize := findZonePointer(t, &state2Size, targetView, exampleOrigin)
 	if newPtrSize != origPtrSize {
 		t.Error("size mode: expected example.com pointer to be REUSED (size mode cannot detect same-size change), got new pointer")
 	}
@@ -317,17 +322,17 @@ func TestReloadDiff_NoneMode_AlwaysReparses(t *testing.T) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// findExampleComZone returns the *zone.Zone pointer for example.com. across
-// all views in the given state.  Fails the test if not found.
-func findExampleComZone(t *testing.T, state *server.ServerState) any {
+// findZonePointer returns the *zone.Zone pointer for the given view and
+// origin. Fails the test if not found. Callers must pass a specific view
+// because the fixture defines example.com in multiple views, making a
+// map-iteration lookup non-deterministic.
+func findZonePointer(t *testing.T, state *server.ServerState, viewName, origin string) any {
 	t.Helper()
-	const origin = "example.com."
-	for _, zones := range state.RootZones {
+	if zones, ok := state.RootZones[viewName]; ok {
 		if z, ok := zones[origin]; ok {
 			return z
 		}
 	}
-	t.Fatalf("example.com. not found in state.RootZones")
+	t.Fatalf("%s/%s not found in state.RootZones", viewName, origin)
 	return nil
 }
-
