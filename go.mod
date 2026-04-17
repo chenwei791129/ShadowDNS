@@ -3,6 +3,7 @@ module github.com/chenwei791129/ShadowDNS
 go 1.25.6
 
 require (
+	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/maxmind/mmdbwriter v1.2.0
 	github.com/miekg/dns v1.1.72
 	github.com/oschwald/maxminddb-golang v1.13.1
@@ -63,7 +64,6 @@ require (
 	github.com/catenacyber/perfsprint v0.10.1 // indirect
 	github.com/cavaliergopher/cpio v1.0.1 // indirect
 	github.com/ccojocar/zxcvbn-go v1.0.4 // indirect
-	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charithe/durationcheck v0.0.11 // indirect
 	github.com/charmbracelet/colorprofile v0.2.3-0.20250311203215-f60798e515dc // indirect
 	github.com/charmbracelet/lipgloss v1.1.0 // indirect

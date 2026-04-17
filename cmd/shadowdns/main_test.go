@@ -343,7 +343,7 @@ func startReloadTestServer(t *testing.T, dir string) (*server.Server, *view.Coun
 		t.Fatalf("load geoip: %v", err)
 	}
 
-	state, err := server.BuildState(cfg, aliases, country, asn, logger)
+	state, _, err := server.BuildState(cfg, aliases, nil, server.VerifyModeHash, country, asn, logger)
 	if err != nil {
 		t.Fatalf("build state: %v", err)
 	}
@@ -442,6 +442,70 @@ func TestReload_FailureLogsInitiatedOnly(t *testing.T) {
 	}
 	if bytes.Contains([]byte(output), []byte("reload complete")) {
 		t.Errorf("expected log NOT to contain %q on failure, got: %s", "reload complete", output)
+	}
+}
+
+// TestReload_DiffLog_ContainsVerifyModeAndCounts verifies that a successful
+// reload emits an INFO log entry containing the verify mode, the number of
+// zones that were reused (pointer unchanged), and the number that were
+// re-parsed (file changed / first load), per Requirement: Reload diff logging.
+func TestReload_DiffLog_ContainsVerifyModeAndCounts(t *testing.T) {
+	dir := setupReloadTestDir(t)
+
+	srv, country, asn, opts := startReloadTestServer(t, dir)
+	defer func() {
+		_ = country.Close()
+		_ = asn.Close()
+	}()
+
+	// Use hash mode (the default and safest mode).
+	opts.ReloadVerify = server.VerifyModeHash
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	if err := reload(context.Background(), opts, srv, country, asn, logger); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	output := buf.String()
+	// The diff INFO log must include all three structured fields.
+	for _, want := range []string{"verify_mode=", "reused=", "reparsed="} {
+		if !strings.Contains(output, want) {
+			t.Errorf("reload diff log missing field %q; full output:\n%s", want, output)
+		}
+	}
+}
+
+// TestReload_DiffLog_ReusedCountReflectsUnchangedZones verifies that when a
+// zone file has not changed, the reused count equals the total loaded zone
+// count and reparsed is 0.
+func TestReload_DiffLog_ReusedCountReflectsUnchangedZones(t *testing.T) {
+	dir := setupReloadTestDir(t)
+
+	srv, country, asn, opts := startReloadTestServer(t, dir)
+	defer func() {
+		_ = country.Close()
+		_ = asn.Close()
+	}()
+
+	opts.ReloadVerify = server.VerifyModeHash
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	// First reload: zone was just loaded at startup, fingerprints are set, so
+	// the zone file is unchanged → reused=1, reparsed=0.
+	if err := reload(context.Background(), opts, srv, country, asn, logger); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "reused=1") {
+		t.Errorf("expected reused=1 (zone unchanged), got:\n%s", output)
+	}
+	if !strings.Contains(output, "reparsed=0") {
+		t.Errorf("expected reparsed=0 (no zone changed), got:\n%s", output)
 	}
 }
 
@@ -1027,4 +1091,73 @@ func (w *testResponseWriter) Write([]byte) (int, error)   { return 0, nil }
 func (w *testResponseWriter) Close() error                { return nil }
 func (w *testResponseWriter) TsigStatus() error           { return nil }
 func (w *testResponseWriter) TsigTimersOnly(bool)         {}
+
+// ---------------------------------------------------------------------------
+// -reload-verify flag tests
+// ---------------------------------------------------------------------------
+
+// TestParseVerifyMode_AcceptsValidValues verifies that parseVerifyMode returns
+// the expected server.VerifyMode for each accepted string value.
+func TestParseVerifyMode_AcceptsValidValues(t *testing.T) {
+	tests := []struct {
+		input string
+		want  server.VerifyMode
+	}{
+		{"hash", server.VerifyModeHash},
+		{"size", server.VerifyModeSize},
+		{"none", server.VerifyModeNone},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got, err := parseVerifyMode(tc.input)
+			if err != nil {
+				t.Fatalf("parseVerifyMode(%q) returned unexpected error: %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Errorf("parseVerifyMode(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseVerifyMode_RejectsInvalidValue verifies that parseVerifyMode returns
+// a non-nil error for unrecognized values.
+func TestParseVerifyMode_RejectsInvalidValue(t *testing.T) {
+	for _, bad := range []string{"foo", "Hash", "HASH", "sha256", ""} {
+		t.Run(bad, func(t *testing.T) {
+			_, err := parseVerifyMode(bad)
+			if err == nil {
+				t.Errorf("parseVerifyMode(%q) expected error, got nil", bad)
+			}
+		})
+	}
+}
+
+// TestReloadVerifyFlag_DefaultIsHash verifies that the runOptions zero value
+// carries VerifyModeHash as the reload-verify default.
+func TestReloadVerifyFlag_DefaultIsHash(t *testing.T) {
+	var opts runOptions
+	if opts.ReloadVerify != server.VerifyModeHash {
+		t.Errorf("default ReloadVerify = %v, want VerifyModeHash", opts.ReloadVerify)
+	}
+}
+
+// TestReloadVerifyFlag_InvalidExitsNonZero builds the binary and runs it with
+// an invalid -reload-verify value, expecting a non-zero exit code.
+func TestReloadVerifyFlag_InvalidExitsNonZero(t *testing.T) {
+	binPath := filepath.Join(t.TempDir(), "shadowdns")
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	build.Dir = "."
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	out, err := exec.Command(binPath, "-named-conf", "/dev/null", "-reload-verify", "bogus").CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit for invalid -reload-verify value, got exit 0")
+	}
+	if !strings.Contains(string(out), "bogus") {
+		t.Errorf("expected error output to mention the invalid value %q, got: %s", "bogus", out)
+	}
+}
 func (w *testResponseWriter) Hijack()                     {}

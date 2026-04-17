@@ -10,23 +10,31 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
 
-// BuildState assembles a ServerState from parsed configuration: it parses
-// every zone file into memory, classifies zones as root or backup-override,
-// builds the view matcher, and constructs the allow-transfer ACL.
-//
-// Callers (the shadowdns binary and integration tests) share this so they
-// agree on how config becomes in-memory state.
+// BuildSummary reports how many zones were reused vs re-parsed during a
+// BuildState call. Used by the caller to emit reload diff log entries.
+type BuildSummary struct {
+	Reused   int
+	Reparsed int
+}
+
+// BuildState assembles a ServerState from parsed configuration. When prev is
+// non-nil and mode is not VerifyModeNone, unchanged zones (same fingerprint)
+// reuse their existing *zone.Zone pointer rather than re-parsing from disk.
 func BuildState(
 	cfg *config.Config,
 	aliases config.AliasMap,
+	prev *ServerState,
+	mode VerifyMode,
 	country *view.CountryDB,
 	asn *view.ASNDB,
 	logger *slog.Logger,
-) (ServerState, error) {
+) (ServerState, BuildSummary, error) {
 	rootZones := make(map[string]map[string]*zone.Zone)
 	backupZones := make(map[string]map[string]*zone.Zone)
 	zoneOrigins := make(map[string][]string)
+	fingerprints := make(map[string]map[string]zoneFingerprint)
 	viewRuleSets := make([]view.NamedRuleSet, 0, len(cfg.Views))
+	var summary BuildSummary
 
 	for _, v := range cfg.Views {
 		viewRuleSets = append(viewRuleSets, view.NamedRuleSet{
@@ -36,16 +44,24 @@ func BuildState(
 
 		rootZones[v.Name] = make(map[string]*zone.Zone)
 		backupZones[v.Name] = make(map[string]*zone.Zone)
+		fingerprints[v.Name] = make(map[string]zoneFingerprint)
 		seenOrigins := make([]string, 0, len(v.Zones))
 		seenSet := make(map[string]bool, len(v.Zones))
 
 		for _, z := range v.Zones {
 			origin := z.Name + "."
-			parsed, err := zone.ParseFile(z.File, origin, logger)
+
+			parsed, fp, reused, err := loadZone(z, origin, prev, v.Name, mode, aliases, logger)
 			if err != nil {
-				return ServerState{}, fmt.Errorf("view %q zone %q: %w", v.Name, z.Name, err)
+				return ServerState{}, BuildSummary{}, fmt.Errorf("view %q zone %q: %w", v.Name, z.Name, err)
 			}
-			zone.Classify(parsed, aliases, logger)
+
+			if reused {
+				summary.Reused++
+			} else {
+				summary.Reparsed++
+				zone.Classify(parsed, aliases, logger)
+			}
 
 			switch parsed.Role {
 			case zone.RoleBackupOverride:
@@ -53,6 +69,8 @@ func BuildState(
 			default:
 				rootZones[v.Name][origin] = parsed
 			}
+			fingerprints[v.Name][origin] = fp
+
 			seenOrigins = append(seenOrigins, origin)
 			seenSet[origin] = true
 		}
@@ -83,7 +101,7 @@ func BuildState(
 
 	acl, err := transfer.NewACL(cfg.Options.AllowTransfer)
 	if err != nil {
-		return ServerState{}, fmt.Errorf("building allow-transfer ACL: %w", err)
+		return ServerState{}, BuildSummary{}, fmt.Errorf("building allow-transfer ACL: %w", err)
 	}
 
 	return ServerState{
@@ -93,5 +111,56 @@ func BuildState(
 		BackupZones:      backupZones,
 		ZoneOrigins:      zoneOrigins,
 		AllowTransferACL: acl,
-	}, nil
+		Fingerprints:     fingerprints,
+	}, summary, nil
+}
+
+// loadZone returns the *zone.Zone for the given zone config entry. When the
+// fingerprint of the zone file matches the one stored in prev (and mode allows
+// reuse), the existing pointer from prev is returned without re-reading the
+// file. Otherwise the zone file is parsed from disk.
+//
+// The returned zoneFingerprint is always the freshly-computed one for the
+// current file on disk (or a zero value for VerifyModeNone).
+// The returned bool is true when the zone pointer was reused from prev,
+// false when the zone was parsed from disk.
+func loadZone(
+	z config.Zone,
+	origin string,
+	prev *ServerState,
+	viewName string,
+	mode VerifyMode,
+	aliases config.AliasMap,
+	logger *slog.Logger,
+) (*zone.Zone, zoneFingerprint, bool, error) {
+	fp, err := computeFingerprint(z.File, mode)
+	if err != nil {
+		return nil, zoneFingerprint{}, false, fmt.Errorf("fingerprint %q: %w", z.File, err)
+	}
+
+	if prev != nil && mode != VerifyModeNone {
+		// If alias-membership changed, role must be recomputed — skip reuse.
+		prevIsBackup := prev.BackupZones[viewName][origin] != nil
+		_, nowIsBackup := aliases[origin]
+		if prevIsBackup == nowIsBackup {
+			if prevFPs, ok := prev.Fingerprints[viewName]; ok {
+				if prevFP, ok := prevFPs[origin]; ok {
+					if !fp.changed(prevFP, mode) {
+						if z := prev.RootZones[viewName][origin]; z != nil {
+							return z, fp, true, nil
+						}
+						if z := prev.BackupZones[viewName][origin]; z != nil {
+							return z, fp, true, nil
+						}
+					}
+				}
+			}
+		}
+	}
+
+	parsed, err := zone.ParseFile(z.File, origin, logger)
+	if err != nil {
+		return nil, zoneFingerprint{}, false, err
+	}
+	return parsed, fp, false, nil
 }

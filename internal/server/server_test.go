@@ -1888,3 +1888,43 @@ func TestCNAMEFollowing_WildcardCNAME_InZone(t *testing.T) {
 		t.Errorf("A record: got %s, want 10.0.0.1", a.A)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Post-swap garbage collection tests (Requirement: Post-swap GC trigger)
+// ---------------------------------------------------------------------------
+
+// TestSwapState_InvokesGCExactlyOnceOnSuccess verifies that SwapState calls the
+// GC hook exactly once after a successful state swap.  The gcHook field is the
+// test-observable proxy for runtime.GC()+debug.FreeOSMemory().
+func TestSwapState_InvokesGCExactlyOnceOnSuccess(t *testing.T) {
+	var callCount int
+	hook := func() { callCount++ }
+
+	srv := NewServer(ServerState{Matcher: makeAnyMatcher("default")}, nil)
+	srv.gcHook = hook
+
+	newState := ServerState{Matcher: makeAnyMatcher("default")}
+	srv.SwapState(newState)
+
+	if callCount != 1 {
+		t.Errorf("gcHook call count after SwapState: got %d, want 1", callCount)
+	}
+}
+
+// TestSwapState_GCCalledEachSwap verifies that each successive SwapState call
+// increments the GC hook counter — confirming the hook fires per-swap, not once.
+func TestSwapState_GCCalledEachSwap(t *testing.T) {
+	var callCount int
+	hook := func() { callCount++ }
+
+	srv := NewServer(ServerState{Matcher: makeAnyMatcher("default")}, nil)
+	srv.gcHook = hook
+
+	srv.SwapState(ServerState{Matcher: makeAnyMatcher("default")})
+	srv.SwapState(ServerState{Matcher: makeAnyMatcher("default")})
+
+	if callCount != 2 {
+		t.Errorf("gcHook call count after two SwapState calls: got %d, want 2", callCount)
+	}
+}
+

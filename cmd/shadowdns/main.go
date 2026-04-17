@@ -56,7 +56,8 @@ func reload(
 		return fmt.Errorf("loading aliases: %w", err)
 	}
 
-	state, err := server.BuildState(cfg, aliases, country, asn, logger)
+	prev := srv.CurrentState()
+	state, summary, err := server.BuildState(cfg, aliases, prev, opts.ReloadVerify, country, asn, logger)
 	if err != nil {
 		return fmt.Errorf("building server state: %w", err)
 	}
@@ -88,7 +89,13 @@ func reload(
 		)
 	}
 
-	logger.Info("reload complete", "views", len(cfg.Views), "zones", state.ZoneCount())
+	logger.Info("reload complete",
+		"views", len(cfg.Views),
+		"zones", state.ZoneCount(),
+		"verify_mode", opts.ReloadVerify.String(),
+		"reused", summary.Reused,
+		"reparsed", summary.Reparsed,
+	)
 	return nil
 }
 
@@ -149,7 +156,26 @@ type runOptions struct {
 	// after startup and guarantees "flag > config" precedence even after an
 	// operator edits named.conf mid-run.
 	NoNotifyExplicit bool
-	Logger           *slog.Logger
+	// ReloadVerify controls how zone file changes are detected on SIGHUP.
+	// Set once at startup from -reload-verify; sticky across reloads.
+	// Zero value is VerifyModeHash (the safe default).
+	ReloadVerify server.VerifyMode
+	Logger       *slog.Logger
+}
+
+// parseVerifyMode converts the string value of -reload-verify to a VerifyMode.
+// Returns an error if the value is not one of "hash", "size", or "none".
+func parseVerifyMode(s string) (server.VerifyMode, error) {
+	switch s {
+	case "hash":
+		return server.VerifyModeHash, nil
+	case "size":
+		return server.VerifyModeSize, nil
+	case "none":
+		return server.VerifyModeNone, nil
+	default:
+		return server.VerifyModeHash, fmt.Errorf("invalid -reload-verify value %q: must be one of hash, size, none", s)
+	}
 }
 
 // resolveNotifyEnabled implements the precedence rule for NOTIFY dispatch:
@@ -219,6 +245,10 @@ func main() {
 	var showVersion bool
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 
+	var reloadVerifyStr string
+	flag.StringVar(&reloadVerifyStr, "reload-verify", "hash",
+		"zone file change detection strategy on SIGHUP reload: hash (default, safe for rsync -avc --inplace), size (mtime+size only, no file read), none (always full rebuild)")
+
 	flag.Parse()
 
 	// Detect explicit -no-notify via flag.Visit: it callbacks only for flags
@@ -234,6 +264,13 @@ func main() {
 		fmt.Println(version)
 		os.Exit(0)
 	}
+
+	verifyMode, err := parseVerifyMode(reloadVerifyStr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	opts.ReloadVerify = verifyMode
 
 	opts.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -301,7 +338,7 @@ func run(ctx context.Context, opts runOptions) error {
 		}
 	}()
 
-	state, err := server.BuildState(cfg, aliases, country, asn, logger)
+	state, _, err := server.BuildState(cfg, aliases, nil, opts.ReloadVerify, country, asn, logger)
 	if err != nil {
 		return fmt.Errorf("building server state: %w", err)
 	}

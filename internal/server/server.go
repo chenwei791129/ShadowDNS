@@ -5,6 +5,8 @@ package server
 
 import (
 	"log/slog"
+	"runtime"
+	"runtime/debug"
 	"sync/atomic"
 
 	"github.com/miekg/dns"
@@ -30,6 +32,10 @@ type ServerState struct {
 	// AllowTransferACL controls which source IPs may request zone transfers.
 	// A nil ACL or an empty ACL both deny all transfers (secure default).
 	AllowTransferACL *transfer.ACL
+	// Fingerprints stores the zone file fingerprints recorded during the last
+	// successful BuildState call. Keyed by (view name, zone origin). Used by
+	// the next reload to detect unchanged zones and reuse *zone.Zone pointers.
+	Fingerprints map[string]map[string]zoneFingerprint
 }
 
 // ZoneCount returns the total number of loaded zones (root + backup) across
@@ -59,6 +65,9 @@ func (s *ServerState) sanitize() {
 	if s.Aliases == nil {
 		s.Aliases = make(config.AliasMap)
 	}
+	if s.Fingerprints == nil {
+		s.Fingerprints = make(map[string]map[string]zoneFingerprint)
+	}
 }
 
 // Server is the main DNS server object.  It implements dns.Handler so it can be
@@ -78,6 +87,10 @@ type Server struct {
 	// owns a UDP *dns.Server and a TCP *dns.Server sharing the same address.
 	// Populated by Bind / BindMany; consumed by Serve.
 	listeners []listenerPair
+
+	// gcHook, when non-nil, is called instead of runtime.GC()+debug.FreeOSMemory()
+	// after a successful SwapState. Used in tests to observe GC invocations.
+	gcHook func()
 }
 
 // listenerPair bundles the UDP and TCP dns.Server instances for a single
@@ -103,13 +116,26 @@ func NewServer(state ServerState, logger *slog.Logger) *Server {
 	return s
 }
 
+// CurrentState returns a pointer to the server's current in-memory state.
+func (s *Server) CurrentState() *ServerState {
+	return s.state.Load()
+}
+
 // SwapState atomically replaces the server's in-memory state.
 // In-flight requests that already loaded the old state will complete
 // using their snapshot; new requests will see the replacement.
+// After the swap, it triggers a GC cycle to reclaim memory held by the
+// old state (zone records, matcher structures, etc.).
 func (s *Server) SwapState(state ServerState) {
 	state.sanitize()
 	s.state.Store(&state)
 	s.updateZoneMetrics(&state)
+	if s.gcHook != nil {
+		s.gcHook()
+	} else {
+		runtime.GC()
+		debug.FreeOSMemory()
+	}
 }
 
 // updateZoneMetrics pushes per-view zone counts to the Prometheus gauges.

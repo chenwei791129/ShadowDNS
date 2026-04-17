@@ -1,0 +1,333 @@
+// Integration tests for diff-based reload behaviour (change: diff-based-reload).
+//
+// These tests start a real server, trigger reloads via server.BuildState +
+// server.Server.SwapState (the same path that reload() in cmd/shadowdns takes),
+// and verify pointer-identity, change-detection accuracy, and full-rebuild
+// semantics for -reload-verify=none.
+package integration_test
+
+import (
+	"bytes"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/chenwei791129/ShadowDNS/internal/config"
+	"github.com/chenwei791129/ShadowDNS/internal/server"
+	"github.com/chenwei791129/ShadowDNS/internal/view"
+)
+
+// collectZonePointers returns a flat map of "viewName/origin" → *zone.Zone for
+// all root and backup zones in the given state.
+func collectZonePointers(state *server.ServerState) map[string]any {
+	ptrs := make(map[string]any)
+	for viewName, zones := range state.RootZones {
+		for origin, z := range zones {
+			ptrs[viewName+"/root/"+origin] = z
+		}
+	}
+	for viewName, zones := range state.BackupZones {
+		for origin, z := range zones {
+			ptrs[viewName+"/backup/"+origin] = z
+		}
+	}
+	return ptrs
+}
+
+// ---------------------------------------------------------------------------
+// Task 7.1 — pointer identity after no-change reload
+// ---------------------------------------------------------------------------
+
+// TestReloadDiff_NoChange_PointersIdentical starts a server with two zones,
+// triggers a reload with no zone file modifications, and asserts that every
+// *zone.Zone pointer in the new state is pointer-identical to the corresponding
+// pointer in the old state.  This exercises the core diff-based reload
+// invariant: unchanged zones are not re-parsed.
+func TestReloadDiff_NoChange_PointersIdentical(t *testing.T) {
+	tmpDir := t.TempDir()
+	copyFixtures(t, tmpDir)
+
+	geoIPDir := filepath.Join(tmpDir, "geoip")
+	if err := os.MkdirAll(geoIPDir, 0o755); err != nil {
+		t.Fatalf("mkdir geoip: %v", err)
+	}
+	buildIntegrationMMDBs(t, geoIPDir)
+	patchNamedConf(t, tmpDir)
+
+	namedConf := filepath.Join(tmpDir, "named.conf")
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+
+	cfg, err := config.LoadNamedConf(namedConf, logger)
+	if err != nil {
+		t.Fatalf("LoadNamedConf: %v", err)
+	}
+	aliases, err := config.LoadAliases(filepath.Join(tmpDir, "aliases.yaml"), logger)
+	if err != nil {
+		t.Fatalf("LoadAliases: %v", err)
+	}
+	country, asn, err := view.LoadGeoIP(geoIPDir, logger)
+	if err != nil {
+		t.Fatalf("LoadGeoIP: %v", err)
+	}
+	defer func() { _ = country.Close(); _ = asn.Close() }()
+
+	// Initial build — fingerprints recorded.
+	state1, _, err := server.BuildState(cfg, aliases, nil, server.VerifyModeHash, country, asn, logger)
+	if err != nil {
+		t.Fatalf("initial BuildState: %v", err)
+	}
+	srv := server.NewServer(state1, logger)
+
+	before := collectZonePointers(srv.CurrentState())
+
+	// Reload with no file changes: every zone must be reused.
+	prev := srv.CurrentState()
+	state2, summary, err := server.BuildState(cfg, aliases, prev, server.VerifyModeHash, country, asn, logger)
+	if err != nil {
+		t.Fatalf("reload BuildState: %v", err)
+	}
+	srv.SwapState(state2)
+
+	after := collectZonePointers(srv.CurrentState())
+
+	// Every pointer must be identical.
+	for key, ptrBefore := range before {
+		ptrAfter, ok := after[key]
+		if !ok {
+			t.Errorf("zone %q disappeared after reload", key)
+			continue
+		}
+		if ptrBefore != ptrAfter {
+			t.Errorf("zone %q pointer changed after no-op reload (zone was re-parsed)", key)
+		}
+	}
+
+	// The summary must show all zones reused and none re-parsed.
+	if summary.Reparsed != 0 {
+		t.Errorf("expected reparsed=0 on no-change reload, got %d", summary.Reparsed)
+	}
+	if summary.Reused == 0 {
+		t.Errorf("expected reused>0 on no-change reload, got 0")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 7.2 — rsync --inplace scenario: hash detects, size misses
+// ---------------------------------------------------------------------------
+
+// TestReloadDiff_SameSizeContentChange_HashDetects simulates the rsync
+// "-avc --inplace" scenario where a zone file is rewritten with identical size
+// and (potentially) preserved mtime but different content.
+//
+// Under -reload-verify=hash the change must be detected and the zone re-parsed.
+// Under -reload-verify=size the change is invisible (negative-control assertion).
+func TestReloadDiff_SameSizeContentChange_HashDetects(t *testing.T) {
+	tmpDir := t.TempDir()
+	copyFixtures(t, tmpDir)
+
+	geoIPDir := filepath.Join(tmpDir, "geoip")
+	if err := os.MkdirAll(geoIPDir, 0o755); err != nil {
+		t.Fatalf("mkdir geoip: %v", err)
+	}
+	buildIntegrationMMDBs(t, geoIPDir)
+	patchNamedConf(t, tmpDir)
+
+	namedConf := filepath.Join(tmpDir, "named.conf")
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+
+	cfg, err := config.LoadNamedConf(namedConf, logger)
+	if err != nil {
+		t.Fatalf("LoadNamedConf: %v", err)
+	}
+	aliases, err := config.LoadAliases(filepath.Join(tmpDir, "aliases.yaml"), logger)
+	if err != nil {
+		t.Fatalf("LoadAliases: %v", err)
+	}
+	country, asn, err := view.LoadGeoIP(geoIPDir, logger)
+	if err != nil {
+		t.Fatalf("LoadGeoIP: %v", err)
+	}
+	defer func() { _ = country.Close(); _ = asn.Close() }()
+
+	// Locate example.com zone file (first zone in the loaded config).
+	var zoneFilePath string
+	for _, v := range cfg.Views {
+		for _, z := range v.Zones {
+			if z.Name == "example.com" {
+				zoneFilePath = z.File
+				break
+			}
+		}
+		if zoneFilePath != "" {
+			break
+		}
+	}
+	if zoneFilePath == "" {
+		t.Fatal("could not find example.com zone file in loaded config")
+	}
+
+	// --- Build state1 under VerifyModeHash ---
+	state1Hash, _, err := server.BuildState(cfg, aliases, nil, server.VerifyModeHash, country, asn, logger)
+	if err != nil {
+		t.Fatalf("initial BuildState (hash): %v", err)
+	}
+
+	// --- Build state1 under VerifyModeSize (separate server for size-mode test) ---
+	state1Size, _, err := server.BuildState(cfg, aliases, nil, server.VerifyModeSize, country, asn, logger)
+	if err != nil {
+		t.Fatalf("initial BuildState (size): %v", err)
+	}
+
+	// Record original zone pointer for example.com under the first view.
+	origPtrHash := findExampleComZone(t, &state1Hash)
+	origPtrSize := findExampleComZone(t, &state1Size)
+
+	// Rewrite the zone file with content of the exact same byte length but
+	// different content (changed serial: "2024010101" → "2024010102", same width).
+	// Preserve original mtime after writing to simulate rsync --inplace -t, which
+	// keeps mtime unchanged when rewriting in-place.
+	origStat, err := os.Stat(zoneFilePath)
+	if err != nil {
+		t.Fatalf("stat zone file: %v", err)
+	}
+	origMtime := origStat.ModTime()
+
+	origContent, err := os.ReadFile(zoneFilePath)
+	if err != nil {
+		t.Fatalf("read zone file: %v", err)
+	}
+	// Replace a specific serial string that is known-length in the fixture.
+	// The fixture uses serial 2024010101 (10 digits) — replace with 2024010102.
+	newContent := strings.Replace(string(origContent), "2024010101", "2024010102", 1)
+	if newContent == string(origContent) {
+		t.Skip("fixture serial format unexpected; skipping rsync scenario test")
+	}
+	if len(newContent) != len(origContent) {
+		t.Fatalf("test invariant violated: rewritten zone file has different length (%d vs %d); fix the replacement strings", len(newContent), len(origContent))
+	}
+	if err := os.WriteFile(zoneFilePath, []byte(newContent), 0o644); err != nil {
+		t.Fatalf("write rewritten zone: %v", err)
+	}
+	// Restore mtime so VerifyModeSize (which checks mtime+size) cannot detect
+	// the change — only VerifyModeHash (which reads content) can.
+	if err := os.Chtimes(zoneFilePath, origMtime, origMtime); err != nil {
+		t.Fatalf("restore mtime: %v", err)
+	}
+
+	// --- Hash mode: must detect the change ---
+	state2Hash, summaryHash, err := server.BuildState(cfg, aliases, &state1Hash, server.VerifyModeHash, country, asn, logger)
+	if err != nil {
+		t.Fatalf("reload BuildState (hash): %v", err)
+	}
+	newPtrHash := findExampleComZone(t, &state2Hash)
+	if newPtrHash == origPtrHash {
+		t.Error("hash mode: expected example.com to be re-parsed (new pointer) after content change, got same pointer")
+	}
+	if summaryHash.Reparsed == 0 {
+		t.Error("hash mode: expected reparsed>0 after content change, got 0")
+	}
+
+	// --- Size mode: must MISS the change (negative control) ---
+	state2Size, summarySize, err := server.BuildState(cfg, aliases, &state1Size, server.VerifyModeSize, country, asn, logger)
+	if err != nil {
+		t.Fatalf("reload BuildState (size): %v", err)
+	}
+	newPtrSize := findExampleComZone(t, &state2Size)
+	if newPtrSize != origPtrSize {
+		t.Error("size mode: expected example.com pointer to be REUSED (size mode cannot detect same-size change), got new pointer")
+	}
+	if summarySize.Reused == 0 {
+		t.Error("size mode: expected reused>0 (change should be invisible), got 0")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 7.3 — -reload-verify=none forces full rebuild
+// ---------------------------------------------------------------------------
+
+// TestReloadDiff_NoneMode_AlwaysReparses verifies that with VerifyModeNone
+// every zone is re-parsed on every reload, even when zone files are unchanged.
+// This covers the escape-hatch path.
+func TestReloadDiff_NoneMode_AlwaysReparses(t *testing.T) {
+	tmpDir := t.TempDir()
+	copyFixtures(t, tmpDir)
+
+	geoIPDir := filepath.Join(tmpDir, "geoip")
+	if err := os.MkdirAll(geoIPDir, 0o755); err != nil {
+		t.Fatalf("mkdir geoip: %v", err)
+	}
+	buildIntegrationMMDBs(t, geoIPDir)
+	patchNamedConf(t, tmpDir)
+
+	namedConf := filepath.Join(tmpDir, "named.conf")
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+
+	cfg, err := config.LoadNamedConf(namedConf, logger)
+	if err != nil {
+		t.Fatalf("LoadNamedConf: %v", err)
+	}
+	aliases, err := config.LoadAliases(filepath.Join(tmpDir, "aliases.yaml"), logger)
+	if err != nil {
+		t.Fatalf("LoadAliases: %v", err)
+	}
+	country, asn, err := view.LoadGeoIP(geoIPDir, logger)
+	if err != nil {
+		t.Fatalf("LoadGeoIP: %v", err)
+	}
+	defer func() { _ = country.Close(); _ = asn.Close() }()
+
+	// Initial build with none mode.
+	state1, _, err := server.BuildState(cfg, aliases, nil, server.VerifyModeNone, country, asn, logger)
+	if err != nil {
+		t.Fatalf("initial BuildState (none): %v", err)
+	}
+	before := collectZonePointers(&state1)
+
+	// Reload with no file changes but VerifyModeNone.
+	state2, summary, err := server.BuildState(cfg, aliases, &state1, server.VerifyModeNone, country, asn, logger)
+	if err != nil {
+		t.Fatalf("reload BuildState (none): %v", err)
+	}
+	after := collectZonePointers(&state2)
+
+	// Every pointer must be NEW (full rebuild).
+	for key, ptrBefore := range before {
+		ptrAfter, ok := after[key]
+		if !ok {
+			t.Errorf("zone %q disappeared after reload", key)
+			continue
+		}
+		if ptrBefore == ptrAfter {
+			t.Errorf("zone %q pointer unchanged in none mode (expected full re-parse)", key)
+		}
+	}
+
+	// Summary: reused must be 0, reparsed must equal total zone count.
+	if summary.Reused != 0 {
+		t.Errorf("none mode: expected reused=0, got %d", summary.Reused)
+	}
+	if summary.Reparsed == 0 {
+		t.Errorf("none mode: expected reparsed>0, got 0")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// findExampleComZone returns the *zone.Zone pointer for example.com. across
+// all views in the given state.  Fails the test if not found.
+func findExampleComZone(t *testing.T, state *server.ServerState) any {
+	t.Helper()
+	const origin = "example.com."
+	for _, zones := range state.RootZones {
+		if z, ok := zones[origin]; ok {
+			return z
+		}
+	}
+	t.Fatalf("example.com. not found in state.RootZones")
+	return nil
+}
+
