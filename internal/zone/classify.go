@@ -1,9 +1,8 @@
 package zone
 
 import (
-	"log/slog"
-
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
@@ -14,7 +13,7 @@ import (
 // from z.Records and logs a warning per discarded record.
 //
 // Modifies z in place; returns z for chaining convenience.
-func Classify(z *Zone, aliases config.AliasMap, logger *slog.Logger) *Zone {
+func Classify(z *Zone, aliases config.AliasMap, logger *zap.Logger) *Zone {
 	if _, isBackup := aliases[z.Origin]; isBackup {
 		z.Role = RoleBackupOverride
 		filterBackupRecords(z, logger)
@@ -27,7 +26,7 @@ func Classify(z *Zone, aliases config.AliasMap, logger *slog.Logger) *Zone {
 // filterBackupRecords removes records of types other than TXT/MX/SRV from the
 // zone, logging a warning for each discarded record. SOA is always among the
 // discarded types, so z.SOA is cleared unconditionally.
-func filterBackupRecords(z *Zone, logger *slog.Logger) {
+func filterBackupRecords(z *Zone, logger *zap.Logger) {
 	z.SOA = nil
 	for owner, rrs := range z.Records {
 		kept := rrs[:0] // reuse backing array
@@ -35,7 +34,7 @@ func filterBackupRecords(z *Zone, logger *slog.Logger) {
 			if dnsutil.OverridableTypes[rr.Header().Rrtype] {
 				kept = append(kept, rr)
 			} else {
-				logger.Warn("backup-override zone: discarding disallowed record type",
+				logger.Sugar().Warnw("backup-override zone: discarding disallowed record type",
 					"zone", z.Origin,
 					"owner", owner,
 					"type", dns.TypeToString[rr.Header().Rrtype],

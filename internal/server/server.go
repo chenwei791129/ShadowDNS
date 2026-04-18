@@ -4,12 +4,12 @@
 package server
 
 import (
-	"log/slog"
 	"runtime"
 	"runtime/debug"
 	"sync/atomic"
 
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
@@ -78,7 +78,7 @@ func (s *ServerState) sanitize() {
 // in-flight queries.
 type Server struct {
 	state  atomic.Pointer[ServerState]
-	Logger *slog.Logger
+	Logger *zap.Logger
 	// Metrics enables Prometheus metrics collection when non-nil.
 	// A nil value disables all instrumentation (safe for tests).
 	Metrics *metrics.Metrics
@@ -104,9 +104,9 @@ type listenerPair struct {
 
 // NewServer constructs a Server from pre-loaded state and a logger.
 // Neither state nor logger may be nil.
-func NewServer(state ServerState, logger *slog.Logger) *Server {
+func NewServer(state ServerState, logger *zap.Logger) *Server {
 	if logger == nil {
-		logger = slog.Default()
+		logger = zap.NewNop()
 	}
 	state.sanitize()
 	s := &Server{

@@ -3,10 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
 
@@ -26,10 +26,10 @@ type AliasMap map[string]string
 //   - any domain is empty or not a valid DNS name
 //
 // `logger` MUST NOT be nil; the caller is responsible for passing a real one
-// (or `slog.Default()`).
+// (or `zap.NewNop()`).
 //
 // The function MUST not panic on any input.
-func LoadAliases(path string, logger *slog.Logger) (AliasMap, error) {
+func LoadAliases(path string, logger *zap.Logger) (AliasMap, error) {
 	// Handle missing or empty path gracefully.
 	if path == "" {
 		logger.Info("aliases file path not provided; starting with empty alias map")
@@ -39,7 +39,7 @@ func LoadAliases(path string, logger *slog.Logger) (AliasMap, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			logger.Info("aliases file not found; starting with empty alias map", "path", path)
+			logger.Sugar().Infow("aliases file not found; starting with empty alias map", "path", path)
 			return AliasMap{}, nil
 		}
 		return nil, fmt.Errorf("reading aliases file %q: %w", path, err)

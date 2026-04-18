@@ -2,9 +2,10 @@ package view
 
 import (
 	"fmt"
-	"log/slog"
 	"path/filepath"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // countryMMDBCandidates lists the country mmdb basenames the loader tries in
@@ -35,13 +36,13 @@ var asnMMDBCandidates = []string{
 // path in the `path` attr so operators can identify the edition in use.
 //
 // MUST NOT panic.
-func LoadGeoIP(dir string, logger *slog.Logger) (country *CountryDB, asn *ASNDB, err error) {
+func LoadGeoIP(dir string, logger *zap.Logger) (country *CountryDB, asn *ASNDB, err error) {
 	countryDB, countryPath, err := openFirstMMDB(dir, countryMMDBCandidates, "country", OpenCountryDB)
 	if err != nil {
 		return nil, nil, err
 	}
 	if logger != nil {
-		logger.Info("loaded GeoIP country database", "path", countryPath)
+		logger.Sugar().Infow("loaded GeoIP country database", "path", countryPath)
 	}
 
 	asnDB, asnPath, err := openFirstMMDB(dir, asnMMDBCandidates, "ASN", OpenASNDB)
@@ -51,7 +52,7 @@ func LoadGeoIP(dir string, logger *slog.Logger) (country *CountryDB, asn *ASNDB,
 		return nil, nil, err
 	}
 	if logger != nil {
-		logger.Info("loaded GeoIP ASN database", "path", asnPath)
+		logger.Sugar().Infow("loaded GeoIP ASN database", "path", asnPath)
 	}
 
 	return countryDB, asnDB, nil

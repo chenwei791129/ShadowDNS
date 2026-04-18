@@ -359,10 +359,10 @@ func TestIntegration_NoNotifyFlag_SuppressesAllSends(t *testing.T) {
 	if !strings.Contains(output, "notify state resolved") {
 		t.Fatalf("expected notify-state log, got: %s", output)
 	}
-	if !strings.Contains(output, "enabled=false") {
+	if !strings.Contains(output, `"enabled": false`) {
 		t.Errorf("expected enabled=false under -no-notify, got: %s", output)
 	}
-	if !strings.Contains(output, "source=flag") {
+	if !strings.Contains(output, `"source": "flag"`) {
 		t.Errorf("expected source=flag, got: %s", output)
 	}
 
@@ -398,7 +398,7 @@ func TestIntegration_NoNotifyFlag_StickyAcrossSIGHUP(t *testing.T) {
 	// Wait for initial startup log.
 	waitForLog(t, buf, "notify state resolved", 5*time.Second)
 	initial := buf.String()
-	if !strings.Contains(initial, "enabled=false") || !strings.Contains(initial, "source=flag") {
+	if !strings.Contains(initial, `"enabled": false`) || !strings.Contains(initial, `"source": "flag"`) {
 		t.Fatalf("initial state should be flag-disabled; got: %s", initial)
 	}
 
@@ -437,10 +437,10 @@ func TestIntegration_NoNotifyFlag_StickyAcrossSIGHUP(t *testing.T) {
 		t.Errorf("expected >=2 `notify state resolved` logs (startup + reload), got %d. Output: %s", count, final)
 	}
 	// Verify the reload-time resolution still says flag:
-	if strings.Count(final, "source=flag") < 2 {
+	if strings.Count(final, `"source": "flag"`) < 2 {
 		t.Errorf("expected reload to still resolve source=flag (sticky), got: %s", final)
 	}
-	if strings.Contains(final, "source=config") {
+	if strings.Contains(final, `"source": "config"`) {
 		t.Errorf("reload must NOT switch to config source when flag was explicitly set; got: %s", final)
 	}
 	// And no NOTIFY attempt anywhere.
@@ -467,10 +467,10 @@ func TestIntegration_NotifyDefault_SendsNotify(t *testing.T) {
 	defer cleanup()
 
 	output := waitForLog(t, buf, "notify state resolved", 5*time.Second)
-	if !strings.Contains(output, "enabled=true") {
+	if !strings.Contains(output, `"enabled": true`) {
 		t.Fatalf("expected enabled=true under default behavior, got: %s", output)
 	}
-	if !strings.Contains(output, "source=default") {
+	if !strings.Contains(output, `"source": "default"`) {
 		t.Fatalf("expected source=default, got: %s", output)
 	}
 
@@ -496,10 +496,10 @@ func TestIntegration_ConfigNo_SuppressesAllSends(t *testing.T) {
 	defer cleanup()
 
 	output := waitForLog(t, buf, "notify state resolved", 5*time.Second)
-	if !strings.Contains(output, "enabled=false") {
+	if !strings.Contains(output, `"enabled": false`) {
 		t.Errorf("expected enabled=false under `notify no;`, got: %s", output)
 	}
-	if !strings.Contains(output, "source=config") {
+	if !strings.Contains(output, `"source": "config"`) {
 		t.Errorf("expected source=config, got: %s", output)
 	}
 
@@ -533,10 +533,10 @@ func TestIntegration_ConfigChangeOnSIGHUP_YesToNo(t *testing.T) {
 	// Wait for startup's notify-state log and the first NOTIFY failure.
 	waitForLog(t, buf, "notify state resolved", 5*time.Second)
 	initial := buf.String()
-	if !strings.Contains(initial, "enabled=true") || !strings.Contains(initial, "source=config") {
+	if !strings.Contains(initial, `"enabled": true`) || !strings.Contains(initial, `"source": "config"`) {
 		t.Fatalf("initial state should be config-enabled; got: %s", initial)
 	}
-	waitForLog(t, buf, "attempt=1", 3*time.Second)
+	waitForLog(t, buf, `"attempt": 1`, 3*time.Second)
 
 	// Rewrite config: notify yes; → notify no;
 	pid := readPidFile(t, pidFile, 3*time.Second)
@@ -564,13 +564,13 @@ func TestIntegration_ConfigChangeOnSIGHUP_YesToNo(t *testing.T) {
 	if strings.Count(final, "notify state resolved") < 2 {
 		t.Fatalf("expected >=2 notify-state logs (startup + reload), got: %s", final)
 	}
-	if !strings.Contains(final, "enabled=false") || !strings.Contains(final, "source=config") {
+	if !strings.Contains(final, `"enabled": false`) || !strings.Contains(final, `"source": "config"`) {
 		t.Errorf("expected reload to resolve enabled=false source=config; got: %s", final)
 	}
 
 	// Exactly one attempt=1: the one spawned at startup. A reload-time
 	// dispatch (guard failure) would produce a second.
-	if count := strings.Count(final, "attempt=1"); count != 1 {
+	if count := strings.Count(final, `"attempt": 1`); count != 1 {
 		t.Errorf("expected exactly 1 `attempt=1` log (startup only; reload must skip dispatch), got %d. Output: %s", count, final)
 	}
 }

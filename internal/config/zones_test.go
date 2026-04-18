@@ -2,11 +2,12 @@ package config
 
 import (
 	"bytes"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.uber.org/zap"
 )
 
 // ---------------------------------------------------------------------------
@@ -48,7 +49,7 @@ include "master.zones";
 	writeFile(t, filepath.Join(dir, "master.zones"), masterZones)
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -105,7 +106,7 @@ include "master.zones";
 	writeFile(t, filepath.Join(dir, "master.zones"), masterZones)
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,7 +152,7 @@ include "master.zones";
 	writeFile(t, filepath.Join(dir, "master.zones"), masterZones)
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -205,7 +206,7 @@ include "extra.zones";
 	writeFile(t, filepath.Join(dir, "extra.zones"), extraZones)
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -246,7 +247,7 @@ view "view-a" {
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -274,7 +275,7 @@ view "view-a" {
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err != nil {
 		t.Fatalf("recursion inside view should not cause error: %v", err)
 	}
@@ -306,7 +307,7 @@ view "view-a" { // comment
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -344,7 +345,7 @@ view "view-a" {
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -378,7 +379,7 @@ view "view-a" {
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -406,7 +407,7 @@ view "view-a" {
 	confPath := filepath.Join(dir, "named.conf")
 	writeFile(t, confPath, namedConf)
 
-	cfg, err := LoadNamedConf(confPath, slog.Default())
+	cfg, err := LoadNamedConf(confPath, zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -427,7 +428,7 @@ func TestLoadNamedConf_AnyViewNotLastWarns(t *testing.T) {
 	dir := t.TempDir()
 
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := newTestLogger(&buf)
 
 	namedConf := `options {
 	directory "/etc/namedb";
@@ -482,7 +483,7 @@ func TestLoadNamedConf_AnyViewLastNoWarning(t *testing.T) {
 	dir := t.TempDir()
 
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := newTestLogger(&buf)
 
 	namedConf := `options {
 	directory "/etc/namedb";
@@ -531,7 +532,7 @@ func TestLoadNamedConf_AnyMixedWithOtherRulesWarns(t *testing.T) {
 	dir := t.TempDir()
 
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := newTestLogger(&buf)
 
 	namedConf := `options {
 	directory "/etc/namedb";
@@ -593,7 +594,7 @@ view "view-a" {
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error for zone type slave, got nil")
 	}
@@ -623,7 +624,7 @@ view "view-a" {
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error for zone type forward, got nil")
 	}
@@ -655,7 +656,7 @@ view "view-a" {
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error for dnssec-enable, got nil")
 	}
@@ -684,7 +685,7 @@ view "view-a" {
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error for allow-update, got nil")
 	}
@@ -712,7 +713,7 @@ view "view-a" {
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error for unknown directive inside view, got nil")
 	}
@@ -740,7 +741,7 @@ view "view-a" {
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), slog.Default())
+	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err != nil {
 		t.Fatalf("recursion no inside view should be accepted, got: %v", err)
 	}

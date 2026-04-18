@@ -5,9 +5,7 @@
 package integration_test
 
 import (
-	"bytes"
 	"context"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +13,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
@@ -58,7 +57,7 @@ func startServerWithListenOn(t *testing.T, listenOnTokens, listenFlag string) (*
 		t.Fatalf("write named.conf: %v", err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 	cfg, err := config.LoadNamedConf(namedConf, logger)
 	if err != nil {
 		t.Fatalf("LoadNamedConf: %v", err)

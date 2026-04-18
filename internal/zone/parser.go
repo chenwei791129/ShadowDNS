@@ -5,11 +5,11 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"strings"
 
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
 )
@@ -19,9 +19,9 @@ import (
 // BIND 9's behaviour. Syntax errors are still fatal.
 //
 // MUST NOT panic on any input.
-func ParseFile(path string, origin string, logger *slog.Logger) (*Zone, error) {
+func ParseFile(path string, origin string, logger *zap.Logger) (*Zone, error) {
 	if logger == nil {
-		logger = slog.Default()
+		logger = zap.NewNop()
 	}
 
 	f, err := os.Open(path)
@@ -59,7 +59,7 @@ func ParseFile(path string, origin string, logger *slog.Logger) (*Zone, error) {
 			if line := findOwnerLine(path, ownerName); line > 0 {
 				attrs = append(attrs, "line", line)
 			}
-			logger.Warn("ignoring out-of-zone data", attrs...)
+			logger.Sugar().Warnw("ignoring out-of-zone data", attrs...)
 			continue
 		}
 		z.AddRR(rr)

@@ -175,6 +175,7 @@ ShadowDNS listens on `:53` (UDP and TCP) by default. Use `-listen` to override.
 | `-dry-run`        | `false` | No       | Load configuration and zones, log a summary, then exit without starting listeners. |
 | `-reload`         | `false` | No       | Send SIGHUP to a running server. Requires `-named-conf`. |
 | `-no-notify`      | absent  | No       | Disable NOTIFY dispatch for the entire process lifetime. When omitted, NOTIFY follows `options.notify` in `named.conf` (default: enabled). When passed, overrides the config directive; sticky across SIGHUP reloads. |
+| `-no-color`       | `false` | No       | Force uncolored log output regardless of terminal detection. Honors the `NO_COLOR` environment variable (https://no-color.org); non-TTY stderr is also detected automatically and disables color. |
 | `-version`        | `false` | No       | Print version and exit.                                  |
 
 ### aliases.yaml schema

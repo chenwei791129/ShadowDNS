@@ -10,7 +10,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,7 +19,11 @@ import (
 	"syscall"
 	"time"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+
 	"github.com/chenwei791129/ShadowDNS/internal/config"
+	"github.com/chenwei791129/ShadowDNS/internal/logging"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
@@ -42,7 +45,7 @@ func reload(
 	srv *server.Server,
 	country *view.CountryDB,
 	asn *view.ASNDB,
-	logger *slog.Logger,
+	logger *zap.Logger,
 ) error {
 	logger.Info("reload initiated")
 
@@ -79,17 +82,17 @@ func reload(
 	resolved, resolveErr := server.ResolveListenAddresses(opts.ListenAddr, cfg.Options.ListenOn, logger)
 	switch {
 	case resolveErr != nil:
-		logger.Warn("reload: could not resolve listen addresses from new config; keeping current listeners",
+		logger.Sugar().Warnw("reload: could not resolve listen addresses from new config; keeping current listeners",
 			"err", resolveErr)
 	case !server.AddrSetEqual(currentBound, resolved):
-		logger.Info(
+		logger.Sugar().Infow(
 			"reload: listen-address set differs from bound set; restart to apply (cause: listen-on change and/or interface change since startup)",
 			"current_bound", currentBound,
 			"new_resolved", resolved,
 		)
 	}
 
-	logger.Info("reload complete",
+	logger.Sugar().Infow("reload complete",
 		"views", len(cfg.Views),
 		"zones", state.ZoneCount(),
 		"verify_mode", opts.ReloadVerify.String(),
@@ -108,7 +111,7 @@ func runReload(opts runOptions) error {
 
 	logger := opts.Logger
 	if logger == nil {
-		logger = slog.Default()
+		logger = zap.NewNop()
 	}
 
 	cfg, err := config.LoadNamedConf(opts.NamedConfPath, logger)
@@ -160,7 +163,8 @@ type runOptions struct {
 	// Set once at startup from -reload-verify; sticky across reloads.
 	// Zero value is VerifyModeHash (the safe default).
 	ReloadVerify server.VerifyMode
-	Logger       *slog.Logger
+	NoColor      bool
+	Logger       *zap.Logger
 }
 
 // parseVerifyMode converts the string value of -reload-verify to a VerifyMode.
@@ -204,10 +208,10 @@ func maybeDispatchNotifies(
 	opts runOptions,
 	cfgNotify *bool,
 	rootZones map[string]map[string]*zone.Zone,
-	logger *slog.Logger,
+	logger *zap.Logger,
 ) {
 	enabled, source := resolveNotifyEnabled(opts.NoNotifyExplicit, cfgNotify)
-	logger.Info("notify state resolved", "enabled", enabled, "source", source)
+	logger.Sugar().Infow("notify state resolved", "enabled", enabled, "source", source)
 	if enabled {
 		dispatchNotifies(ctx, rootZones, logger)
 	}
@@ -249,6 +253,8 @@ func main() {
 	flag.StringVar(&reloadVerifyStr, "reload-verify", "hash",
 		"zone file change detection strategy on SIGHUP reload: hash (default, safe for rsync -avc --inplace), size (mtime+size only, no file read), none (always full rebuild)")
 
+	flag.BoolVar(&opts.NoColor, "no-color", false, "disable colored log output")
+
 	flag.Parse()
 
 	// Detect explicit -no-notify via flag.Visit: it callbacks only for flags
@@ -272,7 +278,12 @@ func main() {
 	}
 	opts.ReloadVerify = verifyMode
 
-	opts.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	opts.Logger = logging.New(logging.Options{NoColor: opts.NoColor, Level: zapcore.InfoLevel})
+	// Flush buffered log lines on normal return (signal-driven shutdown).
+	// os.Exit paths below bypass this defer, but they write to stderr via the
+	// zapcore.Lock(os.Stderr) sink which is already synchronous per-call, so no
+	// additional lines are in flight at that point.
+	defer func() { _ = opts.Logger.Sync() }()
 
 	if reloadFlag {
 		if err := runReload(opts); err != nil {
@@ -287,7 +298,7 @@ func main() {
 	defer stop()
 
 	if err := run(ctx, opts); err != nil && !errors.Is(err, context.Canceled) {
-		opts.Logger.Error("shadowdns exited with error", "err", err)
+		opts.Logger.Sugar().Errorw("shadowdns exited with error", "err", err)
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -301,10 +312,10 @@ func run(ctx context.Context, opts runOptions) error {
 	}
 	logger := opts.Logger
 	if logger == nil {
-		logger = slog.Default()
+		logger = zap.NewNop()
 	}
 
-	logger.Info("shadowdns starting",
+	logger.Sugar().Infow("shadowdns starting",
 		"version", version,
 		"named_conf", opts.NamedConfPath,
 		"aliases", opts.AliasesPath,
@@ -331,10 +342,10 @@ func run(ctx context.Context, opts runOptions) error {
 	}
 	defer func() {
 		if cerr := country.Close(); cerr != nil {
-			logger.Warn("closing country mmdb", "err", cerr)
+			logger.Sugar().Warnw("closing country mmdb", "err", cerr)
 		}
 		if cerr := asn.Close(); cerr != nil {
-			logger.Warn("closing ASN mmdb", "err", cerr)
+			logger.Sugar().Warnw("closing ASN mmdb", "err", cerr)
 		}
 	}()
 
@@ -345,7 +356,7 @@ func run(ctx context.Context, opts runOptions) error {
 
 	// -dry-run: count loaded zones, log summary, and exit without listening.
 	if opts.DryRun {
-		logger.Info("dry-run: configuration loaded successfully",
+		logger.Sugar().Infow("dry-run: configuration loaded successfully",
 			"views", len(cfg.Views),
 			"zones", state.ZoneCount(),
 		)
@@ -382,16 +393,16 @@ func run(ctx context.Context, opts runOptions) error {
 		metricsSrv := &http.Server{Addr: opts.MetricsAddr, Handler: mux}
 
 		go func() {
-			logger.Info("metrics server starting", "addr", opts.MetricsAddr)
+			logger.Sugar().Infow("metrics server starting", "addr", opts.MetricsAddr)
 			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				logger.Error("metrics server failed", "err", err)
+				logger.Sugar().Errorw("metrics server failed", "err", err)
 			}
 		}()
 		defer func() {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
-				logger.Warn("metrics server shutdown error", "err", err)
+				logger.Sugar().Warnw("metrics server shutdown error", "err", err)
 			}
 		}()
 	}
@@ -421,11 +432,11 @@ func run(ctx context.Context, opts runOptions) error {
 	// continue so the server still starts even if the directory is missing.
 	if pidPath := cfg.Options.PidFile; pidPath != "" {
 		if werr := os.WriteFile(pidPath, fmt.Appendf(nil, "%d\n", os.Getpid()), 0o644); werr != nil {
-			logger.Warn("failed to write PID file", "path", pidPath, "err", werr)
+			logger.Sugar().Warnw("failed to write PID file", "path", pidPath, "err", werr)
 		} else {
 			defer func() {
 				if rerr := os.Remove(pidPath); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
-					logger.Warn("failed to remove PID file", "path", pidPath, "err", rerr)
+					logger.Sugar().Warnw("failed to remove PID file", "path", pidPath, "err", rerr)
 				}
 			}()
 		}
@@ -443,7 +454,7 @@ func run(ctx context.Context, opts runOptions) error {
 				return
 			case <-sighupCh:
 				if err := reload(ctx, opts, srv, country, asn, logger); err != nil {
-					logger.Error("reload failed", "err", err)
+					logger.Sugar().Errorw("reload failed", "err", err)
 				}
 				// Drain the channel (capacity 1) so that a second SIGHUP
 				// received during this reload does not trigger an
@@ -457,7 +468,7 @@ func run(ctx context.Context, opts runOptions) error {
 	}()
 
 	bound := srv.BoundAddrStrings()
-	logger.Info("shadowdns ready",
+	logger.Sugar().Infow("shadowdns ready",
 		"views", len(cfg.Views),
 		"bound_addrs", bound,
 		"bound_count", len(bound),
@@ -471,7 +482,7 @@ func run(ctx context.Context, opts runOptions) error {
 func dispatchNotifies(
 	ctx context.Context,
 	rootZones map[string]map[string]*zone.Zone,
-	logger *slog.Logger,
+	logger *zap.Logger,
 ) {
 	// De-duplicate (origin, target) pairs across views — the same zone in
 	// multiple views still has the same NS records, no need to NOTIFY twice.
@@ -493,7 +504,7 @@ func dispatchNotifies(
 					defer cancel()
 					addr := target + ":53"
 					if err := transfer.SendNOTIFY(notifyCtx, origin, addr, logger); err != nil {
-						logger.Warn("NOTIFY failed",
+						logger.Sugar().Warnw("NOTIFY failed",
 							"origin", origin,
 							"target", target,
 							"err", err,

@@ -1,11 +1,11 @@
 package transfer
 
 import (
-	"log/slog"
 	"slices"
 	"sync"
 
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/alias"
 	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
@@ -20,7 +20,7 @@ import (
 //   - Otherwise streams SOA → all records → SOA over TCP
 //
 // MUST NOT panic on any input.
-func HandleAXFR(w dns.ResponseWriter, req *dns.Msg, z *zone.Zone) {
+func HandleAXFR(w dns.ResponseWriter, req *dns.Msg, z *zone.Zone, logger *zap.Logger) {
 	// Network guard: AXFR over UDP is always REFUSED.
 	if dnsutil.IsUDP(w) {
 		replyRefused(w, req)
@@ -36,7 +36,7 @@ func HandleAXFR(w dns.ResponseWriter, req *dns.Msg, z *zone.Zone) {
 	// Collect all non-SOA records in a deterministic order.
 	records := collectNonSOA(z)
 
-	streamAXFR(w, req, z.SOA, records)
+	streamAXFR(w, req, z.SOA, records, logger)
 }
 
 // HandleAliasAXFR handles AXFR for a backup zone by streaming the root zone's
@@ -47,7 +47,7 @@ func HandleAXFR(w dns.ResponseWriter, req *dns.Msg, z *zone.Zone) {
 // own .fwd file).
 //
 // MUST NOT panic on any input.
-func HandleAliasAXFR(w dns.ResponseWriter, req *dns.Msg, backupOrigin string, rootZone *zone.Zone, backupZone *zone.Zone) {
+func HandleAliasAXFR(w dns.ResponseWriter, req *dns.Msg, backupOrigin string, rootZone *zone.Zone, backupZone *zone.Zone, logger *zap.Logger) {
 	// Network guard: AXFR over UDP is always REFUSED.
 	if dnsutil.IsUDP(w) {
 		replyRefused(w, req)
@@ -67,7 +67,7 @@ func HandleAliasAXFR(w dns.ResponseWriter, req *dns.Msg, backupOrigin string, ro
 	// Skip root SOA; emit override or rewritten records.
 	records := buildAliasRecords(rootZone, backupZone, rootZone.Origin, backupOrigin)
 
-	streamAXFR(w, req, soa, records)
+	streamAXFR(w, req, soa, records, logger)
 }
 
 // buildAliasRecords produces the non-SOA record list for a backup-zone AXFR.
@@ -144,7 +144,10 @@ func buildAliasRecords(rootZone, backupZone *zone.Zone, rootOrigin, backupOrigin
 }
 
 // streamAXFR sends the full AXFR envelope sequence: SOA → records → SOA.
-func streamAXFR(w dns.ResponseWriter, req *dns.Msg, soa *dns.SOA, records []dns.RR) {
+func streamAXFR(w dns.ResponseWriter, req *dns.Msg, soa *dns.SOA, records []dns.RR, logger *zap.Logger) {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	tr := new(dns.Transfer)
 	ch := make(chan *dns.Envelope)
 
@@ -153,9 +156,9 @@ func streamAXFR(w dns.ResponseWriter, req *dns.Msg, soa *dns.SOA, records []dns.
 	go func() {
 		defer wg.Done()
 		if err := tr.Out(w, req, ch); err != nil {
-			slog.Warn("AXFR stream error",
-				slog.String("zone", soa.Hdr.Name),
-				slog.String("err", err.Error()),
+			logger.Sugar().Warnw("AXFR stream error",
+				"zone", soa.Hdr.Name,
+				"err", err.Error(),
 			)
 		}
 	}()

@@ -1,37 +1,21 @@
 package zone
 
 import (
-	"context"
-	"log/slog"
 	"testing"
 
-	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
+
+	"github.com/chenwei791129/ShadowDNS/internal/config"
 )
 
-// testHandler is an slog.Handler that captures log records for assertions.
-type testHandler struct {
-	records []slog.Record
-}
-
-func (h *testHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
-
-func (h *testHandler) Handle(_ context.Context, r slog.Record) error {
-	h.records = append(h.records, r)
-	return nil
-}
-
-func (h *testHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
-func (h *testHandler) WithGroup(name string) slog.Handler       { return h }
-
-func (h *testHandler) warnCount() int {
-	count := 0
-	for _, r := range h.records {
-		if r.Level == slog.LevelWarn {
-			count++
-		}
-	}
-	return count
+// newObserverLogger returns a zap logger backed by an observer that tests can
+// query for emitted entries.
+func newObserverLogger() (*zap.Logger, *observer.ObservedLogs) {
+	core, obs := observer.New(zapcore.DebugLevel)
+	return zap.New(core), obs
 }
 
 func TestClassify_RootZone_AllRecordsRetained(t *testing.T) {
@@ -48,8 +32,7 @@ www IN TXT "hello"
 	}
 
 	aliases := config.AliasMap{} // root.com. is not in the alias map
-	h := &testHandler{}
-	logger := slog.New(h)
+	logger, obs := newObserverLogger()
 
 	classified := Classify(z, aliases, logger)
 
@@ -66,8 +49,8 @@ www IN TXT "hello"
 	if len(txtRRs) != 1 {
 		t.Errorf("TXT record retained: got %d, want 1", len(txtRRs))
 	}
-	if h.warnCount() != 0 {
-		t.Errorf("expected no warnings for root zone, got %d", h.warnCount())
+	if n := obs.FilterLevelExact(zapcore.WarnLevel).Len(); n != 0 {
+		t.Errorf("expected no warnings for root zone, got %d", n)
 	}
 }
 
@@ -89,8 +72,7 @@ mail IN MX 10 mail.root.com.
 	aliases := config.AliasMap{
 		"backup.com.": "root.com.",
 	}
-	h := &testHandler{}
-	logger := slog.New(h)
+	logger, obs := newObserverLogger()
 
 	classified := Classify(z, aliases, logger)
 
@@ -120,7 +102,7 @@ mail IN MX 10 mail.root.com.
 
 	// NS and SOA are dropped (not in allowed set).
 	// Warnings must be logged for each discarded record.
-	if h.warnCount() == 0 {
+	if obs.FilterLevelExact(zapcore.WarnLevel).Len() == 0 {
 		t.Error("expected warnings for discarded records, got none")
 	}
 }
@@ -140,8 +122,7 @@ func TestClassify_BackupZone_EmptyOverrideSet(t *testing.T) {
 	aliases := config.AliasMap{
 		"backup.com.": "root.com.",
 	}
-	h := &testHandler{}
-	logger := slog.New(h)
+	logger, _ := newObserverLogger()
 
 	// Must not error, just classify.
 	classified := Classify(z, aliases, logger)

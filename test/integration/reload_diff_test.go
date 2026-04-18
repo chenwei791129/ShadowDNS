@@ -7,12 +7,12 @@
 package integration_test
 
 import (
-	"bytes"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
@@ -57,7 +57,7 @@ func TestReloadDiff_NoChange_PointersIdentical(t *testing.T) {
 	patchNamedConf(t, tmpDir)
 
 	namedConf := filepath.Join(tmpDir, "named.conf")
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 
 	cfg, err := config.LoadNamedConf(namedConf, logger)
 	if err != nil {
@@ -135,7 +135,7 @@ func TestReloadDiff_SameSizeContentChange_HashDetects(t *testing.T) {
 	patchNamedConf(t, tmpDir)
 
 	namedConf := filepath.Join(tmpDir, "named.conf")
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 
 	cfg, err := config.LoadNamedConf(namedConf, logger)
 	if err != nil {
@@ -267,7 +267,7 @@ func TestReloadDiff_NoneMode_AlwaysReparses(t *testing.T) {
 	patchNamedConf(t, tmpDir)
 
 	namedConf := filepath.Join(tmpDir, "named.conf")
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 
 	cfg, err := config.LoadNamedConf(namedConf, logger)
 	if err != nil {

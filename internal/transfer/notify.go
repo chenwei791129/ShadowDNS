@@ -3,10 +3,10 @@ package transfer
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
@@ -56,13 +56,13 @@ func NotifyTargets(z *zone.Zone) []string {
 //
 // Returns nil on success, or the last error after all attempts exhausted.
 // Honors ctx cancellation between retries.
-func SendNOTIFY(ctx context.Context, origin string, targetAddr string, logger *slog.Logger) error {
+func SendNOTIFY(ctx context.Context, origin string, targetAddr string, logger *zap.Logger) error {
 	return sendNotifyWithBackoff(ctx, origin, targetAddr, DefaultBackoff, logger)
 }
 
 // sendNotifyWithBackoff is the internal implementation used by both SendNOTIFY
 // (production) and tests (with a short backoff slice).
-func sendNotifyWithBackoff(ctx context.Context, origin, targetAddr string, backoff []time.Duration, logger *slog.Logger) error {
+func sendNotifyWithBackoff(ctx context.Context, origin, targetAddr string, backoff []time.Duration, logger *zap.Logger) error {
 	msg := buildNotifyMsg(origin)
 
 	var lastErr error
@@ -84,11 +84,11 @@ func sendNotifyWithBackoff(ctx context.Context, origin, targetAddr string, backo
 		}
 
 		lastErr = err
-		logger.Warn("NOTIFY failed",
-			slog.String("zone", origin),
-			slog.String("target", targetAddr),
-			slog.Int("attempt", attempt+1),
-			slog.String("err", err.Error()),
+		logger.Sugar().Warnw("NOTIFY failed",
+			"zone", origin,
+			"target", targetAddr,
+			"attempt", attempt+1,
+			"err", err.Error(),
 		)
 
 		// If there are still retries remaining, wait (interruptibly).

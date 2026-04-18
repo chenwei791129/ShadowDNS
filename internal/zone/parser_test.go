@@ -2,13 +2,16 @@ package zone
 
 import (
 	"bytes"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+
+	"github.com/chenwei791129/ShadowDNS/internal/logging"
 )
 
 // writeZoneFile writes content to a temp file and returns its path.
@@ -163,7 +166,9 @@ example.org. IN A 1.2.3.4
 www          IN A 192.0.2.1
 `
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	cfg := logging.BaseEncoderConfig()
+	cfg.EncodeLevel = zapcore.CapitalLevelEncoder
+	logger := zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(cfg), zapcore.AddSync(&buf), zapcore.DebugLevel))
 
 	path := writeZoneFile(t, content)
 	z, err := ParseFile(path, "root.com.", logger)

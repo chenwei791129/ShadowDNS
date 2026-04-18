@@ -3,13 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"go.uber.org/zap/zapcore"
 )
 
 // setupListenOnTestDir builds a reload-test fixture via setupReloadTestDir
@@ -42,7 +43,7 @@ func TestRun_OverrideBranchUsesListenFlag(t *testing.T) {
 	namedConf := setupListenOnTestDir(t, `{ 10.255.255.255; }`) // unreachable IP
 	ctx, cancel := context.WithCancel(context.Background())
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	logger := newBufferLogger(zapcore.AddSync(&buf))
 	opts := runOptions{
 		NamedConfPath: namedConf,
 		ListenAddr:    "127.0.0.1:0", // has host component → override
@@ -82,7 +83,7 @@ func TestRun_ListenOnBranchBindsListenOnAddresses(t *testing.T) {
 	namedConf := setupListenOnTestDir(t, `{ 127.0.0.1; }`)
 	ctx, cancel := context.WithCancel(context.Background())
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	logger := newBufferLogger(zapcore.AddSync(&buf))
 	opts := runOptions{
 		NamedConfPath: namedConf,
 		ListenAddr:    ":0", // port hint only; listen-on drives host
@@ -121,7 +122,7 @@ func TestRun_ReloadLogsListenAddrChangeHint(t *testing.T) {
 	// Start with listen-on { 127.0.0.1; }.
 	namedConf := setupListenOnTestDir(t, `{ 127.0.0.1; }`)
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	logger := newBufferLogger(zapcore.AddSync(&buf))
 	opts := runOptions{
 		NamedConfPath: namedConf,
 		ListenAddr:    ":0",

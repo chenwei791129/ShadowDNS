@@ -2,9 +2,10 @@ package server
 
 import (
 	"fmt"
-	"log/slog"
 	"net"
 	"slices"
+
+	"go.uber.org/zap"
 )
 
 // listen-on tokens recognised by resolveListenOnTokens. Declared as constants
@@ -49,9 +50,9 @@ var ifaceAddrs = net.InterfaceAddrs
 // An error is returned when the resolved address set would be empty (e.g.
 // listen-on { none; } with nothing else, or every token unsupported). We
 // prefer a loud startup failure over silently binding no listeners.
-func ResolveListenAddresses(listenFlag string, listenOn []string, logger *slog.Logger) ([]string, error) {
+func ResolveListenAddresses(listenFlag string, listenOn []string, logger *zap.Logger) ([]string, error) {
 	if logger == nil {
-		logger = slog.Default()
+		logger = zap.NewNop()
 	}
 
 	host, port, err := net.SplitHostPort(listenFlag)
@@ -94,7 +95,7 @@ func ResolveListenAddresses(listenFlag string, listenOn []string, logger *slog.L
 //     to distinguish a deliberate empty-set config from "all tokens were
 //     unsupported and silently skipped"; the two cases produce different
 //     error messages for operator clarity)
-func resolveListenOnTokens(tokens []string, logger *slog.Logger) (out []string, noneExplicit bool, err error) {
+func resolveListenOnTokens(tokens []string, logger *zap.Logger) (out []string, noneExplicit bool, err error) {
 	seen := make(map[string]struct{}, len(tokens))
 	out = make([]string, 0, len(tokens))
 
@@ -130,7 +131,7 @@ func resolveListenOnTokens(tokens []string, logger *slog.Logger) (out []string, 
 			// Unsupported: covers "!addr" exclusions, ACL names, IPv6
 			// literals, "port N" syntax, and "interface" keyword. Skip
 			// rather than fail so one bad token does not block startup.
-			logger.Warn(
+			logger.Sugar().Warnw(
 				"unsupported listen-on token; skipping",
 				"token", tok,
 				"hint", "this version supports IPv4 literals, 'any', and 'none' only",

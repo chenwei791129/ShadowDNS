@@ -10,9 +10,7 @@
 package integration_test
 
 import (
-	"bytes"
 	"context"
-	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -23,6 +21,7 @@ import (
 	"github.com/maxmind/mmdbwriter"
 	"github.com/maxmind/mmdbwriter/mmdbtype"
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
@@ -62,7 +61,7 @@ func newTestServer(t *testing.T) (*server.Server, func()) {
 	patchNamedConf(t, tmpDir)
 
 	namedConf := filepath.Join(tmpDir, "named.conf")
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 
 	cfg, err := config.LoadNamedConf(namedConf, logger)
 	if err != nil {

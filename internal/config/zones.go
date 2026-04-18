@@ -2,10 +2,11 @@ package config
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // ---------------------------------------------------------------------------
@@ -67,12 +68,12 @@ var rejectedTopLevel = map[string]bool{
 //
 // include paths are resolved relative to the file containing the include.
 //
-// logger MUST NOT be nil; the caller passes slog.Default() if needed.
+// logger MUST NOT be nil; the caller passes zap.NewNop() if needed.
 //
 // MUST NOT panic on any input.
-func LoadNamedConf(path string, logger *slog.Logger) (*Config, error) {
+func LoadNamedConf(path string, logger *zap.Logger) (*Config, error) {
 	if logger == nil {
-		logger = slog.Default()
+		logger = zap.NewNop()
 	}
 
 	cfg := &Config{Path: path}
@@ -89,7 +90,7 @@ func LoadNamedConf(path string, logger *slog.Logger) (*Config, error) {
 
 // loadFile reads a single file (named.conf or any included file) and appends
 // parsed views / options into cfg.
-func loadFile(path string, cfg *Config, logger *slog.Logger) error {
+func loadFile(path string, cfg *Config, logger *zap.Logger) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("%s: cannot read file: %w", path, err)
@@ -173,7 +174,7 @@ func loadFile(path string, cfg *Config, logger *slog.Logger) error {
 
 // parseView parses a `view "name" { ... };` block. The lexer has just consumed
 // the "view" keyword.
-func parseView(lx *lexer, path string, opts OptionsBlock, logger *slog.Logger) (View, error) {
+func parseView(lx *lexer, path string, opts OptionsBlock, logger *zap.Logger) (View, error) {
 	// Expect view name (quoted string or word).
 	nameTok := lx.next()
 	if nameTok.kind != tokenString && nameTok.kind != tokenWord {
@@ -244,7 +245,7 @@ func parseView(lx *lexer, path string, opts OptionsBlock, logger *slog.Logger) (
 			if semi.kind != tokenSemicolon {
 				return View{}, fmt.Errorf("%s:%d: expected ';' after recursion value, got %q", path, val.line, semi.value)
 			}
-			logger.Debug("recursion directive inside view ignored", slog.String("view", viewName), slog.String("file", path))
+			logger.Sugar().Debugw("recursion directive inside view ignored", "view", viewName, "file", path)
 
 		default:
 			return View{}, fmt.Errorf("%s:%d: unsupported directive %q inside view %q", path, tok.line, tok.value, viewName)
@@ -348,7 +349,7 @@ func parseZone(lx *lexer, path string, opts OptionsBlock) (Zone, error) {
 
 // warnShadowedViews inspects the view list and emits a Warn log for any non-last
 // view that contains an AnyRule (because subsequent views would be unreachable).
-func warnShadowedViews(views []View, logger *slog.Logger) {
+func warnShadowedViews(views []View, logger *zap.Logger) {
 	for i, v := range views {
 		if i == len(views)-1 {
 			break // last view — no shadowing possible
@@ -359,10 +360,10 @@ func warnShadowedViews(views []View, logger *slog.Logger) {
 			for _, sv := range views[i+1:] {
 				shadowed = append(shadowed, sv.Name)
 			}
-			logger.Warn(
+			logger.Sugar().Warnw(
 				"view has match-clients 'any' but is not the last view; subsequent views are shadowed",
-				slog.String("view", v.Name),
-				slog.String("shadowed_views", strings.Join(shadowed, ", ")),
+				"view", v.Name,
+				"shadowed_views", strings.Join(shadowed, ", "),
 			)
 		}
 	}

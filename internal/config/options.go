@@ -3,8 +3,9 @@ package config
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // OptionsBlock holds the parsed `options { ... }` directives that ShadowDNS understands.
@@ -32,12 +33,12 @@ type OptionsBlock struct {
 // just past the closing `};`, and any error.
 //
 // `path` is used purely for error messages (file path).
-// `logger` is used to emit warnings for unknown options. Pass `slog.Default()` if nil.
+// `logger` is used to emit warnings for unknown options. Pass `zap.NewNop()` if nil.
 //
 // The function MUST not panic on any input.
-func ParseOptions(input []byte, startOffset int, path string, logger *slog.Logger) (block OptionsBlock, endOffset int, err error) {
+func ParseOptions(input []byte, startOffset int, path string, logger *zap.Logger) (block OptionsBlock, endOffset int, err error) {
 	if logger == nil {
-		logger = slog.Default()
+		logger = zap.NewNop()
 	}
 
 	lx := newLexer(input, startOffset)
@@ -186,10 +187,10 @@ func ParseOptions(input []byte, startOffset int, path string, logger *slog.Logge
 
 		default:
 			// Unknown option: emit warning and skip until next ';' or balanced '{ };'.
-			logger.Warn("unknown option in options block",
-				slog.String("option", key),
-				slog.Int("line", keyLine),
-				slog.String("file", path),
+			logger.Sugar().Warnw("unknown option in options block",
+				"option", key,
+				"line", keyLine,
+				"file", path,
 			)
 			if e := lx.skipOptionValue(path); e != nil {
 				return block, startOffset, e

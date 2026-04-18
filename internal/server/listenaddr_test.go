@@ -2,26 +2,31 @@ package server
 
 import (
 	"bytes"
-	"io"
-	"log/slog"
 	"net"
 	"slices"
 	"strings"
 	"testing"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+
+	"github.com/chenwei791129/ShadowDNS/internal/logging"
 )
 
-// newTestLogger returns a logger that writes to an in-memory buffer so tests
-// can assert on log output.
-func newTestLogger() (*slog.Logger, *bytes.Buffer) {
+// newTestLogger returns a logger that writes console-formatted text to an
+// in-memory buffer so tests can assert on log output.
+func newTestLogger() (*zap.Logger, *bytes.Buffer) {
 	buf := &bytes.Buffer{}
-	handler := slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})
-	return slog.New(handler), buf
+	cfg := logging.BaseEncoderConfig()
+	cfg.EncodeLevel = zapcore.CapitalLevelEncoder
+	core := zapcore.NewCore(zapcore.NewConsoleEncoder(cfg), zapcore.AddSync(buf), zapcore.DebugLevel)
+	return zap.New(core), buf
 }
 
 // silentLogger returns a logger that discards output; for tests that do not
 // care about log content.
-func silentLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+func silentLogger() *zap.Logger {
+	return zap.NewNop()
 }
 
 // withIfaceAddrs swaps the package-level ifaceAddrs for the duration of the

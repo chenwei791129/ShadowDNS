@@ -6,9 +6,7 @@
 package integration_test
 
 import (
-	"bytes"
 	"context"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +14,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
@@ -57,7 +56,7 @@ func axfrServerWithACL(t *testing.T, aclEntries []string) (*server.Server, func(
 	patchNamedConf(t, tmpDir)
 
 	namedConf := filepath.Join(tmpDir, "named.conf")
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 
 	cfg, err := config.LoadNamedConf(namedConf, logger)
 	if err != nil {

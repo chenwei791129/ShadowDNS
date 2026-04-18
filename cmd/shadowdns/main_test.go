@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -20,11 +19,23 @@ import (
 	"github.com/maxmind/mmdbwriter"
 	"github.com/maxmind/mmdbwriter/mmdbtype"
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
+	"github.com/chenwei791129/ShadowDNS/internal/logging"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
 	"github.com/chenwei791129/ShadowDNS/internal/view"
 )
+
+// newBufferLogger returns a zap logger writing console-formatted text to the
+// given WriteSyncer. Tests assert on log content via strings.Contains.
+func newBufferLogger(sink zapcore.WriteSyncer) *zap.Logger {
+	cfg := logging.BaseEncoderConfig()
+	cfg.EncodeLevel = zapcore.CapitalLevelEncoder
+	enc := zapcore.NewConsoleEncoder(cfg)
+	return zap.New(zapcore.NewCore(enc, sink, zapcore.DebugLevel))
+}
 
 func TestVersionVariable_HasDefault(t *testing.T) {
 	if version == "" {
@@ -54,7 +65,7 @@ func TestStartupLog_IncludesVersion(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	logger := newBufferLogger(zapcore.AddSync(&buf))
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
 		ListenAddr:    "127.0.0.1:0",
@@ -69,13 +80,13 @@ func TestStartupLog_IncludesVersion(t *testing.T) {
 	<-done
 
 	output := buf.String()
-	if !strings.Contains(output, "version=") {
+	if !strings.Contains(output, "version") {
 		t.Errorf("startup log should contain version, got: %s", output)
 	}
 }
 
 func TestRunRequiresNamedConfPath(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: "",
 		ListenAddr:    "127.0.0.1:0",
@@ -96,7 +107,7 @@ func TestRunLoadsAndShutsDownGracefully(t *testing.T) {
 	dir := setupReloadTestDir(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
 		AliasesPath:   "",
@@ -320,7 +331,7 @@ func startReloadTestServer(t *testing.T, dir string) (*server.Server, *view.Coun
 	t.Helper()
 
 	namedConf := filepath.Join(dir, "named.conf")
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: namedConf,
 		AliasesPath:   "",
@@ -396,7 +407,7 @@ func TestReload_SuccessLogsCompletionMessage(t *testing.T) {
 
 	// Create a separate logger backed by a buffer we can inspect.
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	logger := newBufferLogger(zapcore.AddSync(&buf))
 
 	if err := reload(context.Background(), opts, srv, country, asn, logger); err != nil {
 		t.Fatalf("reload returned unexpected error: %v", err)
@@ -430,7 +441,7 @@ func TestReload_FailureLogsInitiatedOnly(t *testing.T) {
 
 	// Create a separate logger backed by a buffer we can inspect.
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	logger := newBufferLogger(zapcore.AddSync(&buf))
 
 	if err := reload(context.Background(), opts, srv, country, asn, logger); err == nil {
 		t.Fatal("expected reload to return an error for broken zone")
@@ -462,7 +473,7 @@ func TestReload_DiffLog_ContainsVerifyModeAndCounts(t *testing.T) {
 	opts.ReloadVerify = server.VerifyModeHash
 
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	logger := newBufferLogger(zapcore.AddSync(&buf))
 
 	if err := reload(context.Background(), opts, srv, country, asn, logger); err != nil {
 		t.Fatalf("reload: %v", err)
@@ -470,7 +481,7 @@ func TestReload_DiffLog_ContainsVerifyModeAndCounts(t *testing.T) {
 
 	output := buf.String()
 	// The diff INFO log must include all three structured fields.
-	for _, want := range []string{"verify_mode=", "reused=", "reparsed="} {
+	for _, want := range []string{`"verify_mode"`, `"reused"`, `"reparsed"`} {
 		if !strings.Contains(output, want) {
 			t.Errorf("reload diff log missing field %q; full output:\n%s", want, output)
 		}
@@ -492,7 +503,7 @@ func TestReload_DiffLog_ReusedCountReflectsUnchangedZones(t *testing.T) {
 	opts.ReloadVerify = server.VerifyModeHash
 
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	logger := newBufferLogger(zapcore.AddSync(&buf))
 
 	// First reload: zone was just loaded at startup, fingerprints are set, so
 	// the zone file is unchanged → reused=1, reparsed=0.
@@ -501,10 +512,10 @@ func TestReload_DiffLog_ReusedCountReflectsUnchangedZones(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "reused=1") {
+	if !strings.Contains(output, `"reused": 1`) {
 		t.Errorf("expected reused=1 (zone unchanged), got:\n%s", output)
 	}
-	if !strings.Contains(output, "reparsed=0") {
+	if !strings.Contains(output, `"reparsed": 0`) {
 		t.Errorf("expected reparsed=0 (no zone changed), got:\n%s", output)
 	}
 }
@@ -538,7 +549,7 @@ func TestSIGHUP_ReloadIntegration(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
 		AliasesPath:   "",
@@ -632,7 +643,7 @@ func TestPidFile_WrittenOnStartup(t *testing.T) {
 	listenAddr := fmt.Sprintf("127.0.0.1:%d", port)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
 		AliasesPath:   "",
@@ -685,7 +696,7 @@ func TestPidFile_NotWrittenWhenEmpty(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
 		AliasesPath:   "",
@@ -761,7 +772,7 @@ func TestRunReload_Success(t *testing.T) {
 	signal.Notify(sighupCh, syscall.SIGHUP)
 	defer signal.Stop(sighupCh)
 
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
 		Logger:        logger,
@@ -775,7 +786,7 @@ func TestRunReload_Success(t *testing.T) {
 // TestRunReload_MissingNamedConf verifies that runReload returns an error
 // containing "-named-conf is required" when NamedConfPath is empty.
 func TestRunReload_MissingNamedConf(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 	opts := runOptions{
 		Logger: logger,
 	}
@@ -794,7 +805,7 @@ func TestRunReload_MissingNamedConf(t *testing.T) {
 func TestRunReload_NoPidFileConfigured(t *testing.T) {
 	dir := setupReloadTestDir(t)
 
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
 		Logger:        logger,
@@ -817,7 +828,7 @@ func TestRunReload_PidFileNotFound(t *testing.T) {
 	// Point to a path that will never exist.
 	patchNamedConfPidFile(t, dir, "/nonexistent/path/pid")
 
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
 		Logger:        logger,
@@ -842,7 +853,7 @@ func TestRunReload_InvalidPidContent(t *testing.T) {
 		t.Fatalf("write pid file: %v", err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
 		Logger:        logger,
@@ -867,7 +878,7 @@ func TestRunReload_ProcessNotRunning(t *testing.T) {
 		t.Fatalf("write pid file: %v", err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
 		Logger:        logger,
@@ -914,7 +925,7 @@ func runRunAndCaptureLogs(t *testing.T, dir string, explicitNoNotify bool) strin
 
 	ctx, cancel := context.WithCancel(context.Background())
 	buf := &threadSafeBuffer{}
-	logger := slog.New(slog.NewTextHandler(buf, nil))
+	logger := newBufferLogger(zapcore.AddSync(buf))
 	opts := runOptions{
 		NamedConfPath:    filepath.Join(dir, "named.conf"),
 		ListenAddr:       "127.0.0.1:0",
@@ -973,10 +984,10 @@ func TestRun_NotifyGuard_FlagExplicit(t *testing.T) {
 	if !strings.Contains(output, "notify state resolved") {
 		t.Fatalf("expected notify-state log, got: %s", output)
 	}
-	if !strings.Contains(output, "enabled=false") {
+	if !strings.Contains(output, `"enabled": false`) {
 		t.Errorf("expected enabled=false (flag overrides config yes), got: %s", output)
 	}
-	if !strings.Contains(output, "source=flag") {
+	if !strings.Contains(output, `"source": "flag"`) {
 		t.Errorf("expected source=flag, got: %s", output)
 	}
 }
@@ -989,10 +1000,10 @@ func TestRun_NotifyGuard_ConfigYes(t *testing.T) {
 
 	output := runRunAndCaptureLogs(t, dir, false)
 
-	if !strings.Contains(output, "enabled=true") {
+	if !strings.Contains(output, `"enabled": true`) {
 		t.Errorf("expected enabled=true for `notify yes;`, got: %s", output)
 	}
-	if !strings.Contains(output, "source=config") {
+	if !strings.Contains(output, `"source": "config"`) {
 		t.Errorf("expected source=config, got: %s", output)
 	}
 }
@@ -1005,10 +1016,10 @@ func TestRun_NotifyGuard_ConfigNo(t *testing.T) {
 
 	output := runRunAndCaptureLogs(t, dir, false)
 
-	if !strings.Contains(output, "enabled=false") {
+	if !strings.Contains(output, `"enabled": false`) {
 		t.Errorf("expected enabled=false for `notify no;`, got: %s", output)
 	}
-	if !strings.Contains(output, "source=config") {
+	if !strings.Contains(output, `"source": "config"`) {
 		t.Errorf("expected source=config, got: %s", output)
 	}
 }
@@ -1021,10 +1032,10 @@ func TestRun_NotifyGuard_Default(t *testing.T) {
 
 	output := runRunAndCaptureLogs(t, dir, false)
 
-	if !strings.Contains(output, "enabled=true") {
+	if !strings.Contains(output, `"enabled": true`) {
 		t.Errorf("expected enabled=true by default, got: %s", output)
 	}
-	if !strings.Contains(output, "source=default") {
+	if !strings.Contains(output, `"source": "default"`) {
 		t.Errorf("expected source=default, got: %s", output)
 	}
 }
@@ -1160,4 +1171,4 @@ func TestReloadVerifyFlag_InvalidExitsNonZero(t *testing.T) {
 		t.Errorf("expected error output to mention the invalid value %q, got: %s", "bogus", out)
 	}
 }
-func (w *testResponseWriter) Hijack()                     {}
+func (w *testResponseWriter) Hijack() {}

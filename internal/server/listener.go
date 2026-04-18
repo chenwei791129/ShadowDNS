@@ -42,7 +42,7 @@ func (s *Server) BindMany(addrs []string) error {
 		}
 		bound = append(bound, pair)
 		if s.Logger != nil {
-			s.Logger.Info("listener bound", "addr", addr)
+			s.Logger.Sugar().Infow("listener bound", "addr", addr)
 		}
 	}
 
@@ -110,7 +110,7 @@ func (s *Server) logBindFailure(addr string, err error) {
 			"likely systemd-resolved stub on loopback; set DNSStubListener=no in /etc/systemd/resolved.conf if this address is expected",
 		)
 	}
-	s.Logger.Warn("listener bind failed; skipping address", args...)
+	s.Logger.Sugar().Warnw("listener bind failed; skipping address", args...)
 }
 
 // isLoopbackAddrInUse reports whether addr is in the IPv4 loopback range

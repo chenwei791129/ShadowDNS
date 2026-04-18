@@ -48,7 +48,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			if s.Metrics != nil {
 				s.Metrics.RecordPanic()
 			}
-			s.Logger.Error("panic in DNS handler; recovering",
+			s.Logger.Sugar().Errorw("panic in DNS handler; recovering",
 				"panic", fmt.Sprintf("%v", r),
 			)
 			m := new(dns.Msg)
@@ -61,7 +61,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 
 	// Unsupported opcodes → NOTIMP.
 	if req.Opcode != dns.OpcodeQuery {
-		s.Logger.Info("unsupported opcode; replying NOTIMP",
+		s.Logger.Sugar().Infow("unsupported opcode; replying NOTIMP",
 			"opcode", req.Opcode,
 			"remote", w.RemoteAddr().String(),
 		)
@@ -71,7 +71,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 
 	// Malformed query (wrong question count) → FORMERR.
 	if len(req.Question) != 1 {
-		s.Logger.Info("malformed query: question count != 1; replying FORMERR",
+		s.Logger.Sugar().Infow("malformed query: question count != 1; replying FORMERR",
 			"questions", len(req.Question),
 			"remote", w.RemoteAddr().String(),
 		)
@@ -86,7 +86,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 
 	// CHAOS class — refuse all to hide identity.
 	if qclass == dns.ClassCHAOS {
-		s.Logger.Info("CHAOS class query; replying REFUSED",
+		s.Logger.Sugar().Infow("CHAOS class query; replying REFUSED",
 			"qname", qname,
 			"remote", w.RemoteAddr().String(),
 		)
@@ -111,7 +111,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	var err error
 	clientIP, err = addrFromRemote(w)
 	if err != nil {
-		s.Logger.Warn("cannot parse client IP; replying REFUSED",
+		s.Logger.Sugar().Warnw("cannot parse client IP; replying REFUSED",
 			"remote", w.RemoteAddr().String(),
 			"err", err,
 		)
@@ -122,7 +122,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Determine view from client IP.
 	viewName := st.Matcher.Resolve(clientIP)
 	if viewName == "" {
-		s.Logger.Info("no view matched client; replying REFUSED",
+		s.Logger.Sugar().Infow("no view matched client; replying REFUSED",
 			"client", clientIP.String(),
 			"qname", qname,
 		)
@@ -140,7 +140,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	origins := st.ZoneOrigins[viewName]
 	match := alias.Detect(qname, origins, st.Aliases)
 	if match.MatchedZone == "" {
-		s.Logger.Info("query outside all loaded zones; replying REFUSED",
+		s.Logger.Sugar().Infow("query outside all loaded zones; replying REFUSED",
 			"view", viewName,
 			"qname", qname,
 		)
@@ -166,7 +166,7 @@ func (s *Server) handleRootQuery(
 ) {
 	rootZone := st.RootZones[viewName][match.MatchedZone]
 	if rootZone == nil {
-		s.Logger.Error("root zone missing for matched origin; replying SERVFAIL",
+		s.Logger.Sugar().Errorw("root zone missing for matched origin; replying SERVFAIL",
 			"view", viewName,
 			"zone", match.MatchedZone,
 		)
@@ -225,7 +225,7 @@ func (s *Server) handleBackupQuery(
 ) {
 	rootZone := st.RootZones[viewName][match.RootZone]
 	if rootZone == nil {
-		s.Logger.Error("root zone missing for backup alias; replying SERVFAIL",
+		s.Logger.Sugar().Errorw("root zone missing for backup alias; replying SERVFAIL",
 			"view", viewName,
 			"backup", match.MatchedZone,
 			"root", match.RootZone,
@@ -339,7 +339,7 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 	// Extract source IP for ACL check.
 	srcIP, err := addrFromRemote(w)
 	if err != nil {
-		s.Logger.Info("zone transfer: cannot parse source IP; replying REFUSED",
+		s.Logger.Sugar().Infow("zone transfer: cannot parse source IP; replying REFUSED",
 			"remote", w.RemoteAddr().String(),
 			"err", err,
 		)
@@ -349,7 +349,7 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 
 	// ACL check: nil ACL or non-matching IP → REFUSED.
 	if !st.AllowTransferACL.Allows(srcIP) {
-		s.Logger.Info("zone transfer: source IP not in allow-transfer ACL; replying REFUSED",
+		s.Logger.Sugar().Infow("zone transfer: source IP not in allow-transfer ACL; replying REFUSED",
 			"src", srcIP.String(),
 			"qname", qname,
 		)
@@ -360,7 +360,7 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 	// Determine which view this client falls into, then look up the zone.
 	viewName := st.Matcher.Resolve(srcIP)
 	if viewName == "" {
-		s.Logger.Info("zone transfer: no view matched client; replying REFUSED",
+		s.Logger.Sugar().Infow("zone transfer: no view matched client; replying REFUSED",
 			"src", srcIP.String(),
 			"qname", qname,
 		)
@@ -371,7 +371,7 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 	origins := st.ZoneOrigins[viewName]
 	match := alias.Detect(qname, origins, st.Aliases)
 	if match.MatchedZone == "" {
-		s.Logger.Info("zone transfer: qname outside all loaded zones; replying REFUSED",
+		s.Logger.Sugar().Infow("zone transfer: qname outside all loaded zones; replying REFUSED",
 			"view", viewName,
 			"qname", qname,
 		)
@@ -382,10 +382,10 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 	if match.IsBackup {
 		rootZone := st.RootZones[viewName][match.RootZone]
 		backupZone := st.BackupZones[viewName][match.MatchedZone] // may be nil
-		transfer.HandleAliasAXFR(w, req, match.MatchedZone, rootZone, backupZone)
+		transfer.HandleAliasAXFR(w, req, match.MatchedZone, rootZone, backupZone, s.Logger)
 	} else {
 		rootZone := st.RootZones[viewName][match.MatchedZone]
-		transfer.HandleAXFR(w, req, rootZone)
+		transfer.HandleAXFR(w, req, rootZone, s.Logger)
 	}
 }
 

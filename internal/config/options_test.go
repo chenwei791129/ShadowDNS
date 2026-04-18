@@ -2,14 +2,21 @@ package config
 
 import (
 	"bytes"
-	"log/slog"
 	"strings"
 	"testing"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+
+	"github.com/chenwei791129/ShadowDNS/internal/logging"
 )
 
-// newTestLogger returns an slog.Logger that writes JSON lines to a buffer.
-func newTestLogger(buf *bytes.Buffer) *slog.Logger {
-	return slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+// newTestLogger returns a zap.Logger that writes JSON lines to a buffer.
+func newTestLogger(buf *bytes.Buffer) *zap.Logger {
+	cfg := logging.BaseEncoderConfig()
+	cfg.EncodeLevel = zapcore.CapitalLevelEncoder
+	core := zapcore.NewCore(zapcore.NewJSONEncoder(cfg), zapcore.AddSync(buf), zapcore.DebugLevel)
+	return zap.New(core)
 }
 
 // Test 1: Parses a standard options block and returns expected struct values for all 10 fields.
@@ -31,7 +38,7 @@ func TestParseOptions_StandardBlock(t *testing.T) {
         pid-file         "/var/run/named/pid";
 };`)
 
-	block, end, err := ParseOptions(input, 0, "named.conf", slog.Default())
+	block, end, err := ParseOptions(input, 0, "named.conf", zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -86,7 +93,7 @@ func TestParseOptions_PidFileAbsent(t *testing.T) {
         directory "/tmp";
         geoip-directory "/tmp/geoip";
 };`)
-	block, _, err := ParseOptions(input, 0, "named.conf", slog.Default())
+	block, _, err := ParseOptions(input, 0, "named.conf", zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -134,7 +141,7 @@ func TestParseOptions_MalformedReturnError(t *testing.T) {
         recursion no;
 };`)
 	// Missing semicolon after the directory value — should error.
-	_, _, err := ParseOptions(input, 0, "/etc/namedb/named.conf", slog.Default())
+	_, _, err := ParseOptions(input, 0, "/etc/namedb/named.conf", zap.NewNop())
 	if err == nil {
 		t.Fatal("expected an error for malformed input, got nil")
 	}
@@ -159,7 +166,7 @@ func TestParseOptions_Recursion(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			block, _, err := ParseOptions([]byte(tc.input), 0, "named.conf", slog.Default())
+			block, _, err := ParseOptions([]byte(tc.input), 0, "named.conf", zap.NewNop())
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -182,7 +189,7 @@ func TestParseOptions_Version(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			block, _, err := ParseOptions([]byte(tc.input), 0, "named.conf", slog.Default())
+			block, _, err := ParseOptions([]byte(tc.input), 0, "named.conf", zap.NewNop())
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -202,7 +209,7 @@ func TestParseOptions_AllowTransferMultipleIPs(t *testing.T) {
                 10.0.0.3;
         };
 };`)
-	block, _, err := ParseOptions(input, 0, "named.conf", slog.Default())
+	block, _, err := ParseOptions(input, 0, "named.conf", zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -227,7 +234,7 @@ func TestParseOptions_CommentsAreIgnored(t *testing.T) {
            comment */
         recursion no;
 };`)
-	block, _, err := ParseOptions(input, 0, "named.conf", slog.Default())
+	block, _, err := ParseOptions(input, 0, "named.conf", zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -247,7 +254,7 @@ func TestParseOptions_StartOffset(t *testing.T) {
 };`)
 	input := append(prefix, body...)
 	offset := len(prefix) // start of "options"
-	block, end, err := ParseOptions(input, offset, "named.conf", slog.Default())
+	block, end, err := ParseOptions(input, offset, "named.conf", zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -267,7 +274,7 @@ func TestParseOptions_UnmatchedBrace(t *testing.T) {
                 any;
         /* missing closing brace for listen-on and options */
 `)
-	_, _, err := ParseOptions(input, 0, "test.conf", slog.Default())
+	_, _, err := ParseOptions(input, 0, "test.conf", zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error for unmatched brace, got nil")
 	}
@@ -280,7 +287,7 @@ func TestParseOptions_UnmatchedBrace(t *testing.T) {
 // whose target is true.
 func TestParseOptions_NotifyYes(t *testing.T) {
 	input := []byte(`options { notify yes; };`)
-	block, _, err := ParseOptions(input, 0, "named.conf", slog.Default())
+	block, _, err := ParseOptions(input, 0, "named.conf", zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -296,7 +303,7 @@ func TestParseOptions_NotifyYes(t *testing.T) {
 // whose target is false.
 func TestParseOptions_NotifyNo(t *testing.T) {
 	input := []byte(`options { notify no; };`)
-	block, _, err := ParseOptions(input, 0, "named.conf", slog.Default())
+	block, _, err := ParseOptions(input, 0, "named.conf", zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -315,7 +322,7 @@ func TestParseOptions_NotifyAbsent(t *testing.T) {
         directory "/etc/namedb";
         recursion no;
 };`)
-	block, _, err := ParseOptions(input, 0, "named.conf", slog.Default())
+	block, _, err := ParseOptions(input, 0, "named.conf", zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -339,7 +346,7 @@ func TestParseOptions_NotifyCaseInsensitive(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			block, _, err := ParseOptions([]byte(tc.input), 0, "named.conf", slog.Default())
+			block, _, err := ParseOptions([]byte(tc.input), 0, "named.conf", zap.NewNop())
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -360,7 +367,7 @@ func TestParseOptions_NotifyInvalidValue(t *testing.T) {
         directory "/etc/namedb";
         notify bogus;
 };`)
-	_, _, err := ParseOptions(input, 0, "/etc/namedb/named.conf", slog.Default())
+	_, _, err := ParseOptions(input, 0, "/etc/namedb/named.conf", zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error for invalid notify value, got nil")
 	}
@@ -382,7 +389,7 @@ func TestParseOptions_EndOffsetCorrect(t *testing.T) {
 	body := []byte(`options { directory "/etc/namedb"; };`)
 	input := append(body, suffix...)
 
-	_, end, err := ParseOptions(input, 0, "named.conf", slog.Default())
+	_, end, err := ParseOptions(input, 0, "named.conf", zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

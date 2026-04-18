@@ -1,12 +1,14 @@
 package view
 
 import (
-	"context"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // Test-local filename constants for the GeoIP candidate basenames. Kept
@@ -64,32 +66,12 @@ func writeInvalidMMDB(t *testing.T, path string) {
 	}
 }
 
-// recordedLog is one log event captured by recordingLogHandler.
-type recordedLog struct {
-	level slog.Level
-	msg   string
-	attrs map[string]any
+// newObserverLogger returns a zap logger backed by an observer that captures
+// emitted entries for assertion via obs.All() / obs.FilterMessage(...).
+func newObserverLogger() (*zap.Logger, *observer.ObservedLogs) {
+	core, obs := observer.New(zapcore.DebugLevel)
+	return zap.New(core), obs
 }
-
-// recordingLogHandler is an slog.Handler that captures records for assertion.
-type recordingLogHandler struct {
-	entries []recordedLog
-}
-
-func (h *recordingLogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
-
-func (h *recordingLogHandler) Handle(_ context.Context, r slog.Record) error {
-	e := recordedLog{level: r.Level, msg: r.Message, attrs: map[string]any{}}
-	r.Attrs(func(a slog.Attr) bool {
-		e.attrs[a.Key] = a.Value.Any()
-		return true
-	})
-	h.entries = append(h.entries, e)
-	return nil
-}
-
-func (h *recordingLogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
-func (h *recordingLogHandler) WithGroup(_ string) slog.Handler      { return h }
 
 // buildBothMMDBs creates a temp dir with both valid GeoLite2 mmdb files and
 // returns the dir path. Used by older tests that pre-date the GeoIP2/GeoLite2
@@ -133,7 +115,7 @@ func writeASNMMDB(t *testing.T, path string) {
 
 func TestLoadGeoIP_EmptyDir(t *testing.T) {
 	dir := t.TempDir() // empty directory
-	_, _, err := LoadGeoIP(dir, slog.Default())
+	_, _, err := LoadGeoIP(dir, zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error for empty dir, got nil")
 	}
@@ -147,7 +129,7 @@ func TestLoadGeoIP_OnlyCountryDB(t *testing.T) {
 	// Write only the country mmdb.
 	writeCountryMMDB(t, filepath.Join(dir, geoLite2CountryFilename))
 
-	_, _, err := LoadGeoIP(dir, slog.Default())
+	_, _, err := LoadGeoIP(dir, zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error when ASN db is missing, got nil")
 	}
@@ -161,7 +143,7 @@ func TestLoadGeoIP_OnlyASNDB(t *testing.T) {
 	// Write only the ASN mmdb (country is missing).
 	writeASNMMDB(t, filepath.Join(dir, geoLite2ASNFilename))
 
-	_, _, err := LoadGeoIP(dir, slog.Default())
+	_, _, err := LoadGeoIP(dir, zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error when country db is missing, got nil")
 	}
@@ -173,7 +155,7 @@ func TestLoadGeoIP_OnlyASNDB(t *testing.T) {
 func TestLoadGeoIP_BothValid(t *testing.T) {
 	dir := buildBothMMDBs(t)
 
-	countryDB, asnDB, err := LoadGeoIP(dir, slog.Default())
+	countryDB, asnDB, err := LoadGeoIP(dir, zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,7 +176,7 @@ func TestLoadGeoIP_CorruptCountryFile(t *testing.T) {
 	// Write a valid ASN mmdb.
 	writeASNMMDB(t, filepath.Join(dir, geoLite2ASNFilename))
 
-	_, _, err := LoadGeoIP(dir, slog.Default())
+	_, _, err := LoadGeoIP(dir, zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error for corrupt country file, got nil")
 	}
@@ -210,7 +192,7 @@ func TestLoadGeoIP_GeoIP2OnlySucceeds(t *testing.T) {
 		fixtureFile{name: geoIP2ASNFilename, kind: kindASN},
 	)
 
-	countryDB, asnDB, err := LoadGeoIP(dir, slog.Default())
+	countryDB, asnDB, err := LoadGeoIP(dir, zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -235,8 +217,8 @@ func TestLoadGeoIP_GeoIP2WinsAndGeoLite2NotAttempted(t *testing.T) {
 		fixtureFile{name: geoLite2ASNFilename, kind: kindInvalid},
 	)
 
-	rec := &recordingLogHandler{}
-	countryDB, asnDB, err := LoadGeoIP(dir, slog.New(rec))
+	logger, obs := newObserverLogger()
+	countryDB, asnDB, err := LoadGeoIP(dir, logger)
 	if err != nil {
 		t.Fatalf("loader should short-circuit on first valid candidate, got: %v", err)
 	}
@@ -247,17 +229,17 @@ func TestLoadGeoIP_GeoIP2WinsAndGeoLite2NotAttempted(t *testing.T) {
 
 	wantCountry := filepath.Join(dir, geoIP2CountryFilename)
 	wantASN := filepath.Join(dir, geoIP2ASNFilename)
-	for _, e := range rec.entries {
-		if e.level != slog.LevelInfo {
+	for _, e := range obs.All() {
+		if e.Level != zapcore.InfoLevel {
 			continue
 		}
-		switch e.msg {
+		switch e.Message {
 		case "loaded GeoIP country database":
-			if got := e.attrs["path"]; got != wantCountry {
+			if got := e.ContextMap()["path"]; got != wantCountry {
 				t.Errorf("country path = %v, want %q (loader must not open GeoLite2 when GeoIP2 succeeds)", got, wantCountry)
 			}
 		case "loaded GeoIP ASN database":
-			if got := e.attrs["path"]; got != wantASN {
+			if got := e.ContextMap()["path"]; got != wantASN {
 				t.Errorf("ASN path = %v, want %q (loader must not open GeoLite2 when GeoIP2 succeeds)", got, wantASN)
 			}
 		}
@@ -271,7 +253,7 @@ func TestLoadGeoIP_GeoLite2OnlySucceeds(t *testing.T) {
 		fixtureFile{name: geoLite2ASNFilename, kind: kindASN},
 	)
 
-	countryDB, asnDB, err := LoadGeoIP(dir, slog.Default())
+	countryDB, asnDB, err := LoadGeoIP(dir, zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -292,7 +274,7 @@ func TestLoadGeoIP_MixedEditionsSucceeds(t *testing.T) {
 		fixtureFile{name: geoLite2ASNFilename, kind: kindASN},
 	)
 
-	countryDB, asnDB, err := LoadGeoIP(dir, slog.Default())
+	countryDB, asnDB, err := LoadGeoIP(dir, zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -314,7 +296,7 @@ func TestLoadGeoIP_FallbackWhenGeoIP2CountryInvalid(t *testing.T) {
 		fixtureFile{name: geoLite2ASNFilename, kind: kindASN},
 	)
 
-	countryDB, asnDB, err := LoadGeoIP(dir, slog.Default())
+	countryDB, asnDB, err := LoadGeoIP(dir, zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -333,7 +315,7 @@ func TestLoadGeoIP_AllCountryCandidatesMissing(t *testing.T) {
 		fixtureFile{name: geoLite2ASNFilename, kind: kindASN},
 	)
 
-	_, _, err := LoadGeoIP(dir, slog.Default())
+	_, _, err := LoadGeoIP(dir, zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error when all country candidates are missing")
 	}
@@ -358,7 +340,7 @@ func TestLoadGeoIP_AllASNCandidatesInvalid(t *testing.T) {
 		fixtureFile{name: geoLite2ASNFilename, kind: kindInvalid},
 	)
 
-	_, _, err := LoadGeoIP(dir, slog.Default())
+	_, _, err := LoadGeoIP(dir, zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error when all ASN candidates are invalid")
 	}
@@ -389,8 +371,7 @@ func TestLoadGeoIP_LogsActualOpenedPath(t *testing.T) {
 		fixtureFile{name: geoLite2ASNFilename, kind: kindASN},
 	)
 
-	rec := &recordingLogHandler{}
-	logger := slog.New(rec)
+	logger, obs := newObserverLogger()
 
 	countryDB, asnDB, err := LoadGeoIP(dir, logger)
 	if err != nil {
@@ -405,18 +386,18 @@ func TestLoadGeoIP_LogsActualOpenedPath(t *testing.T) {
 	wantASNPath := filepath.Join(dir, geoLite2ASNFilename)
 
 	var sawCountry, sawASN bool
-	for _, e := range rec.entries {
-		if e.level != slog.LevelInfo {
+	for _, e := range obs.All() {
+		if e.Level != zapcore.InfoLevel {
 			continue
 		}
-		switch e.msg {
+		switch e.Message {
 		case "loaded GeoIP country database":
-			if got := e.attrs["path"]; got != wantCountryPath {
+			if got := e.ContextMap()["path"]; got != wantCountryPath {
 				t.Errorf("country log path = %v, want %q", got, wantCountryPath)
 			}
 			sawCountry = true
 		case "loaded GeoIP ASN database":
-			if got := e.attrs["path"]; got != wantASNPath {
+			if got := e.ContextMap()["path"]; got != wantASNPath {
 				t.Errorf("ASN log path = %v, want %q", got, wantASNPath)
 			}
 			sawASN = true
@@ -437,7 +418,7 @@ func TestLoadGeoIP_CorruptASNFile(t *testing.T) {
 	// Write garbage bytes to the ASN mmdb file.
 	writeInvalidMMDB(t, filepath.Join(dir, geoLite2ASNFilename))
 
-	_, _, err := LoadGeoIP(dir, slog.Default())
+	_, _, err := LoadGeoIP(dir, zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error for corrupt ASN file, got nil")
 	}

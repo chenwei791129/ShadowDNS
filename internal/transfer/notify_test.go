@@ -2,13 +2,13 @@ package transfer
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
@@ -128,7 +128,7 @@ func TestSendNOTIFY_Success(t *testing.T) {
 	addr, cleanup := startMockNotifyServer(t, &count)
 	defer cleanup()
 
-	logger := slog.Default()
+	logger := zap.NewNop()
 	fastBackoff := []time.Duration{1 * time.Millisecond}
 
 	err := sendNotifyWithBackoff(context.Background(), "example.com.", addr, fastBackoff, logger)
@@ -151,7 +151,7 @@ func TestSendNOTIFY_RetriesOnFailure(t *testing.T) {
 	// Use a nonexistent port.  We need to override the DNS exchange timeout.
 	// In practice dns.Exchange with a no-listener returns quickly (connection refused or timeout).
 	// We use 127.0.0.1:1 which is almost always closed.
-	logger := slog.Default()
+	logger := zap.NewNop()
 
 	err := sendNotifyWithBackoff(context.Background(), "example.com.", "127.0.0.1:1",
 		fastBackoff, logger)
@@ -165,7 +165,7 @@ func TestSendNOTIFY_CtxCancel(t *testing.T) {
 	fastBackoff := []time.Duration{500 * time.Millisecond, 500 * time.Millisecond}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	logger := slog.Default()
+	logger := zap.NewNop()
 
 	// Cancel the context after a tiny delay (after the first attempt fails).
 	go func() {

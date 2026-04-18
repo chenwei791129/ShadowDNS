@@ -2,7 +2,8 @@ package server
 
 import (
 	"fmt"
-	"log/slog"
+
+	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
@@ -27,7 +28,7 @@ func BuildState(
 	mode VerifyMode,
 	country *view.CountryDB,
 	asn *view.ASNDB,
-	logger *slog.Logger,
+	logger *zap.Logger,
 ) (ServerState, BuildSummary, error) {
 	rootZones := make(map[string]map[string]*zone.Zone)
 	backupZones := make(map[string]map[string]*zone.Zone)
@@ -131,7 +132,7 @@ func loadZone(
 	viewName string,
 	mode VerifyMode,
 	aliases config.AliasMap,
-	logger *slog.Logger,
+	logger *zap.Logger,
 ) (*zone.Zone, zoneFingerprint, bool, error) {
 	fp, err := computeFingerprint(z.File, mode)
 	if err != nil {
