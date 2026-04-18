@@ -241,7 +241,7 @@ func main() {
 	// read of noNotifyFlag — that would silently defeat the flag > config
 	// precedence rule.
 	var noNotifyFlag bool
-	flag.BoolVar(&noNotifyFlag, "no-notify", false, "disable NOTIFY dispatch for the entire process lifetime (overrides named.conf options.notify; sticky across SIGHUP)")
+	flag.BoolVar(&noNotifyFlag, "no-notify", false, "disable NOTIFY dispatch (overrides named.conf options.notify)")
 
 	var reloadFlag bool
 	flag.BoolVar(&reloadFlag, "reload", false, "send SIGHUP to a running server (requires -named-conf)")
@@ -254,6 +254,18 @@ func main() {
 		"zone file change detection strategy on SIGHUP reload: hash (default, safe for rsync -avc --inplace), size (mtime+size only, no file read), none (always full rebuild)")
 
 	flag.BoolVar(&opts.NoColor, "no-color", false, "disable colored log output")
+
+	flag.Usage = func() {
+		out := flag.CommandLine.Output()
+		fmt.Fprintln(out, "Usage: shadowdns [flags]")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "All flags are parsed once at startup. SIGHUP re-reads named.conf,")
+		fmt.Fprintln(out, "aliases.yaml, and zone files from the paths recorded at startup, but")
+		fmt.Fprintln(out, "does not re-parse flags — restart the process to change flag values.")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Flags:")
+		flag.PrintDefaults()
+	}
 
 	flag.Parse()
 
