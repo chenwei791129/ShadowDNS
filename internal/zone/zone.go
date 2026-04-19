@@ -20,32 +20,73 @@ const (
 
 // Zone is the in-memory representation of a parsed DNS zone file.
 //
-// Records is a two-level index: owner name (lowercased FQDN) → qtype → RR list.
-// The inner slice is stored by reference; Lookup and LookupWildcard return it
+// Records maps owner name (lowercased FQDN) to a qtypeStore that holds the
+// owner's RRs indexed by qtype. The store has two states: inline for owners
+// with a single qtype (avoids allocating a sub-map), and promoted for owners
+// with two or more qtypes. Lookup and LookupWildcard return the stored slice
 // directly without copying. Callers MUST NOT mutate the returned slice.
 type Zone struct {
 	Origin  string
 	Path    string
 	SOA     *dns.SOA
-	Records map[string]map[uint16][]dns.RR
+	Records map[string]*qtypeStore
 	Role    Role
+}
+
+// qtypeStore holds the RRs at one owner, either inline (single qtype) or
+// promoted (multiple qtypes). Inline state: single=true, qtype and rrs hold
+// the owner's only qtype and its records, sub is nil. Promoted state:
+// single=false, sub holds every qtype's records, qtype/rrs are unused.
+// Promotion is one-way (inline→promoted) on the first AddRR of a new qtype;
+// there is no demotion path.
+type qtypeStore struct {
+	single bool
+	qtype  uint16
+	rrs    []dns.RR
+	sub    map[uint16][]dns.RR
+}
+
+// Each invokes fn once per (qtype, rrs) pair stored at this owner. Safe to
+// call on a nil receiver (no-op).
+func (s *qtypeStore) Each(fn func(qtype uint16, rrs []dns.RR)) {
+	if s == nil {
+		return
+	}
+	if s.single {
+		fn(s.qtype, s.rrs)
+		return
+	}
+	for q, r := range s.sub {
+		fn(q, r)
+	}
 }
 
 // AddRR inserts an RR into the index under (owner, qtype).
 // Used by ParseFile internally; can also be used by tests.
 func (z *Zone) AddRR(rr dns.RR) {
 	if z.Records == nil {
-		z.Records = make(map[string]map[uint16][]dns.RR)
+		z.Records = make(map[string]*qtypeStore)
 	}
 	key := strings.ToLower(rr.Header().Name)
 	qtype := rr.Header().Rrtype
 
-	sub, ok := z.Records[key]
-	if !ok {
-		sub = make(map[uint16][]dns.RR)
-		z.Records[key] = sub
+	s, ok := z.Records[key]
+	switch {
+	case !ok:
+		z.Records[key] = &qtypeStore{single: true, qtype: qtype, rrs: []dns.RR{rr}}
+	case s.single && s.qtype == qtype:
+		s.rrs = append(s.rrs, rr)
+	case s.single:
+		// Promote: re-install the inline slice into the sub-map under its
+		// original qtype so that any slice previously returned by Lookup keeps
+		// a shared backing array with the promoted storage.
+		s.sub = map[uint16][]dns.RR{s.qtype: s.rrs, qtype: {rr}}
+		s.single = false
+		s.qtype = 0
+		s.rrs = nil
+	default:
+		s.sub[qtype] = append(s.sub[qtype], rr)
 	}
-	sub[qtype] = append(sub[qtype], rr)
 
 	// Cache SOA reference for quick access.
 	if soa, ok := rr.(*dns.SOA); ok {
@@ -98,8 +139,8 @@ func (z *Zone) LookupWildcard(qname string, qtype uint16) ([]dns.RR, bool) {
 		}
 
 		wildcard := "*." + parent
-		if sub, ok := z.Records[wildcard]; ok {
-			return wildcardHit(sub, qtype)
+		if s, ok := z.Records[wildcard]; ok {
+			return wildcardHit(s, qtype)
 		}
 
 		// ENT blocker: if the parent name itself has records, stop.
@@ -112,23 +153,32 @@ func (z *Zone) LookupWildcard(qname string, qtype uint16) ([]dns.RR, bool) {
 
 	// Check wildcard at the zone origin level: "*.<origin>".
 	wildcard := "*." + z.Origin
-	if sub, ok := z.Records[wildcard]; ok {
-		return wildcardHit(sub, qtype)
+	if s, ok := z.Records[wildcard]; ok {
+		return wildcardHit(s, qtype)
 	}
 
 	return nil, false
 }
 
-// wildcardHit returns the stored RR list for a matched wildcard owner's sub-map.
+// wildcardHit returns the stored RR list for a matched wildcard owner's store.
 // qtype == 0 is the "any qtype / existence check" sentinel used by HasWildcard.
-func wildcardHit(sub map[uint16][]dns.RR, qtype uint16) ([]dns.RR, bool) {
+func wildcardHit(s *qtypeStore, qtype uint16) ([]dns.RR, bool) {
 	if qtype == 0 {
-		if len(sub) == 0 {
+		if s == nil || (!s.single && len(s.sub) == 0) {
 			return nil, false
 		}
 		return nil, true
 	}
-	return sub[qtype], true
+	if s == nil {
+		return nil, true
+	}
+	if s.single {
+		if s.qtype == qtype {
+			return s.rrs, true
+		}
+		return nil, true
+	}
+	return s.sub[qtype], true
 }
 
 // HasWildcard reports whether any wildcard owner covers qname per RFC 4592,
@@ -150,11 +200,17 @@ func (z *Zone) HasWildcard(qname string) bool {
 //
 // owner is expected to be canonicalized (lowercased + trailing dot) by the caller.
 func (z *Zone) Lookup(owner string, qtype uint16) []dns.RR {
-	sub, ok := z.Records[owner]
+	s, ok := z.Records[owner]
 	if !ok {
 		return nil
 	}
-	return sub[qtype]
+	if s.single {
+		if s.qtype == qtype {
+			return s.rrs
+		}
+		return nil
+	}
+	return s.sub[qtype]
 }
 
 // MaxCNAMEDepth limits CNAME chain following to prevent infinite loops

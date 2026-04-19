@@ -10,10 +10,7 @@ import (
 
 // buildZone creates a minimal Zone with the given origin and records.
 func buildZone(origin string, rrs ...dns.RR) *zone.Zone {
-	z := &zone.Zone{
-		Origin:  origin,
-		Records: make(map[string]map[uint16][]dns.RR),
-	}
+	z := &zone.Zone{Origin: origin}
 	for _, rr := range rrs {
 		z.AddRR(rr)
 	}

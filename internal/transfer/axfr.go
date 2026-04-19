@@ -87,23 +87,26 @@ func buildAliasRecords(rootZone, backupZone *zone.Zone, rootOrigin, backupOrigin
 
 	overrides := make(map[string][]dns.RR)
 	if backupZone != nil {
-		for ownerFqdn, sub := range backupZone.Records {
-			for rrtype, rrs := range sub {
+		for ownerFqdn, s := range backupZone.Records {
+			s.Each(func(rrtype uint16, rrs []dns.RR) {
 				k := overrideKey(ownerFqdn, rrtype)
 				overrides[k] = append(overrides[k], rrs...)
-			}
+			})
 		}
 	}
 
 	var result []dns.RR
 
 	for _, owner := range owners {
-		typeMap := rootZone.Records[owner]
-
 		// Translate root owner → backup owner for override lookup.
 		backupOwner := alias.RewriteName(owner, rootOrigin, backupOrigin)
 
-		// Sort types for determinism.
+		// Collect per-qtype RRs from the store, then sort qtypes for determinism.
+		typeMap := make(map[uint16][]dns.RR)
+		rootZone.Records[owner].Each(func(rrtype uint16, rrs []dns.RR) {
+			typeMap[rrtype] = rrs
+		})
+
 		types := make([]uint16, 0, len(typeMap))
 		for t := range typeMap {
 			types = append(types, t)
@@ -181,12 +184,12 @@ func collectNonSOA(z *zone.Zone) []dns.RR {
 
 	var result []dns.RR
 	for _, owner := range owners {
-		for rrtype, rrs := range z.Records[owner] {
+		z.Records[owner].Each(func(rrtype uint16, rrs []dns.RR) {
 			if rrtype == dns.TypeSOA {
-				continue
+				return
 			}
 			result = append(result, rrs...)
-		}
+		})
 	}
 	return result
 }

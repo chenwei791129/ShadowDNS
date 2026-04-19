@@ -28,8 +28,22 @@ func Classify(z *Zone, aliases config.AliasMap, logger *zap.Logger) *Zone {
 // discarded types, so z.SOA is cleared unconditionally.
 func filterBackupRecords(z *Zone, logger *zap.Logger) {
 	z.SOA = nil
-	for owner, sub := range z.Records {
-		for rrtype, rrs := range sub {
+	for owner, s := range z.Records {
+		if s.single {
+			if dnsutil.OverridableTypes[s.qtype] {
+				continue
+			}
+			for _, rr := range s.rrs {
+				logger.Sugar().Warnw("backup-override zone: discarding disallowed record type",
+					"zone", z.Origin,
+					"owner", owner,
+					"type", dns.TypeToString[rr.Header().Rrtype],
+				)
+			}
+			delete(z.Records, owner)
+			continue
+		}
+		for rrtype, rrs := range s.sub {
 			if dnsutil.OverridableTypes[rrtype] {
 				continue
 			}
@@ -40,9 +54,9 @@ func filterBackupRecords(z *Zone, logger *zap.Logger) {
 					"type", dns.TypeToString[rr.Header().Rrtype],
 				)
 			}
-			delete(sub, rrtype)
+			delete(s.sub, rrtype)
 		}
-		if len(sub) == 0 {
+		if len(s.sub) == 0 {
 			delete(z.Records, owner)
 		}
 	}

@@ -81,11 +81,7 @@ func makeAnyMatcher(viewName string) *view.Matcher {
 
 // buildRootZone constructs an in-memory root zone with the given records.
 func buildRootZone(origin string, rrs ...dns.RR) *zone.Zone {
-	z := &zone.Zone{
-		Origin:  origin,
-		Records: make(map[string]map[uint16][]dns.RR),
-		Role:    zone.RoleRoot,
-	}
+	z := &zone.Zone{Origin: origin, Role: zone.RoleRoot}
 	soa := makeSOA(origin)
 	z.AddRR(soa)
 	for _, rr := range rrs {
@@ -96,11 +92,7 @@ func buildRootZone(origin string, rrs ...dns.RR) *zone.Zone {
 
 // buildBackupZone constructs an in-memory backup-override zone.
 func buildBackupZone(origin string, rrs ...dns.RR) *zone.Zone {
-	z := &zone.Zone{
-		Origin:  origin,
-		Records: make(map[string]map[uint16][]dns.RR),
-		Role:    zone.RoleBackupOverride,
-	}
+	z := &zone.Zone{Origin: origin, Role: zone.RoleBackupOverride}
 	for _, rr := range rrs {
 		z.AddRR(rr)
 	}
@@ -1060,10 +1052,9 @@ func TestMalformed_PanicRecovery(t *testing.T) {
 	// Build a server where the root zone for "root.com." has a nil SOA to
 	// force a nil-pointer dereference in the backup SOA path.
 	brokenRootZ := &zone.Zone{
-		Origin:  "root.com.",
-		Records: make(map[string]map[uint16][]dns.RR),
-		Role:    zone.RoleRoot,
-		SOA:     nil, // intentionally nil to trigger panic in BackupSOA
+		Origin: "root.com.",
+		Role:   zone.RoleRoot,
+		SOA:    nil, // intentionally nil to trigger panic in BackupSOA
 	}
 	brokenRootZ.AddRR(makeARecord("www.root.com.", "1.2.3.4", 300))
 

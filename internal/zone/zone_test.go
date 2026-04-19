@@ -111,7 +111,7 @@ func TestZone_LookupWildcard_SingleLevel(t *testing.T) {
 	// *.example.com. A 1.2.3.4 — query foo.example.com. should match.
 	z := &Zone{
 		Origin:  "example.com.",
-		Records: make(map[string]map[uint16][]dns.RR),
+		Records: make(map[string]*qtypeStore),
 	}
 	z.AddRR(&dns.A{
 		Hdr: dns.RR_Header{Name: "*.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
@@ -140,7 +140,7 @@ func TestZone_LookupWildcard_MultiLevel(t *testing.T) {
 	// when bar.example.com. does not exist.
 	z := &Zone{
 		Origin:  "example.com.",
-		Records: make(map[string]map[uint16][]dns.RR),
+		Records: make(map[string]*qtypeStore),
 	}
 	z.AddRR(&dns.A{
 		Hdr: dns.RR_Header{Name: "*.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
@@ -163,7 +163,7 @@ func TestZone_LookupWildcard_ENTBlocking(t *testing.T) {
 	// is an ENT blocker.
 	z := &Zone{
 		Origin:  "example.com.",
-		Records: make(map[string]map[uint16][]dns.RR),
+		Records: make(map[string]*qtypeStore),
 	}
 	z.AddRR(&dns.A{
 		Hdr: dns.RR_Header{Name: "*.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
@@ -189,7 +189,7 @@ func TestZone_LookupWildcard_MoreSpecificWins(t *testing.T) {
 	// Query foo.sub.example.com. should match *.sub.example.com.
 	z := &Zone{
 		Origin:  "example.com.",
-		Records: make(map[string]map[uint16][]dns.RR),
+		Records: make(map[string]*qtypeStore),
 	}
 	z.AddRR(&dns.A{
 		Hdr: dns.RR_Header{Name: "*.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
@@ -221,7 +221,7 @@ func TestZone_LookupWildcard_NoWildcard(t *testing.T) {
 	// Zone with no wildcard records — lookup should return empty.
 	z := &Zone{
 		Origin:  "example.com.",
-		Records: make(map[string]map[uint16][]dns.RR),
+		Records: make(map[string]*qtypeStore),
 	}
 	z.AddRR(&dns.A{
 		Hdr: dns.RR_Header{Name: "www.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
@@ -242,7 +242,7 @@ func TestZone_LookupWildcard_QtypeMismatch_NODATA(t *testing.T) {
 	// *.example.com. has only A records — query AAAA should return empty (NODATA).
 	z := &Zone{
 		Origin:  "example.com.",
-		Records: make(map[string]map[uint16][]dns.RR),
+		Records: make(map[string]*qtypeStore),
 	}
 	z.AddRR(&dns.A{
 		Hdr: dns.RR_Header{Name: "*.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
@@ -276,12 +276,12 @@ func makeTestSOA(origin string) *dns.SOA {
 func TestZone_LookupReturnsSharedBacking(t *testing.T) {
 	z := &Zone{
 		Origin:  "example.com.",
-		Records: make(map[string]map[uint16][]dns.RR),
+		Records: make(map[string]*qtypeStore),
 	}
 	z.AddRR(newTestA("a.example.com.", "192.0.2.1"))
 	z.AddRR(newTestA("a.example.com.", "192.0.2.2"))
 
-	stored := z.Records["a.example.com."][dns.TypeA]
+	stored := z.Records["a.example.com."].rrs
 	if len(stored) != 2 {
 		t.Fatalf("stored: got %d records, want 2", len(stored))
 	}
@@ -340,7 +340,7 @@ func newTestA(owner, ip string) *dns.A {
 }
 
 func TestFollowCNAME_InZoneSingleHop(t *testing.T) {
-	z := &Zone{Origin: "root.com.", Records: make(map[string]map[uint16][]dns.RR)}
+	z := &Zone{Origin: "root.com.", Records: make(map[string]*qtypeStore)}
 	z.AddRR(newTestCNAME("alias.root.com.", "target.root.com."))
 	z.AddRR(newTestA("target.root.com.", "1.2.3.4"))
 
@@ -363,7 +363,7 @@ func TestFollowCNAME_InZoneSingleHop(t *testing.T) {
 }
 
 func TestFollowCNAME_Chain(t *testing.T) {
-	z := &Zone{Origin: "root.com.", Records: make(map[string]map[uint16][]dns.RR)}
+	z := &Zone{Origin: "root.com.", Records: make(map[string]*qtypeStore)}
 	z.AddRR(newTestCNAME("a.root.com.", "b.root.com."))
 	z.AddRR(newTestCNAME("b.root.com.", "c.root.com."))
 	z.AddRR(newTestA("c.root.com.", "5.6.7.8"))
@@ -377,7 +377,7 @@ func TestFollowCNAME_Chain(t *testing.T) {
 }
 
 func TestFollowCNAME_OutOfBailiwick(t *testing.T) {
-	z := &Zone{Origin: "root.com.", Records: make(map[string]map[uint16][]dns.RR)}
+	z := &Zone{Origin: "root.com.", Records: make(map[string]*qtypeStore)}
 	z.AddRR(newTestCNAME("ext.root.com.", "target.other.com."))
 
 	initial := z.Lookup("ext.root.com.", dns.TypeCNAME)
@@ -389,7 +389,7 @@ func TestFollowCNAME_OutOfBailiwick(t *testing.T) {
 }
 
 func TestFollowCNAME_DepthLimit(t *testing.T) {
-	z := &Zone{Origin: "root.com.", Records: make(map[string]map[uint16][]dns.RR)}
+	z := &Zone{Origin: "root.com.", Records: make(map[string]*qtypeStore)}
 	for i := 1; i <= 10; i++ {
 		next := i%10 + 1
 		z.AddRR(newTestCNAME(
