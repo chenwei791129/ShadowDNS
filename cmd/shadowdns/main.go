@@ -257,13 +257,13 @@ func main() {
 
 	flag.Usage = func() {
 		out := flag.CommandLine.Output()
-		fmt.Fprintln(out, "Usage: shadowdns [flags]")
-		fmt.Fprintln(out)
-		fmt.Fprintln(out, "All flags are parsed once at startup. SIGHUP re-reads named.conf,")
-		fmt.Fprintln(out, "aliases.yaml, and zone files from the paths recorded at startup, but")
-		fmt.Fprintln(out, "does not re-parse flags — restart the process to change flag values.")
-		fmt.Fprintln(out)
-		fmt.Fprintln(out, "Flags:")
+		_, _ = fmt.Fprintln(out, "Usage: shadowdns [flags]")
+		_, _ = fmt.Fprintln(out)
+		_, _ = fmt.Fprintln(out, "All flags are parsed once at startup. SIGHUP re-reads named.conf,")
+		_, _ = fmt.Fprintln(out, "aliases.yaml, and zone files from the paths recorded at startup, but")
+		_, _ = fmt.Fprintln(out, "does not re-parse flags — restart the process to change flag values.")
+		_, _ = fmt.Fprintln(out)
+		_, _ = fmt.Fprintln(out, "Flags:")
 		flag.PrintDefaults()
 	}
 
