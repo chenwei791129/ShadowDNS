@@ -1,6 +1,6 @@
 module github.com/chenwei791129/ShadowDNS
 
-go 1.25.6
+go 1.26.0
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0

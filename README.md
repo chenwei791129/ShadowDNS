@@ -126,7 +126,7 @@ Response sent to client
 
 ## Quick start
 
-**1. Install Go 1.25+ and clone the repository.**
+**1. Install Go 1.26+ and clone the repository.**
 
 ```bash
 git clone https://github.com/example/shadowdns.git
