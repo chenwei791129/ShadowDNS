@@ -35,7 +35,7 @@ func ParseFile(path string, origin string, logger *zap.Logger) (*Zone, error) {
 	z := &Zone{
 		Origin:  canonOrigin,
 		Path:    path,
-		Records: make(map[string][]dns.RR),
+		Records: make(map[string]map[uint16][]dns.RR),
 	}
 
 	// BIND accepts $INCLUDE with a double-quoted path, but miekg/dns rejects

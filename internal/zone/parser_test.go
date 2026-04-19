@@ -113,8 +113,10 @@ func TestParseFile_BlankAndCommentLines_Skipped(t *testing.T) {
 
 	// Only SOA and NS should be present — no phantom records from blank/comment lines.
 	total := 0
-	for _, rrs := range z.Records {
-		total += len(rrs)
+	for _, sub := range z.Records {
+		for _, rrs := range sub {
+			total += len(rrs)
+		}
 	}
 	if total != 2 {
 		t.Errorf("expected 2 total records (SOA + NS), got %d", total)
@@ -364,7 +366,7 @@ func TestParseFile_WildcardOwnerName(t *testing.T) {
 		}
 
 		const wantKey = "*.example.com."
-		rrs := z.Records[wantKey]
+		rrs := z.Records[wantKey][dns.TypeA]
 		if len(rrs) != 1 {
 			t.Fatalf("expected 1 record at %q, got %d", wantKey, len(rrs))
 		}
@@ -391,7 +393,7 @@ func TestParseFile_WildcardOwnerName(t *testing.T) {
 		}
 
 		const wantKey = "*.sub.example.com."
-		rrs := z.Records[wantKey]
+		rrs := z.Records[wantKey][dns.TypeCNAME]
 		if len(rrs) != 1 {
 			t.Fatalf("expected 1 record at %q, got %d", wantKey, len(rrs))
 		}
@@ -419,7 +421,7 @@ func TestParseFile_WildcardOwnerName(t *testing.T) {
 		}
 
 		const wantKey = "*.example.com."
-		rrs := z.Records[wantKey]
+		rrs := z.Records[wantKey][dns.TypeA]
 		if len(rrs) != 2 {
 			t.Fatalf("expected 2 records at %q, got %d", wantKey, len(rrs))
 		}

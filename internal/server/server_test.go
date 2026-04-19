@@ -83,7 +83,7 @@ func makeAnyMatcher(viewName string) *view.Matcher {
 func buildRootZone(origin string, rrs ...dns.RR) *zone.Zone {
 	z := &zone.Zone{
 		Origin:  origin,
-		Records: make(map[string][]dns.RR),
+		Records: make(map[string]map[uint16][]dns.RR),
 		Role:    zone.RoleRoot,
 	}
 	soa := makeSOA(origin)
@@ -98,7 +98,7 @@ func buildRootZone(origin string, rrs ...dns.RR) *zone.Zone {
 func buildBackupZone(origin string, rrs ...dns.RR) *zone.Zone {
 	z := &zone.Zone{
 		Origin:  origin,
-		Records: make(map[string][]dns.RR),
+		Records: make(map[string]map[uint16][]dns.RR),
 		Role:    zone.RoleBackupOverride,
 	}
 	for _, rr := range rrs {
@@ -1061,7 +1061,7 @@ func TestMalformed_PanicRecovery(t *testing.T) {
 	// force a nil-pointer dereference in the backup SOA path.
 	brokenRootZ := &zone.Zone{
 		Origin:  "root.com.",
-		Records: make(map[string][]dns.RR),
+		Records: make(map[string]map[uint16][]dns.RR),
 		Role:    zone.RoleRoot,
 		SOA:     nil, // intentionally nil to trigger panic in BackupSOA
 	}

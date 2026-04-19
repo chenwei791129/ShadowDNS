@@ -34,7 +34,7 @@ func NotifyTargets(z *zone.Zone) []string {
 		mname = dns.Fqdn(z.SOA.Ns)
 	}
 
-	nsRRs := z.Records[z.Origin]
+	nsRRs := z.Lookup(z.Origin, dns.TypeNS)
 	var targets []string
 	for _, rr := range nsRRs {
 		ns, ok := rr.(*dns.NS)

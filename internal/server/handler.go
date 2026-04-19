@@ -193,7 +193,7 @@ func (s *Server) handleRootQuery(
 	// CNAME fallback per RFC 1034 §3.6.2.
 	if qtype != dns.TypeCNAME {
 		if cnames := rootZone.Lookup(qname, dns.TypeCNAME); len(cnames) > 0 {
-			replyWithAnswer(w, req, rootZone.FollowCNAME(cnames, qtype))
+			replyWithAnswer(w, req, rootZone.FollowCNAME(nil, cnames, qtype))
 			return
 		}
 	}
@@ -206,7 +206,7 @@ func (s *Server) handleRootQuery(
 	}
 	if qtype != dns.TypeCNAME {
 		if wCNAMEs, _ := rootZone.LookupWildcard(qname, dns.TypeCNAME); len(wCNAMEs) > 0 {
-			replyWithAnswer(w, req, rootZone.FollowCNAME(rewriteWildcardOwner(wCNAMEs, qname), qtype))
+			replyWithAnswer(w, req, rootZone.FollowCNAME(nil, rewriteWildcardOwner(wCNAMEs, qname), qtype))
 			return
 		}
 	}

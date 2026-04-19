@@ -53,7 +53,7 @@ func Resolve(qname string, qtype uint16, backupOrigin string, backupZone *zone.Z
 	// In-zone CNAME following per RFC 1034 §3.6.2.
 	if len(rootRRs) > 0 && qtype != dns.TypeCNAME {
 		if _, ok := rootRRs[len(rootRRs)-1].(*dns.CNAME); ok {
-			rootRRs = rootZone.FollowCNAME(rootRRs, qtype)
+			rootRRs = rootZone.FollowCNAME(nil, rootRRs, qtype)
 		}
 	}
 

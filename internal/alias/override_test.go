@@ -12,7 +12,7 @@ import (
 func buildZone(origin string, rrs ...dns.RR) *zone.Zone {
 	z := &zone.Zone{
 		Origin:  origin,
-		Records: make(map[string][]dns.RR),
+		Records: make(map[string]map[uint16][]dns.RR),
 	}
 	for _, rr := range rrs {
 		z.AddRR(rr)
