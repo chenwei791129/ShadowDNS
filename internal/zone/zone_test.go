@@ -299,6 +299,100 @@ func TestZone_LookupReturnsSharedBacking(t *testing.T) {
 	}
 }
 
+func TestQtypeStore_InlineToPromoted(t *testing.T) {
+	z := &Zone{
+		Origin:  "example.com.",
+		Records: make(map[string]*qtypeStore),
+	}
+	z.AddRR(newTestA("a.example.com.", "192.0.2.1"))
+
+	s := z.Records["a.example.com."]
+	if s == nil || !s.single || s.qtype != dns.TypeA || len(s.rrs) != 1 || s.sub != nil {
+		t.Fatalf("after single A insert: expected inline{A, 1 rr}, got %+v", s)
+	}
+
+	z.AddRR(&dns.AAAA{
+		Hdr:  dns.RR_Header{Name: "a.example.com.", Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 300},
+		AAAA: net.ParseIP("2001:db8::1"),
+	})
+
+	s = z.Records["a.example.com."]
+	if s == nil || s.single || s.sub == nil {
+		t.Fatalf("after A+AAAA insert: expected promoted, got %+v", s)
+	}
+	if len(s.sub[dns.TypeA]) != 1 || len(s.sub[dns.TypeAAAA]) != 1 {
+		t.Errorf("promoted sub: got TypeA=%d TypeAAAA=%d, want both 1",
+			len(s.sub[dns.TypeA]), len(s.sub[dns.TypeAAAA]))
+	}
+
+	if rrs := z.Lookup("a.example.com.", dns.TypeA); len(rrs) != 1 {
+		t.Errorf("Lookup TypeA: got %d, want 1", len(rrs))
+	}
+	if rrs := z.Lookup("a.example.com.", dns.TypeAAAA); len(rrs) != 1 {
+		t.Errorf("Lookup TypeAAAA: got %d, want 1", len(rrs))
+	}
+}
+
+func TestZone_LookupReturnsSharedBacking_Promoted(t *testing.T) {
+	z := &Zone{
+		Origin:  "example.com.",
+		Records: make(map[string]*qtypeStore),
+	}
+	z.AddRR(newTestA("b.example.com.", "192.0.2.1"))
+	z.AddRR(&dns.AAAA{
+		Hdr:  dns.RR_Header{Name: "b.example.com.", Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 300},
+		AAAA: net.ParseIP("2001:db8::1"),
+	})
+
+	s := z.Records["b.example.com."]
+	if s.single {
+		t.Fatalf("expected promoted state after 2 qtypes")
+	}
+
+	stored := s.sub[dns.TypeA]
+	result := z.Lookup("b.example.com.", dns.TypeA)
+	if len(stored) != 1 || len(result) != 1 {
+		t.Fatalf("got stored=%d result=%d, want both 1", len(stored), len(result))
+	}
+	if &stored[:cap(stored)][0] != &result[:cap(result)][0] {
+		t.Errorf("promoted Lookup returned a copy; backing array differs")
+	}
+}
+
+func TestZone_LookupSharedBackingAcrossPromotion(t *testing.T) {
+	z := &Zone{
+		Origin:  "example.com.",
+		Records: make(map[string]*qtypeStore),
+	}
+	z.AddRR(newTestA("c.example.com.", "192.0.2.1"))
+
+	before := z.Lookup("c.example.com.", dns.TypeA)
+	if len(before) != 1 {
+		t.Fatalf("pre-promotion Lookup TypeA: got %d, want 1", len(before))
+	}
+	beforeBase := &before[:cap(before)][0]
+
+	z.AddRR(&dns.AAAA{
+		Hdr:  dns.RR_Header{Name: "c.example.com.", Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 300},
+		AAAA: net.ParseIP("2001:db8::1"),
+	})
+
+	s := z.Records["c.example.com."]
+	if s.single {
+		t.Fatalf("expected promoted state after AAAA insert")
+	}
+
+	stored := s.sub[dns.TypeA]
+	if &stored[:cap(stored)][0] != beforeBase {
+		t.Errorf("promotion broke backing array of pre-existing slice")
+	}
+
+	after := z.Lookup("c.example.com.", dns.TypeA)
+	if &after[:cap(after)][0] != beforeBase {
+		t.Errorf("post-promotion Lookup returned different backing than pre-promotion")
+	}
+}
+
 func TestZone_LookupNoMatch_ReturnsEmptyLen(t *testing.T) {
 	content := `$TTL 3600
 @ IN SOA ns1.root.com. root.ns1.root.com. ( 1 300 120 86400 3600 )
