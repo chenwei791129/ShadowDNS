@@ -33,7 +33,7 @@
 
 ## 7. Commit 與 PR
 
-- [ ] 7.1 commit 分段:`refactor(zone): index Records by qtype and remove filterByQtype`(zone.go + parser.go + zone_test.go 的結構改動與 filter test 刪除)+ `test(zone): assert Lookup returns shared-backing reference`(新 test);PR 描述引用 `.local/dnspyre/report/compare-v080-vs-v090nopool-pprof-diff.md` 為 regression 分析、`.local/dnspyre/report/compare-v090nopool-vs-qtypeindex.md` 為驗收證據
+- [x] 7.1 commit 分段:`refactor(zone): index Records by qtype and remove filterByQtype`(zone.go + parser.go + zone_test.go 的結構改動與 filter test 刪除)+ `test(zone): assert Lookup returns shared-backing reference`(新 test);PR 描述引用 `.local/dnspyre/report/compare-v080-vs-v090nopool-pprof-diff.md` 為 regression 分析、`.local/dnspyre/report/compare-v090nopool-vs-qtypeindex.md` 為驗收證據
 
 ## 驗收條件
 
