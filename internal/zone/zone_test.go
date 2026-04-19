@@ -273,6 +273,32 @@ func makeTestSOA(origin string) *dns.SOA {
 	}
 }
 
+func TestZone_LookupReturnsSharedBacking(t *testing.T) {
+	z := &Zone{
+		Origin:  "example.com.",
+		Records: make(map[string]map[uint16][]dns.RR),
+	}
+	z.AddRR(newTestA("a.example.com.", "192.0.2.1"))
+	z.AddRR(newTestA("a.example.com.", "192.0.2.2"))
+
+	stored := z.Records["a.example.com."][dns.TypeA]
+	if len(stored) != 2 {
+		t.Fatalf("stored: got %d records, want 2", len(stored))
+	}
+
+	result := z.Lookup("a.example.com.", dns.TypeA)
+	if len(result) != 2 {
+		t.Fatalf("Lookup: got %d records, want 2", len(result))
+	}
+
+	storedBase := &stored[:cap(stored)][0]
+	resultBase := &result[:cap(result)][0]
+	if storedBase != resultBase {
+		t.Errorf("Lookup returned a copy; expected shared backing array\n stored base: %p\n result base: %p",
+			storedBase, resultBase)
+	}
+}
+
 func TestZone_LookupNoMatch_ReturnsEmptyLen(t *testing.T) {
 	content := `$TTL 3600
 @ IN SOA ns1.root.com. root.ns1.root.com. ( 1 300 120 86400 3600 )
