@@ -2,16 +2,16 @@
 
 ### Requirement: HTTP API server listens on a configured address
 
-The API server SHALL listen on the address specified in the API configuration file (e.g., `127.0.0.1:8053`). The server SHALL start only when the `-api-conf` CLI flag is provided. When the flag is absent, no API server SHALL be started.
+The API server SHALL listen on the address specified in the `ephemeral_api.listen` field of the unified ShadowDNS YAML configuration file loaded via `-config`. The server SHALL start only when the `ephemeral_api` section is present in the config file. When the section is absent, no API server SHALL be started.
 
 #### Scenario: API server starts on configured address
 
-- **WHEN** ShadowDNS is started with `-api-conf /etc/shadowdns/api.yaml` and the config specifies `listen: "127.0.0.1:8053"`
+- **WHEN** ShadowDNS is started with `-config /etc/shadowdns/shadowdns.yaml` and the file contains `ephemeral_api: {listen: "127.0.0.1:8053", allow: ["10.0.0.5"]}`
 - **THEN** the API server SHALL accept HTTP connections on `127.0.0.1:8053`
 
-#### Scenario: API server is not started when flag is absent
+#### Scenario: API server is not started when ephemeral_api section is absent
 
-- **WHEN** ShadowDNS is started without the `-api-conf` flag
+- **WHEN** ShadowDNS is started with a `-config` file that omits the `ephemeral_api` section
 - **THEN** no HTTP API server SHALL be started and no API port SHALL be bound
 
 ### Requirement: PUT endpoint creates or updates an ephemeral TXT record
