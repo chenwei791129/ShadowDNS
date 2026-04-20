@@ -152,6 +152,7 @@ type runOptions struct {
 	AliasesPath   string
 	ListenAddr    string
 	MetricsAddr   string
+	PProfEnable   bool
 	DryRun        bool
 	// NoNotifyExplicit records whether -no-notify was explicitly passed on the
 	// command line (detected via flag.Visit). This is process-lifetime sticky:
@@ -226,6 +227,7 @@ func main() {
 			"Forms without a host (\":PORT\") use the port from -listen but take listen-on addresses from named.conf; "+
 			"when listen-on is absent, all IPv4 interface addresses are used.")
 	flag.StringVar(&opts.MetricsAddr, "metrics-addr", ":9153", "Prometheus /metrics HTTP listen address (empty string disables)")
+	flag.BoolVar(&opts.PProfEnable, "pprof-enable", false, "Expose Go pprof profiling endpoints under /debug/pprof/ on the metrics HTTP server; requires -metrics-addr to be non-empty")
 	flag.BoolVar(&opts.DryRun, "dry-run", false, "load configuration and zones, log a summary, then exit without starting listeners")
 
 	// -no-notify is a "set-only" switch: presence disables NOTIFY for the
@@ -322,6 +324,9 @@ func run(ctx context.Context, opts runOptions) error {
 	if opts.NamedConfPath == "" {
 		return errors.New("-named-conf is required")
 	}
+	if opts.PProfEnable && opts.MetricsAddr == "" {
+		return errors.New("-pprof-enable requires -metrics-addr to be non-empty (pprof handlers mount on the metrics HTTP server)")
+	}
 	logger := opts.Logger
 	if logger == nil {
 		logger = zap.NewNop()
@@ -402,6 +407,10 @@ func run(ctx context.Context, opts runOptions) error {
 
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", m.Handler())
+		if opts.PProfEnable {
+			registerPProfHandlers(mux)
+			logger.Sugar().Infow("pprof endpoints enabled", "path", "/debug/pprof/")
+		}
 		metricsSrv := &http.Server{Addr: opts.MetricsAddr, Handler: mux}
 
 		go func() {

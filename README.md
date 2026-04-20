@@ -172,6 +172,7 @@ ShadowDNS listens on `:53` (UDP and TCP) by default. Use `-listen` to override.
 | `-aliases`        | —       | No       | Path to `aliases.yaml`. If omitted or file is absent, all zones are treated as root zones (no aliasing). |
 | `-listen`         | `:53`   | No       | UDP/TCP listen address. Accepts any `host:port` form.    |
 | `-metrics-addr`   | `:9153` | No       | Prometheus `/metrics` HTTP listen address. Empty string disables. |
+| `-pprof-enable`   | `false` | No       | Expose Go pprof profiling endpoints under `/debug/pprof/` on the metrics HTTP server. Requires `-metrics-addr` to be non-empty. Read only at startup — SIGHUP reload does not change its value; restart the process to toggle. **Only enable on a trusted network or with a loopback/localhost bind**: pprof has no authentication, returns debugger-grade runtime state, and the CPU/trace profile endpoints can be used to stall the process for the requested duration. |
 | `-dry-run`        | `false` | No       | Load configuration and zones, log a summary, then exit without starting listeners. |
 | `-reload`         | `false` | No       | Send SIGHUP to a running server. Requires `-named-conf`. |
 | `-no-notify`      | absent  | No       | Disable NOTIFY dispatch for the entire process lifetime. When omitted, NOTIFY follows `options.notify` in `named.conf` (default: enabled). When passed, overrides the config directive; sticky across SIGHUP reloads. |
