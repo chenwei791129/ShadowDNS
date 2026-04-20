@@ -6,6 +6,18 @@
 
 * **cli:** add opt-in `-pprof-enable` flag that exposes Go pprof endpoints on the metrics HTTP server under `/debug/pprof/` (disabled by default)
 
+## [0.9.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.8.0...v0.9.0) (2026-04-20)
+
+
+### Features
+
+* **cli:** add opt-in pprof endpoint on metrics HTTP server ([556b968](https://github.com/chenwei791129/ShadowDNS/commit/556b9688ff2aee0df4746c7689a7d2a563eb527d))
+
+
+### Bug Fixes
+
+* **cli:** satisfy errcheck on flag.Usage fmt.Fprintln calls ([e1cf836](https://github.com/chenwei791129/ShadowDNS/commit/e1cf83633e6d485946d0f3f9f384543d482f2e22))
+
 ## [0.8.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.7.0...v0.8.0) (2026-04-17)
 
 
