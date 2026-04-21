@@ -21,9 +21,9 @@ options {
     // ShadowDNS will refuse to start if either .mmdb file is missing.
     geoip-directory "/usr/local/share/GeoIP/";
 
-    // PID file used by `shadowdns -reload` to locate the running server and
+    // PID file used by `shadowdns reload` to locate the running server and
     // send it SIGHUP. If this option is omitted, no PID file is written and
-    // `-reload` will be unavailable.
+    // the `reload` subcommand will be unavailable.
     //
     // The parent directory must exist and be writable by the shadowdns
     // service user. The bundled systemd unit provisions /var/run/shadowdns
@@ -61,10 +61,10 @@ options {
 
     // Send NOTIFY messages to secondaries on startup and after reload.
     // Set to "no" to disable NOTIFY dispatch; set to "yes" (the default)
-    // to enable it. The `-no-notify` CLI flag overrides this directive
+    // to enable it. The `--no-notify` CLI flag overrides this directive
     // for the entire process lifetime (sticky across SIGHUP).
     //
-    // Precedence: explicit `-no-notify` flag > this `notify` directive > default (yes)
+    // Precedence: explicit `--no-notify` flag > this `notify` directive > default (yes)
     notify yes;
 };
 
