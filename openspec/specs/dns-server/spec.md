@@ -795,11 +795,11 @@ The dns-server SHALL bind both UDP and TCP listeners for every address in its re
 
 The dns-server SHALL derive its listen-address set at startup (and at every SIGHUP reload that reparses named.conf) using this precedence:
 
-1. If the `-listen` CLI flag has a non-empty host component (e.g. `127.0.0.1:5353`, `10.0.0.1:53`), the listen-address set SHALL contain exactly the single address passed via `-listen`, and `options.listen-on` from named.conf SHALL be ignored. This preserves override semantics for tests and special deployments.
-2. Otherwise (the host component is empty, e.g. `:53`, `:5353`, `:0`), if `options.listen-on` in named.conf is non-empty, the listen-address set SHALL be the IPv4 addresses resolved from the `listen-on` token list, each combined with the port component of `-listen` (default 53).
-3. Otherwise (empty host AND `listen-on` absent), the listen-address set SHALL be resolved as if `listen-on { any; };` were specified, with the port component from `-listen`.
+1. If the `--listen` CLI flag has a non-empty host component (e.g. `127.0.0.1:5353`, `10.0.0.1:53`), the listen-address set SHALL contain exactly the single address passed via `--listen`, and `options.listen-on` from named.conf SHALL be ignored. This preserves override semantics for tests and special deployments.
+2. Otherwise (the host component is empty, e.g. `:53`, `:5353`, `:0`), if `options.listen-on` in named.conf is non-empty, the listen-address set SHALL be the IPv4 addresses resolved from the `listen-on` token list, each combined with the port component of `--listen` (default 53).
+3. Otherwise (empty host AND `listen-on` absent), the listen-address set SHALL be resolved as if `listen-on { any; };` were specified, with the port component from `--listen`.
 
-In all cases the port component from `-listen` (default 53) SHALL be applied consistently: when `-listen` is `:5353`, every resolved IPv4 address SHALL use port 5353.
+In all cases the port component from `--listen` (default 53) SHALL be applied consistently: when `--listen` is `:5353`, every resolved IPv4 address SHALL use port 5353.
 
 Token resolution rules for `listen-on`:
 
@@ -820,19 +820,19 @@ SIGHUP reload SHALL NOT rebind listeners even if the resolved listen-address set
 - **WHEN** named.conf sets `listen-on { 10.0.0.1; 192.168.1.1; };`
 - **THEN** the server attempts to bind UDP and TCP on exactly `10.0.0.1:53` and `192.168.1.1:53` AND does not attempt any other address
 
-#### Scenario: -listen override bypasses listen-on
+#### Scenario: --listen override bypasses listen-on
 
-- **WHEN** the process is started with `-listen 127.0.0.1:5353` AND named.conf sets `listen-on { any; };`
+- **WHEN** the process is started with `--listen 127.0.0.1:5353` AND named.conf sets `listen-on { any; };`
 - **THEN** the server binds UDP and TCP only on `127.0.0.1:5353` AND does not enumerate interface addresses
 
-#### Scenario: -listen with empty host does not bypass listen-on
+#### Scenario: --listen with empty host does not bypass listen-on
 
-- **WHEN** the process is started without `-listen` (or with any `:PORT` form that has no host, such as `:53` or `:0`) AND named.conf sets `listen-on { 10.0.0.1; };`
+- **WHEN** the process is started without `--listen` (or with any `:PORT` form that has no host, such as `:53` or `:0`) AND named.conf sets `listen-on { 10.0.0.1; };`
 - **THEN** the server binds on `10.0.0.1:<port>` AND not on the wildcard `0.0.0.0:<port>`
 
-#### Scenario: Port from -listen is applied to listen-on addresses
+#### Scenario: Port from --listen is applied to listen-on addresses
 
-- **WHEN** the process is started with `-listen :5353` AND named.conf sets `listen-on { 10.0.0.1; };`
+- **WHEN** the process is started with `--listen :5353` AND named.conf sets `listen-on { 10.0.0.1; };`
 - **THEN** the server binds on `10.0.0.1:5353`
 
 #### Scenario: Unsupported listen-on token is skipped with a warning
@@ -842,7 +842,7 @@ SIGHUP reload SHALL NOT rebind listeners even if the resolved listen-address set
 
 #### Scenario: listen-on { none; } on IPv4 causes fatal error
 
-- **WHEN** named.conf sets `listen-on { none; };` AND `-listen` is at its default value
+- **WHEN** named.conf sets `listen-on { none; };` AND `--listen` is at its default value
 - **THEN** the server exits with a fatal error indicating no IPv4 listeners would be started
 
 #### Scenario: SIGHUP reload does not rebind listeners
