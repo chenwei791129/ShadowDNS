@@ -3,7 +3,7 @@
 // These tests start a real server, trigger reloads via server.BuildState +
 // server.Server.SwapState (the same path that reload() in cmd/shadowdns takes),
 // and verify pointer-identity, change-detection accuracy, and full-rebuild
-// semantics for -reload-verify=none.
+// semantics for --reload-verify=none.
 package integration_test
 
 import (
@@ -121,8 +121,8 @@ func TestReloadDiff_NoChange_PointersIdentical(t *testing.T) {
 // "-avc --inplace" scenario where a zone file is rewritten with identical size
 // and (potentially) preserved mtime but different content.
 //
-// Under -reload-verify=hash the change must be detected and the zone re-parsed.
-// Under -reload-verify=size the change is invisible (negative-control assertion).
+// Under --reload-verify=hash the change must be detected and the zone re-parsed.
+// Under --reload-verify=size the change is invisible (negative-control assertion).
 func TestReloadDiff_SameSizeContentChange_HashDetects(t *testing.T) {
 	tmpDir := t.TempDir()
 	copyFixtures(t, tmpDir)
@@ -249,7 +249,7 @@ func TestReloadDiff_SameSizeContentChange_HashDetects(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 7.3 — -reload-verify=none forces full rebuild
+// Task 7.3 — --reload-verify=none forces full rebuild
 // ---------------------------------------------------------------------------
 
 // TestReloadDiff_NoneMode_AlwaysReparses verifies that with VerifyModeNone

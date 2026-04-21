@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +38,75 @@ func newBufferLogger(sink zapcore.WriteSyncer) *zap.Logger {
 	return zap.New(zapcore.NewCore(enc, sink, zapcore.DebugLevel))
 }
 
+// binBuildDir holds binaries compiled once per `go test` invocation and
+// shared across tests that need to exec the built CLI. A package-level temp
+// dir is used instead of t.TempDir() because sync.Once's first caller would
+// otherwise scope the path to its own test's cleanup.
+var (
+	binBuildDir string
+
+	plainBinOnce sync.Once
+	plainBinPath string
+	plainBinErr  error
+
+	versionedBinOnce sync.Once
+	versionedBinPath string
+	versionedBinErr  error
+)
+
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "shadowdns-main-test-*")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "failed to create build temp dir:", err)
+		os.Exit(1)
+	}
+	binBuildDir = dir
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// buildPlainBinary compiles ./cmd/shadowdns once per test binary and returns
+// the path. Tests that don't need a specific version string share this.
+func buildPlainBinary(t *testing.T) string {
+	t.Helper()
+	plainBinOnce.Do(func() {
+		bin := filepath.Join(binBuildDir, "shadowdns")
+		cmd := exec.Command("go", "build", "-o", bin, ".")
+		cmd.Dir = "."
+		if out, err := cmd.CombinedOutput(); err != nil {
+			plainBinErr = fmt.Errorf("build failed: %w\n%s", err, out)
+			return
+		}
+		plainBinPath = bin
+	})
+	if plainBinErr != nil {
+		t.Fatalf("%v", plainBinErr)
+	}
+	return plainBinPath
+}
+
+// buildVersionedBinary compiles ./cmd/shadowdns once per test binary with
+// `-X main.version=v1.2.3-test` so version-output tests share a single
+// compile.
+func buildVersionedBinary(t *testing.T) string {
+	t.Helper()
+	versionedBinOnce.Do(func() {
+		bin := filepath.Join(binBuildDir, "shadowdns-v1.2.3-test")
+		cmd := exec.Command("go", "build", "-ldflags", "-X main.version=v1.2.3-test", "-o", bin, ".")
+		cmd.Dir = "."
+		if out, err := cmd.CombinedOutput(); err != nil {
+			versionedBinErr = fmt.Errorf("build failed: %w\n%s", err, out)
+			return
+		}
+		versionedBinPath = bin
+	})
+	if versionedBinErr != nil {
+		t.Fatalf("%v", versionedBinErr)
+	}
+	return versionedBinPath
+}
+
 func TestVersionVariable_HasDefault(t *testing.T) {
 	if version == "" {
 		t.Fatal("version variable should have a non-empty default value")
@@ -44,19 +114,52 @@ func TestVersionVariable_HasDefault(t *testing.T) {
 }
 
 func TestVersionFlag_PrintsVersion(t *testing.T) {
-	binPath := filepath.Join(t.TempDir(), "shadowdns")
-	build := exec.Command("go", "build", "-ldflags", "-X main.version=v1.2.3-test", "-o", binPath, ".")
-	build.Dir = "."
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, out)
-	}
+	binPath := buildVersionedBinary(t)
 
-	out, err := exec.Command(binPath, "-version").CombinedOutput()
+	out, err := exec.Command(binPath, "--version").CombinedOutput()
 	if err != nil {
-		t.Fatalf("-version failed: %v\n%s", err, out)
+		t.Fatalf("--version failed: %v\n%s", err, out)
 	}
 	if got := strings.TrimSpace(string(out)); got != "v1.2.3-test" {
 		t.Errorf("expected %q, got %q", "v1.2.3-test", got)
+	}
+}
+
+// TestShortVersionFlag verifies that `-v` produces the same output as
+// `--version`. This covers the "--version has a -v short alias" driver of the
+// cobra migration.
+func TestShortVersionFlag(t *testing.T) {
+	binPath := buildVersionedBinary(t)
+
+	longOut, err := exec.Command(binPath, "--version").CombinedOutput()
+	if err != nil {
+		t.Fatalf("--version failed: %v\n%s", err, longOut)
+	}
+	shortOut, err := exec.Command(binPath, "-v").CombinedOutput()
+	if err != nil {
+		t.Fatalf("-v failed: %v\n%s", err, shortOut)
+	}
+	if string(longOut) != string(shortOut) {
+		t.Errorf("-v output %q should match --version output %q", shortOut, longOut)
+	}
+}
+
+// TestHelpShowsCombinedVersionFlag verifies that `shadowdns --help` prints
+// both short and long version flag names on the same line. This is the
+// visible artefact of pflag's GNU-style flag rendering that motivated the
+// cobra migration.
+func TestHelpShowsCombinedVersionFlag(t *testing.T) {
+	binPath := buildPlainBinary(t)
+
+	out, err := exec.Command(binPath, "--help").CombinedOutput()
+	if err != nil {
+		t.Fatalf("--help failed: %v\n%s", err, out)
+	}
+
+	// pflag renders combined short/long flags as "  -v, --version".
+	re := regexp.MustCompile(`(?m)^\s*-v,\s*--version\b`)
+	if !re.Match(out) {
+		t.Errorf("--help output should list `-v, --version` on a single line, got:\n%s", out)
 	}
 }
 
@@ -772,31 +875,20 @@ func TestRunReload_Success(t *testing.T) {
 	signal.Notify(sighupCh, syscall.SIGHUP)
 	defer signal.Stop(sighupCh)
 
-	logger := zap.NewNop()
-	opts := runOptions{
-		NamedConfPath: filepath.Join(dir, "named.conf"),
-		Logger:        logger,
-	}
-
-	if err := runReload(opts); err != nil {
+	if err := runReload(filepath.Join(dir, "named.conf"), zap.NewNop()); err != nil {
 		t.Fatalf("runReload returned unexpected error: %v", err)
 	}
 }
 
 // TestRunReload_MissingNamedConf verifies that runReload returns an error
-// containing "-named-conf is required" when NamedConfPath is empty.
+// containing "--named-conf is required" when the path is empty.
 func TestRunReload_MissingNamedConf(t *testing.T) {
-	logger := zap.NewNop()
-	opts := runOptions{
-		Logger: logger,
-	}
-
-	err := runReload(opts)
+	err := runReload("", zap.NewNop())
 	if err == nil {
-		t.Fatal("expected error when NamedConfPath is empty")
+		t.Fatal("expected error when named-conf path is empty")
 	}
-	if !strings.Contains(err.Error(), "-named-conf is required") {
-		t.Errorf("expected error to contain %q, got: %v", "-named-conf is required", err)
+	if !strings.Contains(err.Error(), "--named-conf is required") {
+		t.Errorf("expected error to contain %q, got: %v", "--named-conf is required", err)
 	}
 }
 
@@ -805,13 +897,7 @@ func TestRunReload_MissingNamedConf(t *testing.T) {
 func TestRunReload_NoPidFileConfigured(t *testing.T) {
 	dir := setupReloadTestDir(t)
 
-	logger := zap.NewNop()
-	opts := runOptions{
-		NamedConfPath: filepath.Join(dir, "named.conf"),
-		Logger:        logger,
-	}
-
-	err := runReload(opts)
+	err := runReload(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error when pid-file is not configured")
 	}
@@ -828,13 +914,7 @@ func TestRunReload_PidFileNotFound(t *testing.T) {
 	// Point to a path that will never exist.
 	patchNamedConfPidFile(t, dir, "/nonexistent/path/pid")
 
-	logger := zap.NewNop()
-	opts := runOptions{
-		NamedConfPath: filepath.Join(dir, "named.conf"),
-		Logger:        logger,
-	}
-
-	err := runReload(opts)
+	err := runReload(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error when pid file does not exist")
 	}
@@ -853,13 +933,7 @@ func TestRunReload_InvalidPidContent(t *testing.T) {
 		t.Fatalf("write pid file: %v", err)
 	}
 
-	logger := zap.NewNop()
-	opts := runOptions{
-		NamedConfPath: filepath.Join(dir, "named.conf"),
-		Logger:        logger,
-	}
-
-	err := runReload(opts)
+	err := runReload(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error when pid file contains non-numeric content")
 	}
@@ -878,13 +952,7 @@ func TestRunReload_ProcessNotRunning(t *testing.T) {
 		t.Fatalf("write pid file: %v", err)
 	}
 
-	logger := zap.NewNop()
-	opts := runOptions{
-		NamedConfPath: filepath.Join(dir, "named.conf"),
-		Logger:        logger,
-	}
-
-	err := runReload(opts)
+	err := runReload(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error when PID does not correspond to a running process")
 	}
@@ -972,7 +1040,7 @@ func (b *threadSafeBuffer) String() string {
 	return b.buf.String()
 }
 
-// TestRun_NotifyGuard_FlagExplicit verifies that when -no-notify is set,
+// TestRun_NotifyGuard_FlagExplicit verifies that when --no-notify is set,
 // run() resolves notify=false with source=flag regardless of what config says.
 // Config is set to notify yes; explicit flag MUST win.
 func TestRun_NotifyGuard_FlagExplicit(t *testing.T) {
@@ -1024,7 +1092,7 @@ func TestRun_NotifyGuard_ConfigNo(t *testing.T) {
 	}
 }
 
-// TestRun_NotifyGuard_Default verifies that with neither -no-notify nor a
+// TestRun_NotifyGuard_Default verifies that with neither --no-notify nor a
 // notify directive in config, run() resolves to enabled=true source=default
 // (preserving pre-change behavior).
 func TestRun_NotifyGuard_Default(t *testing.T) {
@@ -1104,7 +1172,7 @@ func (w *testResponseWriter) TsigStatus() error           { return nil }
 func (w *testResponseWriter) TsigTimersOnly(bool)         {}
 
 // ---------------------------------------------------------------------------
-// -reload-verify flag tests
+// --reload-verify flag tests
 // ---------------------------------------------------------------------------
 
 // TestParseVerifyMode_AcceptsValidValues verifies that parseVerifyMode returns
@@ -1154,21 +1222,67 @@ func TestReloadVerifyFlag_DefaultIsHash(t *testing.T) {
 }
 
 // TestReloadVerifyFlag_InvalidExitsNonZero builds the binary and runs it with
-// an invalid -reload-verify value, expecting a non-zero exit code.
+// an invalid --reload-verify value, expecting a non-zero exit code.
 func TestReloadVerifyFlag_InvalidExitsNonZero(t *testing.T) {
-	binPath := filepath.Join(t.TempDir(), "shadowdns")
-	build := exec.Command("go", "build", "-o", binPath, ".")
-	build.Dir = "."
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build failed: %v\n%s", err, out)
-	}
+	binPath := buildPlainBinary(t)
 
-	out, err := exec.Command(binPath, "-named-conf", "/dev/null", "-reload-verify", "bogus").CombinedOutput()
+	out, err := exec.Command(binPath, "--named-conf", "/dev/null", "--reload-verify", "bogus").CombinedOutput()
 	if err == nil {
-		t.Fatal("expected non-zero exit for invalid -reload-verify value, got exit 0")
+		t.Fatal("expected non-zero exit for invalid --reload-verify value, got exit 0")
 	}
 	if !strings.Contains(string(out), "bogus") {
 		t.Errorf("expected error output to mention the invalid value %q, got: %s", "bogus", out)
 	}
+}
+
+// TestReloadSubcommand verifies the end-to-end behavior of the `reload`
+// subcommand invoked via the built binary: a successful SIGHUP send when
+// pid-file is configured and points at the current process, and a non-zero
+// exit when named.conf does not configure pid-file. This covers the
+// "No pid-file configured in named.conf" scenario from the pid-file spec.
+func TestReloadSubcommand(t *testing.T) {
+	binPath := buildPlainBinary(t)
+
+	t.Run("success with pid-file", func(t *testing.T) {
+		dir := setupReloadTestDir(t)
+		pidPath := filepath.Join(dir, "shadowdns.pid")
+		patchNamedConfPidFile(t, dir, pidPath)
+
+		// Absorb SIGHUP so the child-sent signal does not terminate this test.
+		sighupCh := make(chan os.Signal, 1)
+		signal.Notify(sighupCh, syscall.SIGHUP)
+		defer signal.Stop(sighupCh)
+
+		if err := os.WriteFile(pidPath, fmt.Appendf(nil, "%d\n", os.Getpid()), 0o644); err != nil {
+			t.Fatalf("write pid file: %v", err)
+		}
+
+		out, err := exec.Command(binPath, "reload", "--named-conf", filepath.Join(dir, "named.conf")).CombinedOutput()
+		if err != nil {
+			t.Fatalf("reload subcommand failed: %v\n%s", err, out)
+		}
+	})
+
+	t.Run("no pid-file configured", func(t *testing.T) {
+		dir := setupReloadTestDir(t) // setupReloadTestDir does not include pid-file
+
+		out, err := exec.Command(binPath, "reload", "--named-conf", filepath.Join(dir, "named.conf")).CombinedOutput()
+		if err == nil {
+			t.Fatalf("reload without pid-file should exit non-zero, got success\n%s", out)
+		}
+		if !strings.Contains(string(out), "pid-file") {
+			t.Errorf("expected error output to mention pid-file, got: %s", out)
+		}
+	})
+
+	t.Run("missing --named-conf flag", func(t *testing.T) {
+		out, err := exec.Command(binPath, "reload").CombinedOutput()
+		if err == nil {
+			t.Fatalf("reload without --named-conf should exit non-zero, got success\n%s", out)
+		}
+		if !strings.Contains(string(out), "named-conf") {
+			t.Errorf("expected error output to mention named-conf, got: %s", out)
+		}
+	})
 }
 func (w *testResponseWriter) Hijack() {}

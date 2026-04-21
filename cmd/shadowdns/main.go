@@ -8,17 +8,15 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
@@ -102,44 +100,6 @@ func reload(
 	return nil
 }
 
-// runReload sends SIGHUP to a running ShadowDNS instance by reading the PID
-// from the pid-file configured in named.conf.
-func runReload(opts runOptions) error {
-	if opts.NamedConfPath == "" {
-		return fmt.Errorf("-named-conf is required for -reload")
-	}
-
-	logger := opts.Logger
-	if logger == nil {
-		logger = zap.NewNop()
-	}
-
-	cfg, err := config.LoadNamedConf(opts.NamedConfPath, logger)
-	if err != nil {
-		return fmt.Errorf("loading named.conf: %w", err)
-	}
-
-	if cfg.Options.PidFile == "" {
-		return fmt.Errorf("pid-file not configured in named.conf; cannot determine server PID")
-	}
-
-	data, err := os.ReadFile(cfg.Options.PidFile)
-	if err != nil {
-		return fmt.Errorf("reading pid-file %q: %w", cfg.Options.PidFile, err)
-	}
-
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return fmt.Errorf("parsing PID from %q: %w", cfg.Options.PidFile, err)
-	}
-
-	if err := syscall.Kill(pid, syscall.SIGHUP); err != nil {
-		return fmt.Errorf("sending SIGHUP to PID %d: %w", pid, err)
-	}
-
-	return nil
-}
-
 // notifyDeadline caps the total time a single NOTIFY goroutine can run.
 // The backoff chain (1s+2s+4s) plus per-attempt exchange timeouts can
 // exceed this, so later retries may be cut short — that is intentional.
@@ -154,21 +114,21 @@ type runOptions struct {
 	MetricsAddr   string
 	PProfEnable   bool
 	DryRun        bool
-	// NoNotifyExplicit records whether -no-notify was explicitly passed on the
-	// command line (detected via flag.Visit). This is process-lifetime sticky:
-	// a SIGHUP reload never re-reads the CLI, so this value remains constant
-	// after startup and guarantees "flag > config" precedence even after an
-	// operator edits named.conf mid-run.
+	// NoNotifyExplicit records whether --no-notify was explicitly passed on
+	// the command line (detected via cobra's Flags().Changed()). This is
+	// process-lifetime sticky: a SIGHUP reload never re-reads the CLI, so
+	// this value remains constant after startup and guarantees "flag >
+	// config" precedence even after an operator edits named.conf mid-run.
 	NoNotifyExplicit bool
 	// ReloadVerify controls how zone file changes are detected on SIGHUP.
-	// Set once at startup from -reload-verify; sticky across reloads.
+	// Set once at startup from --reload-verify; sticky across reloads.
 	// Zero value is VerifyModeHash (the safe default).
 	ReloadVerify server.VerifyMode
 	NoColor      bool
 	Logger       *zap.Logger
 }
 
-// parseVerifyMode converts the string value of -reload-verify to a VerifyMode.
+// parseVerifyMode converts the string value of --reload-verify to a VerifyMode.
 // Returns an error if the value is not one of "hash", "size", or "none".
 func parseVerifyMode(s string) (server.VerifyMode, error) {
 	switch s {
@@ -179,12 +139,12 @@ func parseVerifyMode(s string) (server.VerifyMode, error) {
 	case "none":
 		return server.VerifyModeNone, nil
 	default:
-		return server.VerifyModeHash, fmt.Errorf("invalid -reload-verify value %q: must be one of hash, size, none", s)
+		return server.VerifyModeHash, fmt.Errorf("invalid --reload-verify value %q: must be one of hash, size, none", s)
 	}
 }
 
 // resolveNotifyEnabled implements the precedence rule for NOTIFY dispatch:
-// an explicit -no-notify CLI flag disables NOTIFY regardless of config;
+// an explicit --no-notify CLI flag disables NOTIFY regardless of config;
 // otherwise the options.notify directive from named.conf applies; otherwise
 // NOTIFY defaults to enabled (preserving pre-change behavior).
 //
@@ -218,114 +178,99 @@ func maybeDispatchNotifies(
 	}
 }
 
-func main() {
-	var opts runOptions
-	flag.StringVar(&opts.NamedConfPath, "named-conf", "", "path to named.conf (required)")
-	flag.StringVar(&opts.AliasesPath, "aliases", "", "path to aliases.yaml (optional; missing file is tolerated)")
-	flag.StringVar(&opts.ListenAddr, "listen", ":53",
+// newRootCmd constructs the cobra root command that serves authoritative DNS
+// when invoked without a subcommand. All server flags are registered on this
+// command; the reload subcommand carries its own independent flag set so
+// operators cannot pass server-only flags to `shadowdns reload`.
+func newRootCmd() *cobra.Command {
+	var (
+		opts            runOptions
+		reloadVerifyStr string
+		showVersion     bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "shadowdns",
+		Short: "Authoritative DNS server",
+		Long: `shadowdns is an authoritative DNS server that reads zone data from a
+BIND-compatible named.conf and serves queries with view-based GeoIP routing.
+
+All flags are parsed once at startup. SIGHUP re-reads named.conf,
+aliases.yaml, and zone files from the paths recorded at startup, but
+does not re-parse flags — restart the process to change flag values.`,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if showVersion {
+				fmt.Println(version)
+				return nil
+			}
+
+			verifyMode, err := parseVerifyMode(reloadVerifyStr)
+			if err != nil {
+				return err
+			}
+			opts.ReloadVerify = verifyMode
+
+			// Distinguishing "flag not set" from "flag set to false" requires
+			// Flags().Changed(); the --no-notify flag's runtime value is
+			// intentionally never read (it's registered below without binding
+			// to a variable), which is why flag > config precedence holds.
+			opts.NoNotifyExplicit = cmd.Flags().Changed("no-notify")
+
+			opts.Logger = logging.New(logging.Options{NoColor: opts.NoColor, Level: zapcore.InfoLevel})
+			defer func() { _ = opts.Logger.Sync() }()
+
+			// SIGINT and SIGTERM both trigger graceful shutdown.
+			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			if err := run(ctx, opts); err != nil && !errors.Is(err, context.Canceled) {
+				opts.Logger.Sugar().Errorw("shadowdns exited with error", "err", err)
+				return err
+			}
+			return nil
+		},
+	}
+
+	f := cmd.Flags()
+	f.StringVar(&opts.NamedConfPath, "named-conf", "", "path to named.conf (required)")
+	f.StringVar(&opts.AliasesPath, "aliases", "", "path to aliases.yaml (optional; missing file is tolerated)")
+	f.StringVar(&opts.ListenAddr, "listen", ":53",
 		"UDP/TCP listen address. Forms with a host component (e.g. \"127.0.0.1:53\") override named.conf's listen-on. "+
-			"Forms without a host (\":PORT\") use the port from -listen but take listen-on addresses from named.conf; "+
+			"Forms without a host (\":PORT\") use the port from --listen but take listen-on addresses from named.conf; "+
 			"when listen-on is absent, all IPv4 interface addresses are used.")
-	flag.StringVar(&opts.MetricsAddr, "metrics-addr", ":9153", "Prometheus /metrics HTTP listen address (empty string disables)")
-	flag.BoolVar(&opts.PProfEnable, "pprof-enable", false, "Expose Go pprof profiling endpoints under /debug/pprof/ on the metrics HTTP server; requires -metrics-addr to be non-empty")
-	flag.BoolVar(&opts.DryRun, "dry-run", false, "load configuration and zones, log a summary, then exit without starting listeners")
-
-	// -no-notify is a "set-only" switch: presence disables NOTIFY for the
-	// entire process lifetime. It takes precedence over named.conf's
-	// options.notify directive and persists across SIGHUP reloads. Omit this
-	// flag to let named.conf (or the default "enabled") decide.
-	//
-	// The noNotifyFlag variable is required by flag.BoolVar's signature but
-	// its runtime value is intentionally never read: distinguishing "flag
-	// not passed" from "flag passed as -no-notify=false" is impossible from
-	// the value alone, so explicit-pass detection happens exclusively via
-	// flag.Visit below. Do NOT replace the flag.Visit block with a direct
-	// read of noNotifyFlag — that would silently defeat the flag > config
-	// precedence rule.
-	var noNotifyFlag bool
-	flag.BoolVar(&noNotifyFlag, "no-notify", false, "disable NOTIFY dispatch (overrides named.conf options.notify)")
-
-	var reloadFlag bool
-	flag.BoolVar(&reloadFlag, "reload", false, "send SIGHUP to a running server (requires -named-conf)")
-
-	var showVersion bool
-	flag.BoolVar(&showVersion, "version", false, "print version and exit")
-
-	var reloadVerifyStr string
-	flag.StringVar(&reloadVerifyStr, "reload-verify", "hash",
+	f.StringVar(&opts.MetricsAddr, "metrics-addr", ":9153", "Prometheus /metrics HTTP listen address (empty string disables)")
+	f.BoolVar(&opts.PProfEnable, "pprof-enable", false, "Expose Go pprof profiling endpoints under /debug/pprof/ on the metrics HTTP server; requires --metrics-addr to be non-empty")
+	f.BoolVar(&opts.DryRun, "dry-run", false, "load configuration and zones, log a summary, then exit without starting listeners")
+	// --no-notify is registered without a variable binding: its runtime value
+	// is intentionally never read. Explicit-supply detection uses
+	// cmd.Flags().Changed("no-notify") in RunE instead, which is the only way
+	// to preserve flag > config precedence across cobra's value-or-default model.
+	f.Bool("no-notify", false, "disable NOTIFY dispatch (overrides named.conf options.notify)")
+	f.StringVar(&reloadVerifyStr, "reload-verify", "hash",
 		"zone file change detection strategy on SIGHUP reload: hash (default, safe for rsync -avc --inplace), size (mtime+size only, no file read), none (always full rebuild)")
+	f.BoolVar(&opts.NoColor, "no-color", false, "disable colored log output")
+	f.BoolVarP(&showVersion, "version", "v", false, "print version and exit")
 
-	flag.BoolVar(&opts.NoColor, "no-color", false, "disable colored log output")
+	cmd.AddCommand(newReloadCmd())
+	return cmd
+}
 
-	flag.Usage = func() {
-		out := flag.CommandLine.Output()
-		_, _ = fmt.Fprintln(out, "Usage: shadowdns [flags]")
-		_, _ = fmt.Fprintln(out)
-		_, _ = fmt.Fprintln(out, "All flags are parsed once at startup. SIGHUP re-reads named.conf,")
-		_, _ = fmt.Fprintln(out, "aliases.yaml, and zone files from the paths recorded at startup, but")
-		_, _ = fmt.Fprintln(out, "does not re-parse flags — restart the process to change flag values.")
-		_, _ = fmt.Fprintln(out)
-		_, _ = fmt.Fprintln(out, "Flags:")
-		flag.PrintDefaults()
-	}
-
-	flag.Parse()
-
-	// Detect explicit -no-notify via flag.Visit: it callbacks only for flags
-	// the user actually passed, so we can distinguish "not set" from
-	// "set to false". This is the linchpin of the flag > config precedence.
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "no-notify" {
-			opts.NoNotifyExplicit = true
-		}
-	})
-
-	if showVersion {
-		fmt.Println(version)
-		os.Exit(0)
-	}
-
-	verifyMode, err := parseVerifyMode(reloadVerifyStr)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	opts.ReloadVerify = verifyMode
-
-	opts.Logger = logging.New(logging.Options{NoColor: opts.NoColor, Level: zapcore.InfoLevel})
-	// Flush buffered log lines on normal return (signal-driven shutdown).
-	// os.Exit paths below bypass this defer, but they write to stderr via the
-	// zapcore.Lock(os.Stderr) sink which is already synchronous per-call, so no
-	// additional lines are in flight at that point.
-	defer func() { _ = opts.Logger.Sync() }()
-
-	if reloadFlag {
-		if err := runReload(opts); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		os.Exit(0)
-	}
-
-	// SIGINT and SIGTERM both trigger graceful shutdown.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	if err := run(ctx, opts); err != nil && !errors.Is(err, context.Canceled) {
-		opts.Logger.Sugar().Errorw("shadowdns exited with error", "err", err)
-		fmt.Fprintln(os.Stderr, err)
+func main() {
+	if err := newRootCmd().Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
-// run is the testable core of main(). It loads configuration and zone data,
-// builds a server, starts listeners, and blocks until ctx is cancelled.
+// run is the testable core of the server-startup path. It loads configuration
+// and zone data, builds a server, starts listeners, and blocks until ctx is
+// cancelled.
 func run(ctx context.Context, opts runOptions) error {
 	if opts.NamedConfPath == "" {
-		return errors.New("-named-conf is required")
+		return errors.New("--named-conf is required")
 	}
 	if opts.PProfEnable && opts.MetricsAddr == "" {
-		return errors.New("-pprof-enable requires -metrics-addr to be non-empty (pprof handlers mount on the metrics HTTP server)")
+		return errors.New("--pprof-enable requires --metrics-addr to be non-empty (pprof handlers mount on the metrics HTTP server)")
 	}
 	logger := opts.Logger
 	if logger == nil {
@@ -371,7 +316,7 @@ func run(ctx context.Context, opts runOptions) error {
 		return fmt.Errorf("building server state: %w", err)
 	}
 
-	// -dry-run: count loaded zones, log summary, and exit without listening.
+	// --dry-run: count loaded zones, log summary, and exit without listening.
 	if opts.DryRun {
 		logger.Sugar().Infow("dry-run: configuration loaded successfully",
 			"views", len(cfg.Views),
@@ -382,7 +327,7 @@ func run(ctx context.Context, opts runOptions) error {
 
 	srv := server.NewServer(state, logger)
 
-	// Prometheus metrics (disabled when -metrics-addr is empty).
+	// Prometheus metrics (disabled when --metrics-addr is empty).
 	if opts.MetricsAddr != "" {
 		m := metrics.New()
 		m.SetBuildInfo(version, runtime.Version())
@@ -429,9 +374,9 @@ func run(ctx context.Context, opts runOptions) error {
 	}
 
 	// Resolve the listen-address set using the precedence described in
-	// design.md: explicit host in -listen overrides everything; otherwise
+	// design.md: explicit host in --listen overrides everything; otherwise
 	// named.conf's listen-on drives the host list with the port from
-	// -listen; otherwise fall back to all IPv4 interface addresses.
+	// --listen; otherwise fall back to all IPv4 interface addresses.
 	listenAddrs, err := server.ResolveListenAddresses(opts.ListenAddr, cfg.Options.ListenOn, logger)
 	if err != nil {
 		return fmt.Errorf("resolving listen addresses: %w", err)
@@ -445,7 +390,7 @@ func run(ctx context.Context, opts runOptions) error {
 
 	// Fire NOTIFY messages for every loaded root zone in background goroutines.
 	// These are best-effort; failures are logged but do not block startup.
-	// NOTIFY may be suppressed by -no-notify or options.notify=no; when
+	// NOTIFY may be suppressed by --no-notify or options.notify=no; when
 	// suppressed, no goroutines, no retries, no network I/O occur.
 	maybeDispatchNotifies(ctx, opts, cfg.Options.Notify, state.RootZones, logger)
 

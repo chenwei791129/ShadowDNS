@@ -36,9 +36,9 @@ func setupListenOnTestDir(t *testing.T, listenOnTokens string) string {
 	return namedConf
 }
 
-// TestRun_OverrideBranchUsesListenFlag: -listen carries a specific host, so
+// TestRun_OverrideBranchUsesListenFlag: --listen carries a specific host, so
 // listen-on in named.conf must be ignored. The run() must start successfully
-// and the bound address must be the one from -listen.
+// and the bound address must be the one from --listen.
 func TestRun_OverrideBranchUsesListenFlag(t *testing.T) {
 	namedConf := setupListenOnTestDir(t, `{ 10.255.255.255; }`) // unreachable IP
 	ctx, cancel := context.WithCancel(context.Background())
@@ -76,9 +76,9 @@ func TestRun_OverrideBranchUsesListenFlag(t *testing.T) {
 	}
 }
 
-// TestRun_ListenOnBranchBindsListenOnAddresses: -listen is :PORT form, so
+// TestRun_ListenOnBranchBindsListenOnAddresses: --listen is :PORT form, so
 // named.conf's listen-on drives the host. The bound address must come from
-// listen-on, with the port from -listen.
+// listen-on, with the port from --listen.
 func TestRun_ListenOnBranchBindsListenOnAddresses(t *testing.T) {
 	namedConf := setupListenOnTestDir(t, `{ 127.0.0.1; }`)
 	ctx, cancel := context.WithCancel(context.Background())

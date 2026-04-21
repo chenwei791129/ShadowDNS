@@ -1,6 +1,6 @@
 // Integration tests covering the honor-listen-on change: the server must
 // derive bind addresses from named.conf's listen-on directive when
-// -listen does not carry a host component, and must continue serving
+// --listen does not carry a host component, and must continue serving
 // queries even if a subset of the listen-on addresses fail to bind.
 package integration_test
 
@@ -22,7 +22,7 @@ import (
 
 // startServerWithListenOn copies the integration fixtures into a temp dir
 // like newTestServer, but rewrites the options block so listen-on contains
-// the caller-supplied token list. The caller also chooses -listen form,
+// the caller-supplied token list. The caller also chooses --listen form,
 // which selects the override vs listen-on branch. Returns the running
 // server and a teardown func.
 func startServerWithListenOn(t *testing.T, listenOnTokens, listenFlag string) (*server.Server, func()) {
@@ -112,7 +112,7 @@ func startServerWithListenOn(t *testing.T, listenOnTokens, listenFlag string) (*
 }
 
 // TestListenOn_BindsOnExplicitLoopbackAddress validates the end-to-end path:
-// with named.conf listen-on set to { 127.0.0.1; } and -listen :0, the
+// with named.conf listen-on set to { 127.0.0.1; } and --listen :0, the
 // server binds on 127.0.0.1 (with an ephemeral port) and answers a query.
 func TestListenOn_BindsOnExplicitLoopbackAddress(t *testing.T) {
 	srv, teardown := startServerWithListenOn(t, `{ 127.0.0.1; }`, ":0")
@@ -181,9 +181,9 @@ func TestListenOn_PartialFailStartsWithSurvivingAddresses(t *testing.T) {
 	}
 }
 
-// TestListenOn_OverrideBranchIgnoresListenOn: -listen carries a host,
+// TestListenOn_OverrideBranchIgnoresListenOn: --listen carries a host,
 // so listen-on in named.conf (even if unreachable) must be ignored.
-// The server must bind exactly the -listen address.
+// The server must bind exactly the --listen address.
 func TestListenOn_OverrideBranchIgnoresListenOn(t *testing.T) {
 	srv, teardown := startServerWithListenOn(t, `{ 10.255.255.255; }`, "127.0.0.1:0")
 	defer teardown()

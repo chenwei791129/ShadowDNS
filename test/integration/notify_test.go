@@ -1,4 +1,4 @@
-// Integration tests for the NOTIFY toggle (-no-notify CLI flag and
+// Integration tests for the NOTIFY toggle (--no-notify CLI flag and
 // options.notify directive). These tests exec the compiled shadowdns binary
 // so they exercise the real flag-parsing and precedence resolution path.
 //
@@ -201,9 +201,9 @@ func startShadowDNS(t *testing.T, namedConf string, extraArgs ...string) (*exec.
 		listenAddr := fmt.Sprintf("127.0.0.1:%d", port)
 
 		args := []string{
-			"-named-conf", namedConf,
-			"-listen", listenAddr,
-			"-metrics-addr", "", // disable metrics so we don't fight another free port
+			"--named-conf", namedConf,
+			"--listen", listenAddr,
+			"--metrics-addr", "", // disable metrics so we don't fight another free port
 		}
 		args = append(args, extraArgs...)
 
@@ -341,7 +341,7 @@ func (s *syncBuffer) String() string {
 // ---------------------------------------------------------------------------
 
 // TestIntegration_NoNotifyFlag_SuppressesAllSends verifies that starting
-// shadowdns with -no-notify prevents any NOTIFY goroutine from being spawned,
+// shadowdns with --no-notify prevents any NOTIFY goroutine from being spawned,
 // even when the zone has an NS target that differs from SOA MNAME (and would
 // otherwise trigger a send attempt to a non-resolvable host, producing a
 // "NOTIFY failed" warning).
@@ -350,7 +350,7 @@ func TestIntegration_NoNotifyFlag_SuppressesAllSends(t *testing.T) {
 
 	_, namedConf, _ := setupNotifyFixture(t, "")
 
-	_, buf, cleanup := startShadowDNS(t, namedConf, "-no-notify")
+	_, buf, cleanup := startShadowDNS(t, namedConf, "--no-notify")
 	defer cleanup()
 
 	// Wait for the notify-state log line to appear.
@@ -360,7 +360,7 @@ func TestIntegration_NoNotifyFlag_SuppressesAllSends(t *testing.T) {
 		t.Fatalf("expected notify-state log, got: %s", output)
 	}
 	if !strings.Contains(output, `"enabled": false`) {
-		t.Errorf("expected enabled=false under -no-notify, got: %s", output)
+		t.Errorf("expected enabled=false under --no-notify, got: %s", output)
 	}
 	if !strings.Contains(output, `"source": "flag"`) {
 		t.Errorf("expected source=flag, got: %s", output)
@@ -374,7 +374,7 @@ func TestIntegration_NoNotifyFlag_SuppressesAllSends(t *testing.T) {
 
 	final := buf.String()
 	if strings.Contains(final, "NOTIFY failed") {
-		t.Errorf("expected NO `NOTIFY failed` log under -no-notify, but got one. Output: %s", final)
+		t.Errorf("expected NO `NOTIFY failed` log under --no-notify, but got one. Output: %s", final)
 	}
 	// Also confirm no send goroutine ran to the point of logging the outer
 	// warning in main.go's dispatchNotifies wrapper.
@@ -384,7 +384,7 @@ func TestIntegration_NoNotifyFlag_SuppressesAllSends(t *testing.T) {
 }
 
 // TestIntegration_NoNotifyFlag_StickyAcrossSIGHUP proves the "CLI flag effect
-// persists across SIGHUP reload" scenario: start with -no-notify and
+// persists across SIGHUP reload" scenario: start with --no-notify and
 // `options { notify yes; };`, SIGHUP after rewriting config to keep
 // `notify yes;`, and confirm no NOTIFY is sent even though config says yes.
 func TestIntegration_NoNotifyFlag_StickyAcrossSIGHUP(t *testing.T) {
@@ -392,7 +392,7 @@ func TestIntegration_NoNotifyFlag_StickyAcrossSIGHUP(t *testing.T) {
 
 	_, namedConf, pidFile := setupNotifyFixture(t, "yes")
 
-	_, buf, cleanup := startShadowDNS(t, namedConf, "-no-notify")
+	_, buf, cleanup := startShadowDNS(t, namedConf, "--no-notify")
 	defer cleanup()
 
 	// Wait for initial startup log.
@@ -450,7 +450,7 @@ func TestIntegration_NoNotifyFlag_StickyAcrossSIGHUP(t *testing.T) {
 }
 
 // TestIntegration_NotifyDefault_SendsNotify is the baseline fixture-validity
-// test: with no -no-notify flag and no `notify` directive in config, the
+// test: with no --no-notify flag and no `notify` directive in config, the
 // shadowdns startup path MUST attempt to send NOTIFY to each NS target that
 // differs from the SOA MNAME. The fixture's ns2.example.com. is unresolvable,
 // so the attempt surfaces as a "NOTIFY failed" log within ~500ms.

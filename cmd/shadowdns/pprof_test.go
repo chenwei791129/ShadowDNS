@@ -182,7 +182,7 @@ func TestPProf_ConflictingFlags_FatalStartupError(t *testing.T) {
 
 	err := run(context.Background(), opts)
 	if err == nil {
-		t.Fatal("expected error for -pprof-enable with empty -metrics-addr, got nil")
+		t.Fatal("expected error for --pprof-enable with empty --metrics-addr, got nil")
 	}
 	if !strings.Contains(err.Error(), "pprof") || !strings.Contains(err.Error(), "metrics-addr") {
 		t.Errorf("error message should explain the conflict; got: %v", err)
