@@ -65,7 +65,7 @@ Response sent to client
 ### Supported
 
 - `named.conf` options block (`directory`, `geoip-directory`, `listen-on`, `allow-transfer`, `recursion`, `minimal-responses`, `version`, `hostname`, `transfer-format`, `notify`)
-- `listen-on { any; }` and explicit IPv4 address lists from `named.conf` are honored via per-address binding. Individual bind failures (e.g. a `127.0.0.x` alias occupied by `systemd-resolved`) log a warning and are skipped; the server starts as long as at least one listener binds. See [docs/migration.md](docs/migration.md) for the precedence rules between `-listen` and `listen-on`
+- `listen-on { any; }` and explicit IPv4 address lists from `named.conf` are honored via per-address binding. Individual bind failures (e.g. a `127.0.0.x` alias occupied by `systemd-resolved`) log a warning and are skipped; the server starts as long as at least one listener binds. See [docs/migration.md](docs/migration.md) for the precedence rules between `--listen` and `listen-on`
 - `view "<name>" { match-clients { ... }; ... }` with first-match semantics
 - `match-clients` rule types: `geoip country <ISO-2>`, `geoip asnum "AS<N> <description>"`, bare IPv4 address, IPv4 CIDR prefix, `any`
 - Wildcard record matching per RFC 4592 — closest-encloser algorithm with empty non-terminal (ENT) blocking, CNAME wildcard synthesis, and correct owner name rewriting in responses
@@ -73,7 +73,7 @@ Response sent to client
 - `$INCLUDE` / `$include` directive with both bare path (`$include /path/to/file`) and BIND-style double-quoted path (`$include "/path/to/file"`); the directive name is case-insensitive. Limitations: the path itself MUST NOT contain whitespace (a fundamental miekg/dns scanner limit, not lifted by quoting), and the quoted form is recognised only on the top-level zone file — fragments pulled in via `$INCLUDE` are read directly by the underlying parser and must use the bare form internally
 - `type master;` zones
 - AXFR (full zone transfer over TCP) for both root zones and alias zones
-- NOTIFY outbound to slave nameservers on startup and after reload (can be disabled via `-no-notify` CLI flag or `options { notify no; };`)
+- NOTIFY outbound to slave nameservers on startup and after reload (can be disabled via `--no-notify` CLI flag or `options { notify no; };`)
 - `allow-transfer` ACL enforcement
 - Split-horizon responses (different answers per view for the same query)
 - SOA inheritance for backup zones (serial tracks the root zone; slaves detect changes correctly)
@@ -139,7 +139,7 @@ cd shadowdns
 make build
 ```
 
-The binary is written to `bin/shadowdns`.
+The binary is written to `bin/shadowdns-<GOOS>-<GOARCH>` (e.g., `bin/shadowdns-linux-amd64` on Linux/amd64, `bin/shadowdns-darwin-arm64` on Apple Silicon).
 
 **3. Place GeoIP databases in your GeoIP directory.**
 
@@ -154,13 +154,15 @@ Download these from [MaxMind](https://dev.maxmind.com/geoip/geolite2-free-geoloc
 
 **4. Run ShadowDNS.**
 
+Use the host-specific binary path from step 2; the example below assumes `linux/amd64`.
+
 ```bash
-./bin/shadowdns \
-    -named-conf /etc/namedb/named.conf \
-    -aliases    /etc/namedb/aliases.yaml
+./bin/shadowdns-linux-amd64 \
+    --named-conf /etc/namedb/named.conf \
+    --aliases    /etc/namedb/aliases.yaml
 ```
 
-ShadowDNS listens on `:53` (UDP and TCP) by default. Use `-listen` to override.
+ShadowDNS listens on `:53` (UDP and TCP) by default. Use `--listen` to override.
 
 ## Configuration
 
@@ -168,16 +170,21 @@ ShadowDNS listens on `:53` (UDP and TCP) by default. Use `-listen` to override.
 
 | Flag              | Default | Required | Description                                              |
 |-------------------|---------|----------|----------------------------------------------------------|
-| `-named-conf`     | —       | Yes      | Path to `named.conf`. The `geoip-directory` option inside this file controls where mmdb files are read from. |
-| `-aliases`        | —       | No       | Path to `aliases.yaml`. If omitted or file is absent, all zones are treated as root zones (no aliasing). |
-| `-listen`         | `:53`   | No       | UDP/TCP listen address. Accepts any `host:port` form.    |
-| `-metrics-addr`   | `:9153` | No       | Prometheus `/metrics` HTTP listen address. Empty string disables. |
-| `-pprof-enable`   | `false` | No       | Expose Go pprof profiling endpoints under `/debug/pprof/` on the metrics HTTP server. Requires `-metrics-addr` to be non-empty. Read only at startup — SIGHUP reload does not change its value; restart the process to toggle. **Only enable on a trusted network or with a loopback/localhost bind**: pprof has no authentication, returns debugger-grade runtime state, and the CPU/trace profile endpoints can be used to stall the process for the requested duration. |
-| `-dry-run`        | `false` | No       | Load configuration and zones, log a summary, then exit without starting listeners. |
-| `-reload`         | `false` | No       | Send SIGHUP to a running server. Requires `-named-conf`. |
-| `-no-notify`      | absent  | No       | Disable NOTIFY dispatch for the entire process lifetime. When omitted, NOTIFY follows `options.notify` in `named.conf` (default: enabled). When passed, overrides the config directive; sticky across SIGHUP reloads. |
-| `-no-color`       | `false` | No       | Force uncolored log output regardless of terminal detection. Honors the `NO_COLOR` environment variable (https://no-color.org); non-TTY stderr is also detected automatically and disables color. |
-| `-version`        | `false` | No       | Print version and exit.                                  |
+| `--named-conf`    | —       | Yes      | Path to `named.conf`. The `geoip-directory` option inside this file controls where mmdb files are read from. |
+| `--aliases`       | —       | No       | Path to `aliases.yaml`. If omitted or file is absent, all zones are treated as root zones (no aliasing). |
+| `--listen`        | `:53`   | No       | UDP/TCP listen address. Accepts any `host:port` form.    |
+| `--metrics-addr`  | `:9153` | No       | Prometheus `/metrics` HTTP listen address. Empty string disables. |
+| `--pprof-enable`  | `false` | No       | Expose Go pprof profiling endpoints under `/debug/pprof/` on the metrics HTTP server. Requires `--metrics-addr` to be non-empty. Read only at startup — SIGHUP reload does not change its value; restart the process to toggle. **Only enable on a trusted network or with a loopback/localhost bind**: pprof has no authentication, returns debugger-grade runtime state, and the CPU/trace profile endpoints can be used to stall the process for the requested duration. |
+| `--dry-run`       | `false` | No       | Load configuration and zones, log a summary, then exit without starting listeners. |
+| `--no-notify`     | absent  | No       | Disable NOTIFY dispatch for the entire process lifetime. When omitted, NOTIFY follows `options.notify` in `named.conf` (default: enabled). When passed, overrides the config directive; sticky across SIGHUP reloads. |
+| `--no-color`      | `false` | No       | Force uncolored log output regardless of terminal detection. Honors the `NO_COLOR` environment variable (https://no-color.org); non-TTY stderr is also detected automatically and disables color. |
+| `-v`, `--version` | `false` | No       | Print version and exit.                                  |
+
+### Subcommands
+
+| Subcommand                              | Description                                           |
+|-----------------------------------------|-------------------------------------------------------|
+| `shadowdns reload --named-conf <path>`  | Send SIGHUP to the server identified by the pid-file configured in `named.conf`. Accepts only `--named-conf`; server-startup flags are rejected. |
 
 ### aliases.yaml schema
 
@@ -261,15 +268,15 @@ ShadowDNS uses first-match semantics (identical to BIND). Any view whose `match-
 
 **Required action**: verify that all `geoip asnum` entries in your `master.zones` follow the `"AS<number> <description>"` format before deploying. Cross-check with the actual strings in your `named.conf` / `master.zones` generated by the management system.
 
-### 3. Run `-dry-run` against production config before cutover
+### 3. Run `--dry-run` against production config before cutover
 
 ```bash
 make build
 
-./bin/shadowdns \
-    -named-conf /etc/namedb/named.conf \
-    -aliases    /etc/namedb/aliases.yaml \
-    -dry-run
+./bin/shadowdns-linux-amd64 \
+    --named-conf /etc/namedb/named.conf \
+    --aliases    /etc/namedb/aliases.yaml \
+    --dry-run
 ```
 
 A successful exit (code 0) confirms that every zone file parses without error and the GeoIP databases are readable. See [docs/benchmark.md](docs/benchmark.md) for memory profiling guidance.
@@ -280,18 +287,18 @@ ShadowDNS sends NOTIFY to the NS records of each zone (BIND default behaviour). 
 
 **Disabling NOTIFY.** Single-server deployments without secondaries, or test environments where startup noise is unwanted, can disable NOTIFY via either:
 
-- CLI flag: `shadowdns -no-notify ...` — applies for the process lifetime and persists across SIGHUP reloads even if `named.conf` later enables NOTIFY
+- CLI flag: `shadowdns --no-notify ...` — applies for the process lifetime and persists across SIGHUP reloads even if `named.conf` later enables NOTIFY
 - Config directive: `options { notify no; };` — applies at load time; changes take effect on SIGHUP reload
 
 When NOTIFY is disabled, ShadowDNS builds no NOTIFY messages, spawns no goroutines, and performs no retries. A single INFO log line records the resolved state and its source at startup and after each reload: `notify state resolved enabled=<bool> source=<flag|config|default>`.
 
 **Precedence.** When both the flag and the config directive are set, the rules are:
 
-1. Explicit `-no-notify` flag → NOTIFY disabled for the process lifetime
+1. Explicit `--no-notify` flag → NOTIFY disabled for the process lifetime
 2. Otherwise, `options.notify` from `named.conf` wins (`yes` or `no`)
 3. Otherwise, NOTIFY defaults to enabled (preserving pre-existing behaviour)
 
-The flag is intentionally "set-only" — `-no-notify` can only disable NOTIFY. To enable NOTIFY when previously disabled, restart the process without the flag. This avoids the confusion of a double-negative "-no-notify=false" appearing to force-enable NOTIFY.
+The flag is intentionally "set-only" — `--no-notify` can only disable NOTIFY. To enable NOTIFY when previously disabled, restart the process without the flag. This avoids the confusion of a double-negative "--no-notify=false" appearing to force-enable NOTIFY.
 
 ## License
 

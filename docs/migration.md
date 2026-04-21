@@ -37,12 +37,12 @@
    go build -o shadowdns ./cmd/shadowdns
    ```
 
-4. 執行啟動煙霧測試（待 `-dry-run` flag 完成後使用），確認設定解析無錯誤：
+4. 執行啟動煙霧測試（待 `--dry-run` flag 完成後使用），確認設定解析無錯誤：
 
    ```bash
    ./shadowdns \
-       -named-conf /path/to/named.conf \
-       -aliases    /path/to/aliases.yaml
+       --named-conf /path/to/named.conf \
+       --aliases    /path/to/aliases.yaml
    ```
 
 5. 觀察啟動 log，確認：
@@ -91,9 +91,9 @@
 
    ```bash
    ./shadowdns \
-       -named-conf /etc/namedb/named.conf \
-       -aliases    /etc/namedb/aliases.yaml \
-       -listen     192.0.2.20:53
+       --named-conf /etc/namedb/named.conf \
+       --aliases    /etc/namedb/aliases.yaml \
+       --listen     192.0.2.20:53
    ```
 
 2. 確認 ShadowDNS 啟動成功，log 無錯誤。
@@ -375,14 +375,14 @@ ShadowDNS 讀取 `named.conf` 的 `listen-on` 指令，決定要綁在哪些 IP 
 
 ### 位址來源優先順序
 
-| 情境 | `-listen` | `listen-on` | 實際綁定 |
+| 情境 | `--listen` | `listen-on` | 實際綁定 |
 |------|------------|-------------|----------|
 | 預設 | `:53` | 未指定 | 所有 IPv4 介面位址（隱含 `any`） |
 | 預設 + 指定 listen-on | `:53` | `{ 10.0.0.1; 10.0.0.2; }` | `10.0.0.1:53`、`10.0.0.2:53` |
 | Override | `127.0.0.1:5353` | 任意 | `127.0.0.1:5353`（忽略 listen-on） |
-| Port hint | `:5353` | `{ 10.0.0.1; }` | `10.0.0.1:5353`（port 從 `-listen` 繼承） |
+| Port hint | `:5353` | `{ 10.0.0.1; }` | `10.0.0.1:5353`（port 從 `--listen` 繼承） |
 
-**關鍵規則**：`-listen` **有 host component 才是 override**（例如 `127.0.0.1:5353`）；`:PORT` 形式只提供 port，位址仍從 `listen-on` 取得。這讓 `-listen :0`（測試用 ephemeral port）+ `listen-on { 127.0.0.1; }` 能正確配合。
+**關鍵規則**：`--listen` **有 host component 才是 override**（例如 `127.0.0.1:5353`）；`:PORT` 形式只提供 port，位址仍從 `listen-on` 取得。這讓 `--listen :0`（測試用 ephemeral port）+ `listen-on { 127.0.0.1; }` 能正確配合。
 
 ### 不支援的 listen-on 語法
 
@@ -390,7 +390,7 @@ ShadowDNS 讀取 `named.conf` 的 `listen-on` 指令，決定要綁在哪些 IP 
 
 - Exclusion syntax：`listen-on { !10.0.0.1; any; };`（`!addr` 排除）
 - ACL 參照：`listen-on { trusted-net; };`
-- Port override：`listen-on port 5353 { ... };`（請改用 `-listen :5353`）
+- Port override：`listen-on port 5353 { ... };`（請改用 `--listen :5353`）
 - `interface` keyword
 
 ### 與 systemd-resolved 的互動
@@ -428,7 +428,7 @@ level=INFO msg="reload: listen-address changes require restart to take effect"
 
 - 預設綁定從「單一 `0.0.0.0:53` wildcard socket」改為「per-address bind」。視覺上的差別：啟動 log 從 1 筆變成 N 筆 `listener bound`。
 - 新增網卡 / IP alias 不會自動被 pick up；BIND 的 `interface-interval` 動態掃描本版不支援，請用 `systemctl restart shadowdns` 讓新位址進入監聽集合。
-- `-listen` 語意從「綁定目標」改為「override hint + port hint」。若你之前寫 `-listen :53` 是期望 `0.0.0.0` wildcard 行為，現在會被當成「port hint，位址從 listen-on 取（或 any 展開）」——行為在大多數情況一致，但顯式 log 會不同。
+- `--listen` 語意從「綁定目標」改為「override hint + port hint」。若你之前寫 `--listen :53` 是期望 `0.0.0.0` wildcard 行為，現在會被當成「port hint，位址從 listen-on 取（或 any 展開）」——行為在大多數情況一致，但顯式 log 會不同。
 
 ---
 
