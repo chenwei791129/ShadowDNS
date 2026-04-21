@@ -45,9 +45,9 @@ jobs:
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
             go build \
             -ldflags="-s -w -X main.version=${{ needs.release-please.outputs.tag_name }}" \
-            -o bin/shadowdns \
+            -o bin/${{ matrix.output }} \
             ./cmd/shadowdns
-          cp bin/shadowdns ${{ matrix.output }}
+          cp bin/${{ matrix.output }} ${{ matrix.output }}
 
       - name: Build .deb package
         run: go tool nfpm package --packager deb

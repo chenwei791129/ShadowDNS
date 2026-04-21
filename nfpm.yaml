@@ -15,8 +15,8 @@ homepage: https://github.com/chenwei791129/ShadowDNS
 license: TBD
 
 contents:
-  # Binary
-  - src: ./bin/shadowdns
+  # Binary (linux/amd64 cross-compiled by `make build-linux`)
+  - src: ./bin/shadowdns-linux-amd64
     dst: /usr/bin/shadowdns
     file_info:
       mode: 0755

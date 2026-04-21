@@ -42,24 +42,11 @@ trap cleanup EXIT
 cd "$PROJECT_ROOT"
 
 # -------------------------------------------------------------------
-# Step 1: Cross-compile for linux/amd64
+# Step 1: Cross-compile for linux/amd64 and build .deb
 # -------------------------------------------------------------------
-echo "--- Cross-compile linux/amd64 ---"
-GOOS=linux GOARCH=amd64 go build -o bin/shadowdns-linux-amd64 ./cmd/shadowdns
-
-# -------------------------------------------------------------------
-# Step 2: Build .deb with linux binary
-# -------------------------------------------------------------------
-echo "--- Build test .deb ---"
-cp bin/shadowdns-linux-amd64 bin/shadowdns-original-bak 2>/dev/null || true
-cp bin/shadowdns-linux-amd64 bin/shadowdns
+echo "--- Cross-compile + build test .deb ---"
+make build-linux
 go tool nfpm package --packager deb --target "$DEB_NAME"
-# Restore original binary if it existed.
-if [ -f bin/shadowdns-original-bak ]; then
-    mv bin/shadowdns-original-bak bin/shadowdns
-else
-    rm -f bin/shadowdns
-fi
 
 # -------------------------------------------------------------------
 # Step 3: Generate testdata with mock GeoIP
@@ -128,10 +115,10 @@ $CTR exec "$CONTAINER_NAME" sh -c '
     cp -r /tmp/testdata/geoip /etc/shadowdns/geoip
 '
 $CTR exec "$CONTAINER_NAME" shadowdns \
-    -named-conf /etc/shadowdns/named.conf \
-    -aliases /etc/shadowdns/aliases.yaml \
-    -dry-run
-echo "  [OK] -dry-run exited successfully"
+    --named-conf /etc/shadowdns/named.conf \
+    --aliases /etc/shadowdns/aliases.yaml \
+    --dry-run
+echo "  [OK] --dry-run exited successfully"
 
 # -------------------------------------------------------------------
 # Step 8: Start server and query DNS
@@ -141,9 +128,9 @@ $CTR exec "$CONTAINER_NAME" apt-get update -qq >/dev/null 2>&1
 $CTR exec "$CONTAINER_NAME" apt-get install -y -qq dnsutils >/dev/null 2>&1
 
 $CTR exec -d "$CONTAINER_NAME" shadowdns \
-    -named-conf /etc/shadowdns/named.conf \
-    -aliases /etc/shadowdns/aliases.yaml \
-    -listen 127.0.0.1:1053
+    --named-conf /etc/shadowdns/named.conf \
+    --aliases /etc/shadowdns/aliases.yaml \
+    --listen 127.0.0.1:1053
 
 # Wait for the server to start accepting queries.
 sleep 2
