@@ -42,13 +42,25 @@ func main() {
 		}
 	}
 
-	// Copy zone files.
-	masterFiles, _ := os.ReadDir(filepath.Join(fixtureDir, "master"))
-	for _, f := range masterFiles {
-		copyFile(
-			filepath.Join(fixtureDir, "master", f.Name()),
-			filepath.Join(*outDir, "master", f.Name()),
-		)
+	// Copy zone files, recursing into subdirectories (e.g. `master/cnames/`).
+	srcMaster := filepath.Join(fixtureDir, "master")
+	dstMaster := filepath.Join(*outDir, "master")
+	if err := filepath.Walk(srcMaster, func(path string, info os.FileInfo, werr error) error {
+		if werr != nil {
+			return werr
+		}
+		rel, err := filepath.Rel(srcMaster, path)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(dstMaster, rel)
+		if info.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+		copyFile(path, dst)
+		return nil
+	}); err != nil {
+		log.Fatalf("walk master: %v", err)
 	}
 
 	// Copy and patch named.conf.
