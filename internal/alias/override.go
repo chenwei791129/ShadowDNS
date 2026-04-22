@@ -1,3 +1,10 @@
+// Package alias implements backup-zone resolution: exact-match, RFC 1034
+// §3.6.2 CNAME fallback, and wildcard synthesis, with owner-name rewrites
+// between the backup and root namespaces.
+//
+// The ephemeral TXT overlay is intentionally handled in the server layer
+// (see internal/server/handler.go); this package does not import or depend
+// on internal/ephemeral.
 package alias
 
 import (
@@ -27,17 +34,15 @@ func Resolve(qname string, qtype uint16, backupOrigin string, backupZone *zone.Z
 	return nil
 }
 
-// ResolveExact performs the exact-match portion of backup-zone resolution:
-// backup override lookup for overridable types, root exact lookup with
-// in-bailiwick rewrite, and root CNAME fallback. Wildcard synthesis is NOT
-// consulted. Returns nil when no exact match exists.
-//
-// Split out so callers can interleave another exact source (e.g. the
-// ephemeral TXT store) between exact and wildcard passes; see
-// handleBackupQuery.
+// ResolveExactNoCNAME performs the strict exact-match portion of backup-zone
+// resolution: backup override lookup for overridable types and root exact
+// lookup with in-bailiwick rewrite. No CNAME fallback; no wildcard. Returns
+// nil when no exact match exists. Split out so callers can interleave
+// another exact source (e.g. the ephemeral TXT store) between exact-match
+// and CNAME fallback.
 //
 // MUST NOT panic on any input.
-func ResolveExact(qname string, qtype uint16, backupOrigin string, backupZone *zone.Zone, rootZone *zone.Zone) []dns.RR {
+func ResolveExactNoCNAME(qname string, qtype uint16, backupOrigin string, backupZone *zone.Zone, rootZone *zone.Zone) []dns.RR {
 	if rootZone == nil {
 		return nil
 	}
@@ -50,17 +55,45 @@ func ResolveExact(qname string, qtype uint16, backupOrigin string, backupZone *z
 
 	rootQName := RewriteQName(qname, backupOrigin, rootZone.Origin)
 	rootRRs := rootZone.Lookup(rootQName, qtype)
-
-	// CNAME fallback per RFC 1034 §3.6.2.
-	if len(rootRRs) == 0 && qtype != dns.TypeCNAME {
-		rootRRs = rootZone.Lookup(rootQName, dns.TypeCNAME)
-	}
-
 	if len(rootRRs) == 0 {
 		return nil
 	}
 
 	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOrigin)
+}
+
+// ResolveCNAMEFallback performs only the RFC 1034 §3.6.2 CNAME-fallback
+// branch of backup-zone resolution: look up a CNAME at the rewritten root
+// qname and finalize (follow in-zone chain + namespace-rewrite). Returns
+// nil for CNAME qtype (the fallback is only meaningful for non-CNAME
+// qtypes) or when no CNAME exists at the qname.
+//
+// MUST NOT panic on any input.
+func ResolveCNAMEFallback(qname string, qtype uint16, backupOrigin string, rootZone *zone.Zone) []dns.RR {
+	if rootZone == nil || qtype == dns.TypeCNAME {
+		return nil
+	}
+
+	rootQName := RewriteQName(qname, backupOrigin, rootZone.Origin)
+	rootRRs := rootZone.Lookup(rootQName, dns.TypeCNAME)
+	if len(rootRRs) == 0 {
+		return nil
+	}
+
+	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOrigin)
+}
+
+// ResolveExact performs the exact-match portion of backup-zone resolution:
+// backup override lookup, root exact lookup with in-bailiwick rewrite, and
+// RFC 1034 §3.6.2 CNAME fallback. Wildcard synthesis is NOT consulted.
+// Returns nil when no exact match exists.
+//
+// MUST NOT panic on any input.
+func ResolveExact(qname string, qtype uint16, backupOrigin string, backupZone *zone.Zone, rootZone *zone.Zone) []dns.RR {
+	if rrs := ResolveExactNoCNAME(qname, qtype, backupOrigin, backupZone, rootZone); len(rrs) > 0 {
+		return rrs
+	}
+	return ResolveCNAMEFallback(qname, qtype, backupOrigin, rootZone)
 }
 
 // ResolveWildcard performs the wildcard-synthesis portion of backup-zone

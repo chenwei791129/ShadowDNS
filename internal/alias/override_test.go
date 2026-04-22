@@ -197,6 +197,43 @@ func TestResolveExact_NilRootZone_DoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestResolveExactNoCNAME_NilRootZone_DoesNotPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("ResolveExactNoCNAME panicked with nil rootZone: %v", r)
+		}
+	}()
+	rrs := ResolveExactNoCNAME("backup.com.", dns.TypeA, "backup.com.", nil, nil)
+	if rrs != nil {
+		t.Errorf("expected nil, got %v", rrs)
+	}
+}
+
+func TestResolveCNAMEFallback_NilRootZone_DoesNotPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("ResolveCNAMEFallback panicked with nil rootZone: %v", r)
+		}
+	}()
+	rrs := ResolveCNAMEFallback("backup.com.", dns.TypeA, "backup.com.", nil)
+	if rrs != nil {
+		t.Errorf("expected nil, got %v", rrs)
+	}
+}
+
+// TestResolveCNAMEFallback_CNAMEQtype_ReturnsNil verifies the fallback is
+// scoped to non-CNAME qtypes; an explicit CNAME query must not trigger the
+// fallback branch (it is handled by the exact-match pass instead).
+func TestResolveCNAMEFallback_CNAMEQtype_ReturnsNil(t *testing.T) {
+	rootZone := buildZone("root.com.",
+		newCNAME("alias.root.com.", "target.root.com."),
+	)
+	rrs := ResolveCNAMEFallback("alias.backup.com.", dns.TypeCNAME, "backup.com.", rootZone)
+	if rrs != nil {
+		t.Errorf("expected nil for CNAME qtype, got %v", rrs)
+	}
+}
+
 func TestResolveWildcard_NilRootZone_DoesNotPanic(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {

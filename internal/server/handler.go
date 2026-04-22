@@ -190,19 +190,23 @@ func (s *Server) handleRootQuery(
 		return
 	}
 
+	// Ephemeral TXT overlay. Runs after the exact (qname, qtype) match (so
+	// zone records win) but before CNAME fallback and wildcard synthesis, so
+	// a live ephemeral TXT at a CNAME'd qname overrides the CNAME for TXT
+	// queries. Intentional RFC 1034 §3.6.2 deviation scoped to TXT qtype;
+	// lookupEphemeralTXT is a no-op for other qtypes and an empty store.
+	// See docs/ephemeral-api.md §"Ephemeral TXT 覆蓋 exact CNAME".
+	if answer := s.lookupEphemeralTXT(qname, qtype); answer != nil {
+		replyWithAnswer(w, req, answer)
+		return
+	}
+
 	// CNAME fallback per RFC 1034 §3.6.2.
 	if qtype != dns.TypeCNAME {
 		if cnames := rootZone.Lookup(qname, dns.TypeCNAME); len(cnames) > 0 {
 			replyWithAnswer(w, req, rootZone.FollowCNAME(nil, cnames, qtype))
 			return
 		}
-	}
-
-	// Ephemeral TXT store is treated as an exact match (RFC 4592 §2.2.1):
-	// entries registered under qname must suppress wildcard synthesis for TXT.
-	if answer := s.lookupEphemeralTXT(qname, qtype); answer != nil {
-		replyWithAnswer(w, req, answer)
-		return
 	}
 
 	// Wildcard fallback per RFC 4592.
@@ -253,16 +257,24 @@ func (s *Server) handleBackupQuery(
 		return
 	}
 
-	if records := alias.ResolveExact(qname, qtype, match.MatchedZone, backupZone, rootZone); len(records) > 0 {
+	// Exact match (backup override + root exact), without CNAME fallback —
+	// so zone records win over the ephemeral overlay below.
+	if records := alias.ResolveExactNoCNAME(qname, qtype, match.MatchedZone, backupZone, rootZone); len(records) > 0 {
 		replyWithAnswer(w, req, records)
 		return
 	}
 
-	// Ephemeral TXT is an exact match per RFC 4592 §2.2.1 and must suppress
-	// root-derived wildcard synthesis. The lookup uses the backup-namespace
+	// Ephemeral TXT overlay. Same layering and RFC 1034 §3.6.2 deviation as
+	// handleRootQuery (scoped to TXT qtype); lookup uses the backup-namespace
 	// qname because API callers PUT entries under that name.
 	if answer := s.lookupEphemeralTXT(qname, qtype); answer != nil {
 		replyWithAnswer(w, req, answer)
+		return
+	}
+
+	// CNAME fallback per RFC 1034 §3.6.2.
+	if records := alias.ResolveCNAMEFallback(qname, qtype, match.MatchedZone, rootZone); len(records) > 0 {
+		replyWithAnswer(w, req, records)
 		return
 	}
 

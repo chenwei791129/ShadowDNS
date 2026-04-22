@@ -407,6 +407,199 @@ func TestEphemeral_ExactBeatsWildcardTXTInBackupZone(t *testing.T) {
 	}
 }
 
+// TestEphemeral_OverridesExactCNAME_RootZone verifies that an ephemeral TXT
+// entry at a qname where the zone carries an exact (non-wildcard) CNAME
+// overrides the CNAME for TXT queries. Covers the ACME DNS-01 delegation
+// scenario where `_acme-challenge.<name>` is CNAME'd to an external acme-dns
+// provider but a local ephemeral TXT has been written for the same name.
+func TestEphemeral_OverridesExactCNAME_RootZone(t *testing.T) {
+	rootZ := buildRootZone("example.com.",
+		makeCNAMERecord("_acme-challenge.foo.example.com.", "acme-dns.external.net.", 300),
+	)
+	store := ephemeral.NewStore()
+	store.Put("_acme-challenge.foo.example.com.", "token-xyz", 120)
+
+	addr, cancel := newRootOnlyServerWithEphemeral(t, rootZ, store)
+	defer cancel()
+
+	resp := query(t, "udp", addr, "_acme-challenge.foo.example.com.", dns.TypeTXT)
+
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("Rcode = %d, want NOERROR", resp.Rcode)
+	}
+	if !resp.Authoritative {
+		t.Error("expected AA=1")
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("Answer len = %d, want 1 (ephemeral TXT only, no CNAME); Answer=%v", len(resp.Answer), resp.Answer)
+	}
+	txt, ok := resp.Answer[0].(*dns.TXT)
+	if !ok {
+		t.Fatalf("Answer[0] type = %T, want *dns.TXT (ephemeral must override exact CNAME)", resp.Answer[0])
+	}
+	if len(txt.Txt) != 1 || txt.Txt[0] != "token-xyz" {
+		t.Errorf("TXT value = %v, want [token-xyz]", txt.Txt)
+	}
+	for _, rr := range resp.Answer {
+		if _, isCNAME := rr.(*dns.CNAME); isCNAME {
+			t.Errorf("answer contains CNAME RR %v; CNAME must be suppressed when ephemeral TXT exists", rr)
+		}
+	}
+}
+
+// TestEphemeral_CNAMEQueryUnaffectedByEphemeralTXT verifies that an explicit
+// CNAME query at a qname with both a zone CNAME and an ephemeral TXT returns
+// only the zone CNAME. The ephemeral overlay is scoped to TXT qtype.
+func TestEphemeral_CNAMEQueryUnaffectedByEphemeralTXT(t *testing.T) {
+	rootZ := buildRootZone("example.com.",
+		makeCNAMERecord("_acme-challenge.foo.example.com.", "acme-dns.external.net.", 300),
+	)
+	store := ephemeral.NewStore()
+	store.Put("_acme-challenge.foo.example.com.", "token-xyz", 120)
+
+	addr, cancel := newRootOnlyServerWithEphemeral(t, rootZ, store)
+	defer cancel()
+
+	resp := query(t, "udp", addr, "_acme-challenge.foo.example.com.", dns.TypeCNAME)
+
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("Rcode = %d, want NOERROR", resp.Rcode)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("Answer len = %d, want 1 (zone CNAME only); Answer=%v", len(resp.Answer), resp.Answer)
+	}
+	cname, ok := resp.Answer[0].(*dns.CNAME)
+	if !ok {
+		t.Fatalf("Answer[0] type = %T, want *dns.CNAME", resp.Answer[0])
+	}
+	if cname.Target != "acme-dns.external.net." {
+		t.Errorf("CNAME target = %q, want acme-dns.external.net.", cname.Target)
+	}
+}
+
+// TestEphemeral_TXTQueryFallsBackToCNAMEWhenStoreEmpty verifies that when the
+// ephemeral store has no entry for a qname with a zone CNAME, standard RFC
+// 1034 §3.6.2 CNAME synthesis is preserved (CNAME + in-zone target TXT).
+func TestEphemeral_TXTQueryFallsBackToCNAMEWhenStoreEmpty(t *testing.T) {
+	rootZ := buildRootZone("example.com.",
+		makeCNAMERecord("_acme-challenge.foo.example.com.", "target.example.com.", 300),
+		makeTXTRecord("target.example.com.", "zone-txt", 300),
+	)
+	store := ephemeral.NewStore()
+
+	addr, cancel := newRootOnlyServerWithEphemeral(t, rootZ, store)
+	defer cancel()
+
+	resp := query(t, "udp", addr, "_acme-challenge.foo.example.com.", dns.TypeTXT)
+
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("Rcode = %d, want NOERROR", resp.Rcode)
+	}
+	if len(resp.Answer) != 2 {
+		t.Fatalf("Answer len = %d, want 2 (CNAME + target TXT); Answer=%v", len(resp.Answer), resp.Answer)
+	}
+	cname, ok := resp.Answer[0].(*dns.CNAME)
+	if !ok {
+		t.Fatalf("Answer[0] type = %T, want *dns.CNAME", resp.Answer[0])
+	}
+	if cname.Target != "target.example.com." {
+		t.Errorf("CNAME target = %q, want target.example.com.", cname.Target)
+	}
+	txt, ok := resp.Answer[1].(*dns.TXT)
+	if !ok {
+		t.Fatalf("Answer[1] type = %T, want *dns.TXT", resp.Answer[1])
+	}
+	if txt.Hdr.Name != "target.example.com." {
+		t.Errorf("TXT owner = %q, want target.example.com.", txt.Hdr.Name)
+	}
+	if len(txt.Txt) != 1 || txt.Txt[0] != "zone-txt" {
+		t.Errorf("TXT value = %v, want [zone-txt]", txt.Txt)
+	}
+}
+
+// TestEphemeral_NonTXTQueryAtCNAMEUnaffected verifies that an A query at a
+// qname with both a zone CNAME and an ephemeral TXT entry is unaffected by
+// the ephemeral store: standard CNAME synthesis runs and the CNAME plus
+// target A are returned.
+func TestEphemeral_NonTXTQueryAtCNAMEUnaffected(t *testing.T) {
+	rootZ := buildRootZone("example.com.",
+		makeCNAMERecord("foo.example.com.", "target.example.com.", 300),
+		makeARecord("target.example.com.", "1.2.3.4", 300),
+	)
+	store := ephemeral.NewStore()
+	store.Put("foo.example.com.", "token", 120)
+
+	addr, cancel := newRootOnlyServerWithEphemeral(t, rootZ, store)
+	defer cancel()
+
+	resp := query(t, "udp", addr, "foo.example.com.", dns.TypeA)
+
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("Rcode = %d, want NOERROR", resp.Rcode)
+	}
+	if len(resp.Answer) != 2 {
+		t.Fatalf("Answer len = %d, want 2 (CNAME + A); Answer=%v", len(resp.Answer), resp.Answer)
+	}
+	if _, ok := resp.Answer[0].(*dns.CNAME); !ok {
+		t.Fatalf("Answer[0] type = %T, want *dns.CNAME", resp.Answer[0])
+	}
+	a, ok := resp.Answer[1].(*dns.A)
+	if !ok {
+		t.Fatalf("Answer[1] type = %T, want *dns.A", resp.Answer[1])
+	}
+	if got := a.A.String(); got != "1.2.3.4" {
+		t.Errorf("A value = %s, want 1.2.3.4", got)
+	}
+	for _, rr := range resp.Answer {
+		if _, isTXT := rr.(*dns.TXT); isTXT {
+			t.Errorf("answer contains TXT RR %v; ephemeral TXT must not leak into A query", rr)
+		}
+	}
+}
+
+// TestEphemeral_OverridesExactCNAME_BackupZone verifies that an ephemeral TXT
+// entry keyed by the backup-namespace qname overrides a root-zone exact CNAME
+// at the rewritten qname for TXT queries. Backup zone path equivalent of
+// TestEphemeral_OverridesExactCNAME_RootZone.
+func TestEphemeral_OverridesExactCNAME_BackupZone(t *testing.T) {
+	rootZ := buildRootZone("example.com.",
+		makeCNAMERecord("_acme-challenge.foo.example.com.", "acme-dns.external.net.", 300),
+	)
+	backupZ := buildBackupZone("backup.com.")
+	store := ephemeral.NewStore()
+	store.Put("_acme-challenge.foo.backup.com.", "backup-token", 60)
+
+	addr, cancel := newRootBackupServerWithEphemeral(t, rootZ, backupZ, store)
+	defer cancel()
+
+	resp := query(t, "udp", addr, "_acme-challenge.foo.backup.com.", dns.TypeTXT)
+
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("Rcode = %d, want NOERROR", resp.Rcode)
+	}
+	if !resp.Authoritative {
+		t.Error("expected AA=1")
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("Answer len = %d, want 1 (ephemeral TXT only, no CNAME); Answer=%v", len(resp.Answer), resp.Answer)
+	}
+	txt, ok := resp.Answer[0].(*dns.TXT)
+	if !ok {
+		t.Fatalf("Answer[0] type = %T, want *dns.TXT", resp.Answer[0])
+	}
+	if len(txt.Txt) != 1 || txt.Txt[0] != "backup-token" {
+		t.Errorf("TXT value = %v, want [backup-token]", txt.Txt)
+	}
+	if txt.Hdr.Name != "_acme-challenge.foo.backup.com." {
+		t.Errorf("owner name = %q, want _acme-challenge.foo.backup.com.", txt.Hdr.Name)
+	}
+	for _, rr := range resp.Answer {
+		if _, isCNAME := rr.(*dns.CNAME); isCNAME {
+			t.Errorf("answer contains CNAME RR %v; CNAME must be suppressed when ephemeral TXT exists on backup zone", rr)
+		}
+	}
+}
+
 // TestEphemeral_ExactBeatsWildcardCNAMEInBackupZone verifies that an ephemeral
 // TXT entry registered under the backup-namespace qname takes precedence over
 // the backup-derived wildcard CNAME synthesized from the root zone.
