@@ -1,6 +1,7 @@
 ---
 name: spectra-archive
 description: "Archive a completed change"
+effort: low
 license: MIT
 compatibility: Requires spectra CLI.
 metadata:
