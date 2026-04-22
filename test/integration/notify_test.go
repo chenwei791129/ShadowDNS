@@ -189,6 +189,16 @@ func startShadowDNS(t *testing.T, namedConf string, extraArgs ...string) (*exec.
 
 	bin := buildShadowDNSBinary(t)
 
+	// Write a minimal shadowdns.yaml alongside the named.conf so --config
+	// (required since the unified-config migration) can be satisfied without
+	// every caller having to manage the file.
+	configPath := filepath.Join(filepath.Dir(namedConf), "shadowdns.yaml")
+	if _, err := os.Stat(configPath); err != nil {
+		if err := os.WriteFile(configPath, []byte("aliases: {}\n"), 0o644); err != nil {
+			t.Fatalf("write shadowdns.yaml: %v", err)
+		}
+	}
+
 	type attemptLog struct {
 		port    int
 		outcome startupOutcome
@@ -202,6 +212,7 @@ func startShadowDNS(t *testing.T, namedConf string, extraArgs ...string) (*exec.
 
 		args := []string{
 			"--named-conf", namedConf,
+			"--config", configPath,
 			"--listen", listenAddr,
 			"--metrics-addr", "", // disable metrics so we don't fight another free port
 		}

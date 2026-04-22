@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
+	"github.com/chenwei791129/ShadowDNS/internal/ephemeral"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
 	"github.com/chenwei791129/ShadowDNS/internal/view"
@@ -82,6 +83,13 @@ type Server struct {
 	// Metrics enables Prometheus metrics collection when non-nil.
 	// A nil value disables all instrumentation (safe for tests).
 	Metrics *metrics.Metrics
+
+	// EphemeralStore is an in-memory store of TXT records created via the
+	// ephemeral HTTP API (ACME DNS-01 challenges). It lives outside
+	// ServerState so SIGHUP reload does not replace or clear it; the reload
+	// handler calls Clear explicitly after a successful swap. When nil, no
+	// ephemeral TXT lookups are performed.
+	EphemeralStore *ephemeral.Store
 
 	// listeners holds one entry per successfully bound address. Each entry
 	// owns a UDP *dns.Server and a TCP *dns.Server sharing the same address.

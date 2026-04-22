@@ -173,6 +173,7 @@ func TestStartupLog_IncludesVersion(t *testing.T) {
 	logger := newBufferLogger(zapcore.AddSync(buf))
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    "127.0.0.1:0",
 		Logger:        logger,
 	}
@@ -215,7 +216,7 @@ func TestRunLoadsAndShutsDownGracefully(t *testing.T) {
 	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
-		AliasesPath:   "",
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    "127.0.0.1:0",
 		Logger:        logger,
 	}
@@ -429,6 +430,11 @@ include "` + masterZones + `";
 		t.Fatalf("write named.conf: %v", err)
 	}
 
+	shadowConf := filepath.Join(dir, "shadowdns.yaml")
+	if err := os.WriteFile(shadowConf, []byte("aliases: {}\n"), 0o644); err != nil {
+		t.Fatalf("write shadowdns.yaml: %v", err)
+	}
+
 	return dir
 }
 
@@ -439,7 +445,7 @@ func startReloadTestServer(t *testing.T, dir string) (*server.Server, *view.Coun
 	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: namedConf,
-		AliasesPath:   "",
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    "127.0.0.1:0",
 		Logger:        logger,
 	}
@@ -449,10 +455,7 @@ func startReloadTestServer(t *testing.T, dir string) (*server.Server, *view.Coun
 		t.Fatalf("load named.conf: %v", err)
 	}
 
-	aliases, err := config.LoadAliases("", logger)
-	if err != nil {
-		t.Fatalf("load aliases: %v", err)
-	}
+	aliases := config.AliasMap{}
 
 	country, asn, err := view.LoadGeoIP(cfg.Options.GeoIPDirectory, logger)
 	if err != nil {
@@ -657,7 +660,7 @@ func TestSIGHUP_ReloadIntegration(t *testing.T) {
 	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
-		AliasesPath:   "",
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    listenAddr,
 		Logger:        logger,
 	}
@@ -751,7 +754,7 @@ func TestPidFile_WrittenOnStartup(t *testing.T) {
 	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
-		AliasesPath:   "",
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    listenAddr,
 		Logger:        logger,
 	}
@@ -804,7 +807,7 @@ func TestPidFile_NotWrittenWhenEmpty(t *testing.T) {
 	logger := zap.NewNop()
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
-		AliasesPath:   "",
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    "127.0.0.1:0",
 		Logger:        logger,
 	}
@@ -998,6 +1001,7 @@ func runRunAndCaptureLogs(t *testing.T, dir string, explicitNoNotify bool) strin
 	logger := newBufferLogger(zapcore.AddSync(buf))
 	opts := runOptions{
 		NamedConfPath:    filepath.Join(dir, "named.conf"),
+		ConfigPath:       filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:       "127.0.0.1:0",
 		Logger:           logger,
 		NoNotifyExplicit: explicitNoNotify,

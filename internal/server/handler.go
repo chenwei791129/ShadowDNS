@@ -211,6 +211,11 @@ func (s *Server) handleRootQuery(
 		}
 	}
 
+	if answer := s.lookupEphemeralTXT(qname, qtype); answer != nil {
+		replyWithAnswer(w, req, answer)
+		return
+	}
+
 	s.negativeReply(w, req, rootZone, nil, match, qname, rootZone.SOA)
 }
 
@@ -252,7 +257,40 @@ func (s *Server) handleBackupQuery(
 		return
 	}
 
+	if answer := s.lookupEphemeralTXT(qname, qtype); answer != nil {
+		replyWithAnswer(w, req, answer)
+		return
+	}
+
 	s.negativeReply(w, req, rootZone, backupZone, match, qname, backupSOA)
+}
+
+// lookupEphemeralTXT returns a synthesized TXT RRSet if the ephemeral store
+// holds one or more unexpired TXT entries for qname. Each stored value
+// becomes its own dns.TXT record so DNS clients (and ACME validators) can
+// iterate the RRSet naturally. Returns nil when qtype is not TXT, the store
+// is disabled, or no live entries match.
+func (s *Server) lookupEphemeralTXT(qname string, qtype uint16) []dns.RR {
+	if qtype != dns.TypeTXT || s.EphemeralStore == nil {
+		return nil
+	}
+	recs, ok := s.EphemeralStore.Lookup(qname)
+	if !ok {
+		return nil
+	}
+	answers := make([]dns.RR, 0, len(recs))
+	for _, rec := range recs {
+		answers = append(answers, &dns.TXT{
+			Hdr: dns.RR_Header{
+				Name:   qname,
+				Rrtype: dns.TypeTXT,
+				Class:  dns.ClassINET,
+				Ttl:    rec.TTL,
+			},
+			Txt: []string{rec.Value},
+		})
+	}
+	return answers
 }
 
 // negativeReply sends an NXDOMAIN or NODATA response with the zone SOA in the

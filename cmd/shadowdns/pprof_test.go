@@ -73,6 +73,7 @@ func TestPProf_DisabledByDefault(t *testing.T) {
 
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    "127.0.0.1:0",
 		MetricsAddr:   addr,
 		Logger:        zap.NewNop(),
@@ -98,6 +99,7 @@ func TestPProf_EnabledViaFlag(t *testing.T) {
 
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    "127.0.0.1:0",
 		MetricsAddr:   addr,
 		PProfEnable:   true,
@@ -142,6 +144,7 @@ func TestPProf_SymbolResolvesPC(t *testing.T) {
 
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    "127.0.0.1:0",
 		MetricsAddr:   addr,
 		PProfEnable:   true,
@@ -174,6 +177,7 @@ func TestPProf_ConflictingFlags_FatalStartupError(t *testing.T) {
 
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    "127.0.0.1:0",
 		MetricsAddr:   "",
 		PProfEnable:   true,
@@ -195,6 +199,7 @@ func TestPProf_DefaultServeMuxNotPolluted(t *testing.T) {
 
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    "127.0.0.1:0",
 		MetricsAddr:   addr,
 		PProfEnable:   true,
@@ -222,6 +227,7 @@ func TestPProf_BlockAndMutexProfilesEmpty(t *testing.T) {
 
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    "127.0.0.1:0",
 		MetricsAddr:   addr,
 		PProfEnable:   true,

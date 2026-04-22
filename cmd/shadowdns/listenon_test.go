@@ -66,6 +66,7 @@ func TestRun_OverrideBranchUsesListenFlag(t *testing.T) {
 	logger, observed := newObservedLogger()
 	opts := runOptions{
 		NamedConfPath: namedConf,
+		ConfigPath:    filepath.Join(filepath.Dir(namedConf), "shadowdns.yaml"),
 		ListenAddr:    "127.0.0.1:0", // has host component → override
 		Logger:        logger,
 	}
@@ -105,6 +106,7 @@ func TestRun_ListenOnBranchBindsListenOnAddresses(t *testing.T) {
 	logger, observed := newObservedLogger()
 	opts := runOptions{
 		NamedConfPath: namedConf,
+		ConfigPath:    filepath.Join(filepath.Dir(namedConf), "shadowdns.yaml"),
 		ListenAddr:    ":0", // port hint only; listen-on drives host
 		Logger:        logger,
 	}
@@ -143,6 +145,7 @@ func TestRun_ReloadLogsListenAddrChangeHint(t *testing.T) {
 	logger, observed := newObservedLogger()
 	opts := runOptions{
 		NamedConfPath: namedConf,
+		ConfigPath:    filepath.Join(filepath.Dir(namedConf), "shadowdns.yaml"),
 		ListenAddr:    ":0",
 		Logger:        logger,
 	}

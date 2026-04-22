@@ -20,10 +20,13 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
+	"github.com/chenwei791129/ShadowDNS/internal/api"
 	"github.com/chenwei791129/ShadowDNS/internal/config"
+	"github.com/chenwei791129/ShadowDNS/internal/ephemeral"
 	"github.com/chenwei791129/ShadowDNS/internal/logging"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
+	"github.com/chenwei791129/ShadowDNS/internal/shadowdnscfg"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
 	"github.com/chenwei791129/ShadowDNS/internal/view"
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
@@ -52,18 +55,23 @@ func reload(
 		return fmt.Errorf("loading named.conf: %w", err)
 	}
 
-	aliases, err := config.LoadAliases(opts.AliasesPath, logger)
+	// On validation failure the early return leaves the running state —
+	// and the ephemeral store — untouched.
+	shadowCfg, err := shadowdnscfg.Load(opts.ConfigPath, logger)
 	if err != nil {
-		return fmt.Errorf("loading aliases: %w", err)
+		return fmt.Errorf("loading shadowdns config: %w", err)
 	}
 
 	prev := srv.CurrentState()
-	state, summary, err := server.BuildState(cfg, aliases, prev, opts.ReloadVerify, country, asn, logger)
+	state, summary, err := server.BuildState(cfg, shadowCfg.Aliases, prev, opts.ReloadVerify, country, asn, logger)
 	if err != nil {
 		return fmt.Errorf("building server state: %w", err)
 	}
 
 	srv.SwapState(state)
+	if srv.EphemeralStore != nil {
+		srv.EphemeralStore.Clear()
+	}
 	maybeDispatchNotifies(ctx, opts, cfg.Options.Notify, state.RootZones, logger)
 
 	// Detect listen-address drift between what is currently bound and what
@@ -109,7 +117,7 @@ const notifyDeadline = 10 * time.Second
 // Keeping these in a struct makes run() unit-testable without touching globals.
 type runOptions struct {
 	NamedConfPath string
-	AliasesPath   string
+	ConfigPath    string
 	ListenAddr    string
 	MetricsAddr   string
 	PProfEnable   bool
@@ -195,9 +203,10 @@ func newRootCmd() *cobra.Command {
 		Long: `shadowdns is an authoritative DNS server that reads zone data from a
 BIND-compatible named.conf and serves queries with view-based GeoIP routing.
 
-All flags are parsed once at startup. SIGHUP re-reads named.conf,
-aliases.yaml, and zone files from the paths recorded at startup, but
-does not re-parse flags — restart the process to change flag values.`,
+All flags are parsed once at startup. SIGHUP re-reads named.conf, the
+unified ShadowDNS config (--config), and zone files from the paths
+recorded at startup, but does not re-parse flags — restart the process
+to change flag values.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if showVersion {
@@ -234,7 +243,7 @@ does not re-parse flags — restart the process to change flag values.`,
 
 	f := cmd.Flags()
 	f.StringVar(&opts.NamedConfPath, "named-conf", "", "path to named.conf (required)")
-	f.StringVar(&opts.AliasesPath, "aliases", "", "path to aliases.yaml (optional; missing file is tolerated)")
+	f.StringVar(&opts.ConfigPath, "config", "", "path to unified ShadowDNS YAML config (required)")
 	f.StringVar(&opts.ListenAddr, "listen", ":53",
 		"UDP/TCP listen address. Forms with a host component (e.g. \"127.0.0.1:53\") override named.conf's listen-on. "+
 			"Forms without a host (\":PORT\") use the port from --listen but take listen-on addresses from named.conf; "+
@@ -269,6 +278,9 @@ func run(ctx context.Context, opts runOptions) error {
 	if opts.NamedConfPath == "" {
 		return errors.New("--named-conf is required")
 	}
+	if opts.ConfigPath == "" {
+		return errors.New("--config is required")
+	}
 	if opts.PProfEnable && opts.MetricsAddr == "" {
 		return errors.New("--pprof-enable requires --metrics-addr to be non-empty (pprof handlers mount on the metrics HTTP server)")
 	}
@@ -280,7 +292,7 @@ func run(ctx context.Context, opts runOptions) error {
 	logger.Sugar().Infow("shadowdns starting",
 		"version", version,
 		"named_conf", opts.NamedConfPath,
-		"aliases", opts.AliasesPath,
+		"config", opts.ConfigPath,
 		"listen", opts.ListenAddr,
 	)
 
@@ -293,9 +305,9 @@ func run(ctx context.Context, opts runOptions) error {
 		return errors.New("geoip-directory not set in named.conf options")
 	}
 
-	aliases, err := config.LoadAliases(opts.AliasesPath, logger)
+	shadowCfg, err := shadowdnscfg.Load(opts.ConfigPath, logger)
 	if err != nil {
-		return fmt.Errorf("loading aliases: %w", err)
+		return fmt.Errorf("loading shadowdns config: %w", err)
 	}
 
 	country, asn, err := view.LoadGeoIP(cfg.Options.GeoIPDirectory, logger)
@@ -311,21 +323,45 @@ func run(ctx context.Context, opts runOptions) error {
 		}
 	}()
 
-	state, _, err := server.BuildState(cfg, aliases, nil, opts.ReloadVerify, country, asn, logger)
+	state, _, err := server.BuildState(cfg, shadowCfg.Aliases, nil, opts.ReloadVerify, country, asn, logger)
 	if err != nil {
 		return fmt.Errorf("building server state: %w", err)
 	}
 
-	// --dry-run: count loaded zones, log summary, and exit without listening.
+	// --dry-run: load and validate the unified config (aliases + ephemeral_api),
+	// build zone state, log a summary, then exit without starting listeners or
+	// the API server. Validation errors from shadowdnscfg.Load above already
+	// caused an early return, so reaching here means the config is valid.
 	if opts.DryRun {
 		logger.Sugar().Infow("dry-run: configuration loaded successfully",
 			"views", len(cfg.Views),
 			"zones", state.ZoneCount(),
+			"ephemeral_api", shadowCfg.EphemeralAPI != nil,
 		)
 		return nil
 	}
 
+	// Ephemeral store lives for the process lifetime and is shared between
+	// the DNS handler and the API server. Keeping it outside ServerState
+	// means SIGHUP reload does not wipe it passively — the reload handler
+	// clears it explicitly only after a successful atomic swap.
+	ephemeralStore := ephemeral.NewStore()
+	go ephemeralStore.GC(ctx, ephemeral.DefaultGCInterval)
+
 	srv := server.NewServer(state, logger)
+	srv.EphemeralStore = ephemeralStore
+
+	// Ephemeral TXT HTTP API (optional — only started when the ephemeral_api
+	// section is present in the unified config).
+	if shadowCfg.EphemeralAPI != nil {
+		apiSrv := api.NewServer(shadowCfg.EphemeralAPI, ephemeralStore, logger)
+		go func() {
+			logger.Sugar().Infow("ephemeral API server starting", "listen", shadowCfg.EphemeralAPI.Listen)
+			if err := apiSrv.Run(ctx); err != nil {
+				logger.Sugar().Errorw("ephemeral API server exited with error", "err", err)
+			}
+		}()
+	}
 
 	// Prometheus metrics (disabled when --metrics-addr is empty).
 	if opts.MetricsAddr != "" {

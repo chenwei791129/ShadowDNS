@@ -8,6 +8,8 @@ import (
 
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
+
+	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
 )
 
 // AliasMap is a one-way lookup: backup domain (FQDN, lowercased, with trailing dot)
@@ -45,49 +47,71 @@ func LoadAliases(path string, logger *zap.Logger) (AliasMap, error) {
 		return nil, fmt.Errorf("reading aliases file %q: %w", path, err)
 	}
 
-	// Decode YAML into a raw map[string][]string.
 	var raw map[string][]string
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parsing aliases file %q: %w", path, err)
 	}
 
-	// An empty or null YAML document results in a nil map — treat as empty.
-	result := make(AliasMap, len(raw))
-
+	// Invert root→[backups] to backup→root. The YAML ordering of `backups`
+	// is preserved by yaml.v3, so "same backup under two different roots"
+	// still produces distinct successive writes; BuildAliasMap catches the
+	// conflict after normalization.
+	flat := make(map[string]string)
 	for root, backups := range raw {
-		normalizedRoot, err := normalizeDomain(root)
-		if err != nil {
-			return nil, fmt.Errorf("invalid root domain %q in aliases file %q: %w", root, path, err)
-		}
-
 		for _, backup := range backups {
-			normalizedBackup, err := normalizeDomain(backup)
-			if err != nil {
-				return nil, fmt.Errorf("invalid backup domain %q under root %q in aliases file %q: %w", backup, root, path, err)
-			}
-
-			// Reject self-aliases.
-			if normalizedBackup == normalizedRoot {
-				return nil, fmt.Errorf("self-alias not allowed: %q is listed as a backup of itself", normalizedRoot)
-			}
-
-			// Reject duplicate backups across different roots.
-			if existingRoot, exists := result[normalizedBackup]; exists && existingRoot != normalizedRoot {
+			if existing, dup := flat[backup]; dup && existing != root {
 				return nil, fmt.Errorf(
-					"backup domain %q is claimed by two roots: %q and %q",
-					normalizedBackup, existingRoot, normalizedRoot,
+					"aliases file %q: backup domain %q is claimed by two roots: %q and %q",
+					path, backup, existing, root,
 				)
 			}
-
-			result[normalizedBackup] = normalizedRoot
+			flat[backup] = root
 		}
 	}
-
+	result, err := BuildAliasMap(flat)
+	if err != nil {
+		return nil, fmt.Errorf("aliases file %q: %w", path, err)
+	}
 	return result, nil
 }
 
-// normalizeDomain converts a domain name to lowercase with a trailing dot.
-// It rejects empty strings and names containing whitespace.
+// BuildAliasMap validates and normalizes a raw backup→root map supplied by a
+// config loader (e.g., shadowdnscfg) and returns the canonical AliasMap.
+//
+// Returns an error when:
+//   - any domain is empty or contains whitespace,
+//   - the same backup domain (after normalization) is mapped to two different
+//     roots,
+//   - an entry lists a backup equal to its root (self-alias).
+func BuildAliasMap(raw map[string]string) (AliasMap, error) {
+	result := make(AliasMap, len(raw))
+	for backup, root := range raw {
+		normBackup, err := normalizeDomain(backup)
+		if err != nil {
+			return nil, fmt.Errorf("invalid backup domain %q: %w", backup, err)
+		}
+		normRoot, err := normalizeDomain(root)
+		if err != nil {
+			return nil, fmt.Errorf("invalid root domain %q for backup %q: %w", root, backup, err)
+		}
+		if normBackup == normRoot {
+			return nil, fmt.Errorf("self-alias not allowed: %q is listed as a backup of itself", normRoot)
+		}
+		if existingRoot, exists := result[normBackup]; exists && existingRoot != normRoot {
+			return nil, fmt.Errorf(
+				"backup domain %q is claimed by two roots: %q and %q",
+				normBackup, existingRoot, normRoot,
+			)
+		}
+		result[normBackup] = normRoot
+	}
+	return result, nil
+}
+
+// normalizeDomain validates a domain name and returns its canonical form
+// (lowercased, with a trailing dot). It rejects empty strings and names
+// containing whitespace before delegating the pure transformation to
+// dnsutil.Canonicalize.
 func normalizeDomain(name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("domain name must not be empty")
@@ -95,6 +119,5 @@ func normalizeDomain(name string) (string, error) {
 	if strings.ContainsAny(name, " \t\r\n") {
 		return "", fmt.Errorf("domain name %q must not contain whitespace", name)
 	}
-	normalized := strings.TrimSuffix(strings.ToLower(name), ".") + "."
-	return normalized, nil
+	return dnsutil.Canonicalize(name), nil
 }
