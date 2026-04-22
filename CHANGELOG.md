@@ -7,6 +7,20 @@
 * **cli:** add opt-in `--pprof-enable` flag that exposes Go pprof endpoints on the metrics HTTP server under `/debug/pprof/` (disabled by default)
 * **cli:** migrate command-line parsing to cobra. All flags now use POSIX-style double dashes (e.g. `--named-conf`, `--listen`, `--reload-verify`); `--version` gains a `-v` short alias shown as `-v, --version` in `--help`. The former `-reload` flag is replaced by the `shadowdns reload` subcommand, which accepts only `--named-conf`. Existing single-dash flag invocations (`-named-conf`, `-listen`, `-reload`, etc.) are no longer recognized — update systemd units, scripts, and wrappers accordingly.
 
+## [0.10.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.9.1...v0.10.0) (2026-04-22)
+
+
+### Features
+
+* **dns:** exact-match ephemeral TXT takes precedence over zone wildcard ([2b2d214](https://github.com/chenwei791129/ShadowDNS/commit/2b2d2145f7af9da2981555f257fc471718b60728))
+* ephemeral TXT HTTP API with multi-value support and unified config ([c63b891](https://github.com/chenwei791129/ShadowDNS/commit/c63b8917fa90a0c7c866c372b93cd24ec5f9ee5c))
+* **ephemeral:** add per-value DELETE and 255-byte value cap ([d571578](https://github.com/chenwei791129/ShadowDNS/commit/d571578363d4114daf987337f76721544ab78dcc))
+
+
+### Bug Fixes
+
+* **lint:** handle errcheck for Body.Close and f.Close ([bedeb4c](https://github.com/chenwei791129/ShadowDNS/commit/bedeb4cca88f629fb0a7ad40a4ad78c9f9b39e55))
+
 ## [0.9.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.9.0...v0.9.1) (2026-04-21)
 
 
