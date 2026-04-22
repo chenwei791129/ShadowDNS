@@ -10,20 +10,20 @@ TBD - created by archiving change 'ephemeral-txt-api'. Update Purpose after arch
 
 The shadowdns-config loader SHALL parse a single YAML file specified by the `--config` CLI flag. The file is a single YAML document containing the following top-level sections:
 
-- `aliases` (map[string]string, optional): Backup-to-root domain mapping. When the key is absent or the map is empty, no aliases are loaded.
+- `aliases` (`map[string][]string`, optional): Mapping from each root domain to its list of backup domains. When the key is absent or the map is empty, no aliases are loaded.
 - `ephemeral_api` (object, optional): Configuration for the ephemeral TXT API server. When the key is absent, the API server is not started.
 
-The loader SHALL use strict decoding: unknown top-level keys or unknown fields inside recognized sections SHALL cause a load error that identifies the offending key.
+The loader SHALL use strict decoding: unknown top-level keys or unknown fields inside recognized sections SHALL cause a load error that identifies the offending key. A value under `aliases` whose type is not a list of strings (for example, a bare string such as `backup.com: root.com`) SHALL be rejected by the YAML decoder as a type mismatch.
 
 #### Scenario: Valid config with both sections
 
-- **WHEN** the config file contains `aliases: {backup.com: root.com}` and `ephemeral_api: {listen: "127.0.0.1:8053", allow: ["10.0.0.5"]}`
-- **THEN** the loader SHALL return a config where the alias map has one entry and `ephemeral_api` is populated
+- **WHEN** the config file contains `aliases: {root.com: [backup.com]}` and `ephemeral_api: {listen: "127.0.0.1:8053", allow: ["10.0.0.5"]}`
+- **THEN** the loader SHALL return a config where the alias map has one entry `{backup.com. -> root.com.}` and `ephemeral_api` is populated
 
 #### Scenario: Aliases-only config
 
-- **WHEN** the config file contains `aliases: {backup.com: root.com}` and no `ephemeral_api` key
-- **THEN** the loader SHALL return a config with the alias map populated and `ephemeral_api` marked as disabled
+- **WHEN** the config file contains `aliases: {root.com: [backup.com, mirror.com]}` and no `ephemeral_api` key
+- **THEN** the loader SHALL return a config with the alias map populated with both backup entries and `ephemeral_api` marked as disabled
 
 #### Scenario: Ephemeral-API-only config
 
@@ -34,6 +34,11 @@ The loader SHALL use strict decoding: unknown top-level keys or unknown fields i
 
 - **WHEN** the config file contains `aliases: {}`
 - **THEN** the loader SHALL return a config with an empty alias map and no error
+
+#### Scenario: Legacy one-to-one aliases format is rejected
+
+- **WHEN** the config file contains `aliases: {backup.com: root.com}` (a bare string value under a root key)
+- **THEN** the loader SHALL return a YAML decoding error identifying the type mismatch; the server SHALL NOT start with the partial configuration
 
 #### Scenario: Unknown top-level key fails
 
@@ -47,185 +52,95 @@ The loader SHALL use strict decoding: unknown top-level keys or unknown fields i
 
 
 <!-- @trace
-source: ephemeral-txt-api
+source: aliases-root-to-backups-schema
 updated: 2026-04-22
 code:
-  - docs/ephemeral-api.md
-  - go.sum
-  - .release-please-manifest.json
-  - cmd/shadowdns/main.go
-  - internal/transfer/notify.go
-  - internal/config/zones.go
-  - Makefile
   - scripts/smoke.sh
-  - internal/ephemeral/store.go
-  - go.mod
-  - docs/benchmark.md
-  - scripts/gen-container-testdata.go
-  - testdata/integration/master/example.com_view-other.fwd
-  - internal/server/server.go
-  - internal/server/listener.go
-  - cmd/shadowdns/pprof.go
-  - internal/view/loader.go
-  - internal/shadowdnscfg/config.go
-  - internal/zone/parser.go
-  - internal/server/handler.go
-  - internal/alias/override.go
-  - .github/workflows/release-please.yml
-  - CLAUDE.md
-  - internal/server/listenaddr.go
-  - internal/zone/classify.go
-  - CHANGELOG.md
-  - testdata/integration/master/example.com_view-th.fwd
-  - cmd/shadowdns/reload.go
-  - internal/transfer/axfr.go
-  - internal/zone/zone.go
-  - internal/config/options.go
-  - packaging/shadowdns.service
-  - internal/api/server.go
-  - packaging/shadowdns.yaml.example
-  - packaging/aliases.yaml.example
-  - packaging/named.conf.example
+  - testdata/integration/README.md
   - internal/server/build.go
   - internal/config/aliases.go
-  - scripts/test-deb.sh
-  - nfpm.yaml
-  - internal/server/fingerprint.go
-  - internal/logging/logger.go
-  - docs/migration.md
+  - .release-please-manifest.json
+  - scripts/gen-container-testdata.go
+  - docs/benchmark.md
+  - testdata/integration/aliases.yaml
+  - CHANGELOG.md
+  - CLAUDE.md
+  - internal/shadowdnscfg/config.go
   - README.md
+  - testdata/integration/shadowdns.yaml
+  - .spectra.yaml
+  - packaging/shadowdns.yaml.example
+  - scripts/test-deb.sh
 tests:
-  - cmd/shadowdns/main_ephemeral_test.go
-  - test/integration/notify_test.go
-  - internal/server/server_test.go
-  - test/integration/negative_test.go
-  - internal/transfer/axfr_test.go
-  - internal/ephemeral/store_test.go
-  - internal/zone/classify_test.go
-  - internal/zone/parser_test.go
-  - internal/config/aliases_test.go
-  - cmd/shadowdns/listenon_test.go
-  - cmd/shadowdns/pprof_test.go
-  - cmd/shadowdns/main_test.go
-  - internal/api/server_test.go
-  - internal/config/zones_test.go
-  - internal/server/fingerprint_test.go
-  - test/integration/axfr_test.go
-  - internal/logging/logger_test.go
-  - test/integration/helpers_test.go
-  - internal/view/loader_test.go
   - test/integration/reload_diff_test.go
-  - test/integration/cname_following_test.go
+  - cmd/shadowdns/main_ephemeral_test.go
+  - internal/config/aliases_test.go
   - internal/shadowdnscfg/config_test.go
-  - internal/alias/override_test.go
-  - internal/server/handler_ephemeral_test.go
-  - internal/zone/zone_test.go
-  - internal/transfer/notify_test.go
-  - internal/server/listenaddr_test.go
-  - internal/server/build_test.go
-  - internal/config/options_test.go
+  - test/integration/axfr_test.go
   - test/integration/listenon_test.go
-  - test/integration/wildcard_test.go
-  - test/integration/cname_synthesis_test.go
+  - test/integration/helpers_test.go
 -->
 
 ---
 ### Requirement: Validate aliases section
 
-The loader SHALL validate the `aliases` section with the same rules that previously applied to `aliases.yaml`: duplicate backup keys are a parse error, and self-alias entries (where backup equals root) are a parse error.
+The loader SHALL validate the `aliases` section with the same semantic rules that previously applied to the legacy `aliases.yaml` file. After YAML decoding, the loader SHALL flatten the `map[root][]backup` structure into a normalized backup-to-root map; during flattening the loader SHALL reject the following conditions:
 
-#### Scenario: Duplicate backup key fails
+- The same backup domain (after normalization) appears under two different root keys.
+- A backup domain is listed under a root key whose value (after normalization) equals that backup domain (self-alias).
+- Any backup entry or root key is empty or contains whitespace.
 
-- **WHEN** the `aliases` section contains the same backup domain twice with different root targets
-- **THEN** the loader SHALL return an error naming the duplicate backup domain
+An empty list of backups under a root key SHALL be accepted and contribute no entries to the alias map.
+
+#### Scenario: Duplicate backup under different roots fails
+
+- **WHEN** the `aliases` section contains `root-a.com: [shared.com]` and `root-b.com: [shared.com]`
+- **THEN** the loader SHALL return an error naming the duplicate backup domain and both root keys
 
 #### Scenario: Self-alias entry fails
 
-- **WHEN** the `aliases` section contains an entry where backup equals root (e.g., `example.com: example.com`)
+- **WHEN** the `aliases` section contains an entry where a backup equals its root (e.g., `example.com: [example.com]`)
 - **THEN** the loader SHALL return an error naming the self-alias entry
+
+#### Scenario: Empty backup list is accepted
+
+- **WHEN** the `aliases` section contains `root.com: []`
+- **THEN** the loader SHALL accept the entry and the resulting alias map SHALL contain no mappings for `root.com`
+
+#### Scenario: Multiple backups under one root are all mapped to that root
+
+- **WHEN** the `aliases` section contains `root.com: [backup.com, mirror.com, shadow.com]`
+- **THEN** the loader SHALL return an alias map with three entries all pointing to `root.com.`
 
 
 <!-- @trace
-source: ephemeral-txt-api
+source: aliases-root-to-backups-schema
 updated: 2026-04-22
 code:
-  - docs/ephemeral-api.md
-  - go.sum
-  - .release-please-manifest.json
-  - cmd/shadowdns/main.go
-  - internal/transfer/notify.go
-  - internal/config/zones.go
-  - Makefile
   - scripts/smoke.sh
-  - internal/ephemeral/store.go
-  - go.mod
-  - docs/benchmark.md
-  - scripts/gen-container-testdata.go
-  - testdata/integration/master/example.com_view-other.fwd
-  - internal/server/server.go
-  - internal/server/listener.go
-  - cmd/shadowdns/pprof.go
-  - internal/view/loader.go
-  - internal/shadowdnscfg/config.go
-  - internal/zone/parser.go
-  - internal/server/handler.go
-  - internal/alias/override.go
-  - .github/workflows/release-please.yml
-  - CLAUDE.md
-  - internal/server/listenaddr.go
-  - internal/zone/classify.go
-  - CHANGELOG.md
-  - testdata/integration/master/example.com_view-th.fwd
-  - cmd/shadowdns/reload.go
-  - internal/transfer/axfr.go
-  - internal/zone/zone.go
-  - internal/config/options.go
-  - packaging/shadowdns.service
-  - internal/api/server.go
-  - packaging/shadowdns.yaml.example
-  - packaging/aliases.yaml.example
-  - packaging/named.conf.example
+  - testdata/integration/README.md
   - internal/server/build.go
   - internal/config/aliases.go
-  - scripts/test-deb.sh
-  - nfpm.yaml
-  - internal/server/fingerprint.go
-  - internal/logging/logger.go
-  - docs/migration.md
+  - .release-please-manifest.json
+  - scripts/gen-container-testdata.go
+  - docs/benchmark.md
+  - testdata/integration/aliases.yaml
+  - CHANGELOG.md
+  - CLAUDE.md
+  - internal/shadowdnscfg/config.go
   - README.md
+  - testdata/integration/shadowdns.yaml
+  - .spectra.yaml
+  - packaging/shadowdns.yaml.example
+  - scripts/test-deb.sh
 tests:
-  - cmd/shadowdns/main_ephemeral_test.go
-  - test/integration/notify_test.go
-  - internal/server/server_test.go
-  - test/integration/negative_test.go
-  - internal/transfer/axfr_test.go
-  - internal/ephemeral/store_test.go
-  - internal/zone/classify_test.go
-  - internal/zone/parser_test.go
-  - internal/config/aliases_test.go
-  - cmd/shadowdns/listenon_test.go
-  - cmd/shadowdns/pprof_test.go
-  - cmd/shadowdns/main_test.go
-  - internal/api/server_test.go
-  - internal/config/zones_test.go
-  - internal/server/fingerprint_test.go
-  - test/integration/axfr_test.go
-  - internal/logging/logger_test.go
-  - test/integration/helpers_test.go
-  - internal/view/loader_test.go
   - test/integration/reload_diff_test.go
-  - test/integration/cname_following_test.go
+  - cmd/shadowdns/main_ephemeral_test.go
+  - internal/config/aliases_test.go
   - internal/shadowdnscfg/config_test.go
-  - internal/alias/override_test.go
-  - internal/server/handler_ephemeral_test.go
-  - internal/zone/zone_test.go
-  - internal/transfer/notify_test.go
-  - internal/server/listenaddr_test.go
-  - internal/server/build_test.go
-  - internal/config/options_test.go
+  - test/integration/axfr_test.go
   - test/integration/listenon_test.go
-  - test/integration/wildcard_test.go
-  - test/integration/cname_synthesis_test.go
+  - test/integration/helpers_test.go
 -->
 
 ---

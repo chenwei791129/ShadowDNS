@@ -146,25 +146,33 @@ The `.deb` package SHALL install example configuration files under `/etc/shadowd
 
 
 <!-- @trace
-source: deb-packaging
-updated: 2026-04-14
+source: aliases-root-to-backups-schema
+updated: 2026-04-22
 code:
-  - packaging/named.conf.example
-  - Makefile
-  - cmd/shadowdns/main.go
-  - packaging/postinstall.sh
-  - nfpm.yaml
+  - scripts/smoke.sh
+  - testdata/integration/README.md
+  - internal/server/build.go
+  - internal/config/aliases.go
+  - .release-please-manifest.json
   - scripts/gen-container-testdata.go
-  - go.sum
+  - docs/benchmark.md
+  - testdata/integration/aliases.yaml
+  - CHANGELOG.md
+  - CLAUDE.md
+  - internal/shadowdnscfg/config.go
+  - README.md
+  - testdata/integration/shadowdns.yaml
+  - .spectra.yaml
+  - packaging/shadowdns.yaml.example
   - scripts/test-deb.sh
-  - go.mod
-  - packaging/aliases.yaml.example
-  - internal/config/options.go
-  - packaging/shadowdns.service
-  - internal/server/listener.go
 tests:
-  - cmd/shadowdns/main_test.go
-  - internal/config/options_test.go
+  - test/integration/reload_diff_test.go
+  - cmd/shadowdns/main_ephemeral_test.go
+  - internal/config/aliases_test.go
+  - internal/shadowdnscfg/config_test.go
+  - test/integration/axfr_test.go
+  - test/integration/listenon_test.go
+  - test/integration/helpers_test.go
 -->
 
 ---

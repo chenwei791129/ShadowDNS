@@ -32,4 +32,4 @@
 
 - [x] 6.1 Run `make test` and confirm the race-enabled suite passes end-to-end with the new loader and fixture.
 - [x] 6.2 Run `make lint` and `make smoke`.
-- [ ] 6.3 Execute the Migration Plan from `design.md`: on `bench-ns2`, rewrite `/etc/shadowdns/shadowdns.yaml` `aliases` section to the `root: [backups]` structure before deploying the new binary via the `release-shadowdns` skill; verify `systemctl status shadowdns` and `journalctl -u shadowdns -n 100` show a clean startup.
+- [x] 6.3 Execute the Migration Plan from `design.md`: on `bench-ns2`, rewrite `/etc/shadowdns/shadowdns.yaml` `aliases` section to the `root: [backups]` structure before deploying the new binary via the `release-shadowdns` skill; verify `systemctl status shadowdns` and `journalctl -u shadowdns -n 100` show a clean startup.
