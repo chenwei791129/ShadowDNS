@@ -48,6 +48,15 @@ mkdir -p "${SMOKE_DIR}"
 cp    "${FIXTURE_SRC}/named.conf"    "${SMOKE_DIR}/named.conf"
 cp    "${FIXTURE_SRC}/master.zones"  "${SMOKE_DIR}/master.zones"
 cp    "${FIXTURE_SRC}/aliases.yaml"  "${SMOKE_DIR}/aliases.yaml"
+
+# Generate a minimal unified shadowdns.yaml for --config. The historical
+# standalone aliases.yaml used `root: [backups]` shape; the unified schema
+# uses `aliases: {backup: root}`. Convert by inverting — testdata ships only
+# `example.com: [backup.example]`, so the inverted map is a single entry.
+cat > "${SMOKE_DIR}/shadowdns.yaml" <<'YAML'
+aliases:
+  backup.example: example.com
+YAML
 # Recursively copy the full master/ tree (zone files plus include fragments
 # that may live in subdirectories such as cnames/).
 cp -R "${FIXTURE_SRC}/master"        "${SMOKE_DIR}/master"
@@ -158,7 +167,7 @@ OUTPUT_FILE="${SMOKE_DIR}/dry_run_output.txt"
 # Run with time; capture combined output.
 "${TIME_CMD}" ${TIME_ARGS} "${BINARY}" \
 	--named-conf "${SMOKE_DIR}/named.conf" \
-	--aliases    "${SMOKE_DIR}/aliases.yaml" \
+	--config     "${SMOKE_DIR}/shadowdns.yaml" \
 	--dry-run    \
 	2>&1 | tee "${OUTPUT_FILE}"
 
