@@ -515,6 +515,90 @@ tests:
   - internal/transfer/notify_test.go
 -->
 
+
+<!-- @trace
+source: ephemeral-txt-api
+updated: 2026-04-22
+code:
+  - docs/ephemeral-api.md
+  - go.sum
+  - .release-please-manifest.json
+  - cmd/shadowdns/main.go
+  - internal/transfer/notify.go
+  - internal/config/zones.go
+  - Makefile
+  - scripts/smoke.sh
+  - internal/ephemeral/store.go
+  - go.mod
+  - docs/benchmark.md
+  - scripts/gen-container-testdata.go
+  - testdata/integration/master/example.com_view-other.fwd
+  - internal/server/server.go
+  - internal/server/listener.go
+  - cmd/shadowdns/pprof.go
+  - internal/view/loader.go
+  - internal/shadowdnscfg/config.go
+  - internal/zone/parser.go
+  - internal/server/handler.go
+  - internal/alias/override.go
+  - .github/workflows/release-please.yml
+  - CLAUDE.md
+  - internal/server/listenaddr.go
+  - internal/zone/classify.go
+  - CHANGELOG.md
+  - testdata/integration/master/example.com_view-th.fwd
+  - cmd/shadowdns/reload.go
+  - internal/transfer/axfr.go
+  - internal/zone/zone.go
+  - internal/config/options.go
+  - packaging/shadowdns.service
+  - internal/api/server.go
+  - packaging/shadowdns.yaml.example
+  - packaging/aliases.yaml.example
+  - packaging/named.conf.example
+  - internal/server/build.go
+  - internal/config/aliases.go
+  - scripts/test-deb.sh
+  - nfpm.yaml
+  - internal/server/fingerprint.go
+  - internal/logging/logger.go
+  - docs/migration.md
+  - README.md
+tests:
+  - cmd/shadowdns/main_ephemeral_test.go
+  - test/integration/notify_test.go
+  - internal/server/server_test.go
+  - test/integration/negative_test.go
+  - internal/transfer/axfr_test.go
+  - internal/ephemeral/store_test.go
+  - internal/zone/classify_test.go
+  - internal/zone/parser_test.go
+  - internal/config/aliases_test.go
+  - cmd/shadowdns/listenon_test.go
+  - cmd/shadowdns/pprof_test.go
+  - cmd/shadowdns/main_test.go
+  - internal/api/server_test.go
+  - internal/config/zones_test.go
+  - internal/server/fingerprint_test.go
+  - test/integration/axfr_test.go
+  - internal/logging/logger_test.go
+  - test/integration/helpers_test.go
+  - internal/view/loader_test.go
+  - test/integration/reload_diff_test.go
+  - test/integration/cname_following_test.go
+  - internal/shadowdnscfg/config_test.go
+  - internal/alias/override_test.go
+  - internal/server/handler_ephemeral_test.go
+  - internal/zone/zone_test.go
+  - internal/transfer/notify_test.go
+  - internal/server/listenaddr_test.go
+  - internal/server/build_test.go
+  - internal/config/options_test.go
+  - test/integration/listenon_test.go
+  - test/integration/wildcard_test.go
+  - test/integration/cname_synthesis_test.go
+-->
+
 ### Requirement: Reject unsupported named.conf directives at startup
 
 The config-loader SHALL reject directives that would change DNS behavior in ways ShadowDNS does not implement (e.g., `dnssec-enable yes;`, `allow-update { ... };`, `zone { type forward; };`, `zone { type slave; };`) by returning a fatal error that names the unsupported directive and its location.
@@ -715,27 +799,32 @@ The config-loader SHALL emit a warning when a view declares `match-clients { any
 ---
 ### Requirement: Parse aliases.yaml
 
-The config-loader SHALL parse an `aliases.yaml` file that declares root-to-backup domain mappings. The file path SHALL be configurable via command-line flag. The YAML structure SHALL be a top-level mapping from root domain name to a list of backup domain names.
+The config-loader SHALL obtain the root-to-backup alias map from the `aliases` section of the unified ShadowDNS YAML configuration file loaded via the `shadowdns-config` capability, not from a standalone `aliases.yaml` file. The `--aliases` CLI flag SHALL NOT be accepted: because the flag is not registered in the cobra command, passing `--aliases` SHALL cause the server binary to fail to start with cobra's standard `unknown flag: --aliases` error. The alias-map data shape and the duplicate/self-alias rejection rules SHALL remain unchanged; only the source file and loader entry point move.
 
-#### Scenario: Well-formed aliases.yaml produces alias map
+#### Scenario: Well-formed aliases section produces alias map
 
-- **WHEN** `aliases.yaml` contains `root.com: [backup.com, mirror.com]`
+- **WHEN** the unified config file contains `aliases: {backup.com: root.com, mirror.com: root.com}`
 - **THEN** the loader produces a map `{backup.com → root.com, mirror.com → root.com}`
 
 #### Scenario: Backup appearing under two roots is rejected
 
-- **WHEN** `aliases.yaml` declares the same backup domain under two different roots
+- **WHEN** the `aliases` section declares the same backup domain under two different roots
 - **THEN** the loader returns an error citing both root entries
 
 #### Scenario: Backup domain equal to root domain is rejected
 
-- **WHEN** `aliases.yaml` lists `root.com` as a backup of itself
+- **WHEN** the `aliases` section lists `root.com: root.com`
 - **THEN** the loader returns an error
 
-#### Scenario: Missing aliases.yaml is tolerated
+#### Scenario: Missing aliases section yields empty map
 
-- **WHEN** the `-aliases` flag is not provided or the file does not exist
+- **WHEN** the unified config file omits the `aliases` key
 - **THEN** the loader returns an empty alias map AND logs an info message; the server still starts normally
+
+#### Scenario: `--aliases` flag is rejected
+
+- **WHEN** the server is started with `--aliases /etc/shadowdns/aliases.yaml`
+- **THEN** the server SHALL fail to start with cobra's `unknown flag: --aliases` error; operators are expected to provide aliases via `--config` instead
 
 ---
 ### Requirement: Reject unsupported named.conf directives at startup

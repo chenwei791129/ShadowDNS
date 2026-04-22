@@ -2,7 +2,7 @@
 
 ### Requirement: Load unified ShadowDNS configuration from a YAML file
 
-The shadowdns-config loader SHALL parse a single YAML file specified by the `-config` CLI flag. The file is a single YAML document containing the following top-level sections:
+The shadowdns-config loader SHALL parse a single YAML file specified by the `--config` CLI flag. The file is a single YAML document containing the following top-level sections:
 
 - `aliases` (map[string]string, optional): Backup-to-root domain mapping. When the key is absent or the map is empty, no aliases are loaded.
 - `ephemeral_api` (object, optional): Configuration for the ephemeral TXT API server. When the key is absent, the API server is not started.
@@ -36,7 +36,7 @@ The loader SHALL use strict decoding: unknown top-level keys or unknown fields i
 
 #### Scenario: Config file does not exist
 
-- **WHEN** the path passed to `-config` does not exist
+- **WHEN** the path passed to `--config` does not exist
 - **THEN** the loader SHALL return an error identifying the missing file path
 
 ### Requirement: Validate aliases section
@@ -98,7 +98,7 @@ When the `ephemeral_api` section is present, the loader SHALL validate the follo
 
 ### Requirement: Atomic reload of unified config on SIGHUP
 
-On SIGHUP reload, the server SHALL re-read the file passed via `-config`, validate every section, and swap to the new configuration only when all sections pass validation. If any section fails validation, the server SHALL retain the previous configuration and log an error identifying the failing section and reason. The ephemeral record store SHALL be cleared only after a successful swap.
+On SIGHUP reload, the server SHALL re-read the file passed via `--config`, validate every section, and swap to the new configuration only when all sections pass validation. If any section fails validation, the server SHALL retain the previous configuration and log an error identifying the failing section and reason. The ephemeral record store SHALL be cleared only after a successful swap.
 
 #### Scenario: Reload succeeds when all sections valid
 

@@ -2,61 +2,79 @@
 
 ### Requirement: HTTP API server listens on a configured address
 
-The API server SHALL listen on the address specified in the `ephemeral_api.listen` field of the unified ShadowDNS YAML configuration file loaded via `-config`. The server SHALL start only when the `ephemeral_api` section is present in the config file. When the section is absent, no API server SHALL be started.
+The API server SHALL listen on the address specified in the `ephemeral_api.listen` field of the unified ShadowDNS YAML configuration file loaded via `--config`. The server SHALL start only when the `ephemeral_api` section is present in the config file. When the section is absent, no API server SHALL be started.
 
 #### Scenario: API server starts on configured address
 
-- **WHEN** ShadowDNS is started with `-config /etc/shadowdns/shadowdns.yaml` and the file contains `ephemeral_api: {listen: "127.0.0.1:8053", allow: ["10.0.0.5"]}`
+- **WHEN** ShadowDNS is started with `--config /etc/shadowdns/shadowdns.yaml` and the file contains `ephemeral_api: {listen: "127.0.0.1:8053", allow: ["10.0.0.5"]}`
 - **THEN** the API server SHALL accept HTTP connections on `127.0.0.1:8053`
 
 #### Scenario: API server is not started when ephemeral_api section is absent
 
-- **WHEN** ShadowDNS is started with a `-config` file that omits the `ephemeral_api` section
+- **WHEN** ShadowDNS is started with a `--config` file that omits the `ephemeral_api` section
 - **THEN** no HTTP API server SHALL be started and no API port SHALL be bound
 
-### Requirement: PUT endpoint creates or updates an ephemeral TXT record
+### Requirement: PUT endpoint adds or refreshes an ephemeral TXT value
 
 The API SHALL accept `PUT /v1/txt/{fqdn}` with a JSON body containing `value` (string) and `ttl` (integer, seconds). The FQDN path parameter SHALL be canonicalized to lowercase with a trailing dot. The TTL SHALL be clamped to the range [1, 3600]. On success, the API SHALL respond with HTTP 200 and a JSON body confirming the operation.
 
+PUT SHALL support multiple distinct values per FQDN. When the posted value does not match any existing entry under the FQDN, the API SHALL append a new entry. When the posted value matches an existing entry exactly, the API SHALL refresh that entry's expiration using the new TTL instead of creating a duplicate. The operation SHALL remain idempotent: two consecutive identical PUT calls SHALL produce the same final state as a single call.
+
+The response body SHALL include the canonical FQDN, the clamped TTL applied to the affected entry, and the total number of ephemeral entries currently held for that FQDN.
+
 #### Scenario: Create a new ephemeral TXT record
 
-- **WHEN** a PUT request is sent to `/v1/txt/_acme-challenge.example.com` with body `{"value": "token123", "ttl": 120}`
-- **THEN** the API SHALL respond with HTTP 200 and body `{"status": "ok", "fqdn": "_acme-challenge.example.com.", "ttl": 120}`
+- **WHEN** a PUT request is sent to `/v1/txt/_acme-challenge.example.com` with body `{"value": "token123", "ttl": 120}` and no prior entries exist for that FQDN
+- **THEN** the API SHALL respond with HTTP 200 and body `{"status": "ok", "fqdn": "_acme-challenge.example.com.", "ttl": 120, "count": 1}`
 - **THEN** a DNS TXT query for `_acme-challenge.example.com.` SHALL return `token123`
 
-#### Scenario: Update an existing ephemeral TXT record
+#### Scenario: PUT a second distinct value appends an entry
 
-- **WHEN** an ephemeral TXT record for `_acme-challenge.example.com.` already exists and a PUT request is sent with a new value
-- **THEN** the API SHALL overwrite the existing record and respond with HTTP 200
+- **WHEN** an ephemeral entry with value `token-A` already exists for `_acme-challenge.example.com.` and a PUT request is sent with body `{"value": "token-B", "ttl": 120}`
+- **THEN** the API SHALL respond with HTTP 200 and body whose `count` is `2`
+- **THEN** a DNS TXT query for that FQDN SHALL return both `token-A` and `token-B`
+
+#### Scenario: PUT with the same value refreshes the existing entry
+
+- **WHEN** an ephemeral entry with value `token-A` and remaining TTL 30 exists for `_acme-challenge.example.com.` and a PUT request is sent with body `{"value": "token-A", "ttl": 300}`
+- **THEN** the API SHALL respond with HTTP 200 and body whose `count` is `1`
+- **THEN** a subsequent DNS TXT query SHALL return `token-A` with TTL approximately 300 (not 30)
 
 #### Scenario: TTL below minimum is clamped to 1
 
 - **WHEN** a PUT request specifies `"ttl": 0`
-- **THEN** the API SHALL store the record with TTL 1 and respond with `"ttl": 1`
+- **THEN** the API SHALL store the entry with TTL 1 and respond with `"ttl": 1`
 
 #### Scenario: TTL above maximum is clamped to 3600
 
 - **WHEN** a PUT request specifies `"ttl": 7200`
-- **THEN** the API SHALL store the record with TTL 3600 and respond with `"ttl": 3600`
+- **THEN** the API SHALL store the entry with TTL 3600 and respond with `"ttl": 3600`
 
 #### Scenario: Missing or invalid JSON body returns 400
 
 - **WHEN** a PUT request has an empty body, invalid JSON, or missing `value` field
 - **THEN** the API SHALL respond with HTTP 400 and a JSON error message
 
-### Requirement: DELETE endpoint removes an ephemeral TXT record
+### Requirement: DELETE endpoint removes all ephemeral TXT entries for an FQDN
 
-The API SHALL accept `DELETE /v1/txt/{fqdn}`. The FQDN SHALL be canonicalized to lowercase with a trailing dot. On success (including when the record does not exist), the API SHALL respond with HTTP 200.
+The API SHALL accept `DELETE /v1/txt/{fqdn}`. The FQDN SHALL be canonicalized to lowercase with a trailing dot. DELETE SHALL remove every ephemeral entry for that FQDN in a single operation regardless of how many distinct values are currently stored. The API SHALL NOT accept a per-value selector — value-specific deletion is explicitly out of scope. DELETE SHALL only touch the ephemeral record store; TXT records served from zone files SHALL be unaffected. On success (including when no ephemeral entries exist for the FQDN), the API SHALL respond with HTTP 200.
 
-#### Scenario: Delete an existing ephemeral TXT record
+#### Scenario: Delete removes every ephemeral entry for the FQDN
 
-- **WHEN** a DELETE request is sent to `/v1/txt/_acme-challenge.example.com` and the record exists
-- **THEN** the API SHALL remove the record and respond with HTTP 200
+- **WHEN** two ephemeral entries exist for `_acme-challenge.example.com.` (values `token-A` and `token-B`) and a DELETE request is sent to `/v1/txt/_acme-challenge.example.com`
+- **THEN** the API SHALL respond with HTTP 200
+- **THEN** a subsequent DNS TXT query SHALL not return either ephemeral value
 
 #### Scenario: Delete a non-existent record returns 200
 
 - **WHEN** a DELETE request is sent for an FQDN that has no ephemeral record
 - **THEN** the API SHALL respond with HTTP 200 (idempotent delete)
+
+#### Scenario: Delete does not affect zone file records
+
+- **WHEN** a zone file defines a TXT record for `_acme-challenge.example.com.` with value `static-value`, an ephemeral entry with value `token-A` has been added via the API, and a DELETE request is sent for that FQDN
+- **THEN** the API SHALL respond with HTTP 200
+- **THEN** a subsequent DNS TXT query SHALL still return `static-value` from the zone file
 
 ### Requirement: IP ACL enforces source IP restriction
 

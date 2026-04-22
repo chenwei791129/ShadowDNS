@@ -6,6 +6,8 @@ The dns-server SHALL bind both UDP and TCP listeners on the configured address (
 
 When an ephemeral record store is attached to the server, the DNS handler SHALL consult the ephemeral store after a zone lookup returns no results and before sending a negative reply. Zone file records SHALL take precedence over ephemeral records: the ephemeral store is only consulted when the zone lookup produces no matching records for the queried name and type.
 
+When the ephemeral store holds multiple unexpired TXT entries for the queried FQDN, the server SHALL return them as a single TXT RRSet — one TXT RR per entry, all sharing the same owner name, each with its own remaining-TTL value. Each entry's TXT value SHALL be encoded as a single string inside its own RR rather than concatenated into one RR.
+
 The TTL value in ephemeral record responses SHALL be the remaining seconds until expiration (minimum 1 second). The Authoritative Answer (AA) flag SHALL be set on responses containing ephemeral records, consistent with zone-based responses.
 
 #### Scenario: UDP query receives response
@@ -42,3 +44,8 @@ The TTL value in ephemeral record responses SHALL be the remaining seconds until
 
 - **WHEN** a DNS A query arrives for an FQDN that only has an ephemeral TXT record
 - **THEN** the ephemeral store lookup SHALL return no result and the server SHALL send a negative reply
+
+#### Scenario: Multiple ephemeral TXT entries are returned as separate RRs
+
+- **WHEN** two ephemeral TXT entries exist for `_acme-challenge.example.com.` with values `token-A` (90 s remaining) and `token-B` (250 s remaining), and the zone file has no record for that name, and a DNS TXT query arrives
+- **THEN** the server SHALL return both entries in the answer section as two separate TXT RRs — one for each value — each with its own remaining TTL (90 and 250 respectively) and the AA flag set
