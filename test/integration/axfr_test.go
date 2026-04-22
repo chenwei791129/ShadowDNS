@@ -91,36 +91,28 @@ func axfrServerWithACL(t *testing.T, aclEntries []string) (*server.Server, func(
 	state.AllowTransferACL = acl
 
 	srv := server.NewServer(state, logger)
-	ctx, cancel := context.WithCancel(context.Background())
 
-	ready := make(chan struct{})
+	// UDPAddr()/TCPAddr() reads must not race the Serve goroutine writing s.listeners.
+	if err := srv.Bind("127.0.0.1:0"); err != nil {
+		_ = country.Close()
+		_ = asnDB.Close()
+		t.Fatalf("srv.Bind: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	go func() {
-		close(ready)
-		if err := srv.Start(ctx, "127.0.0.1:0"); err != nil && ctx.Err() == nil {
+		defer close(done)
+		if err := srv.Serve(ctx); err != nil && ctx.Err() == nil {
 			t.Logf("server exited: %v", err)
 		}
 	}()
-	<-ready
-	// Wait until both listeners are bound.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if srv.UDPAddr() != nil && srv.TCPAddr() != nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if srv.TCPAddr() == nil {
-		cancel()
-		_ = country.Close()
-		_ = asnDB.Close()
-		t.Fatal("server did not bind within 500ms")
-	}
 
 	teardown := func() {
 		cancel()
+		<-done
 		_ = country.Close()
 		_ = asnDB.Close()
-		time.Sleep(20 * time.Millisecond)
 	}
 	return srv, teardown
 }

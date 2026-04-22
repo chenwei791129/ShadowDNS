@@ -86,24 +86,28 @@ func newTestServer(t *testing.T) (*server.Server, func()) {
 	}
 
 	srv := server.NewServer(state, logger)
-	ctx, cancel := context.WithCancel(context.Background())
 
-	ready := make(chan struct{})
+	// UDPAddr() reads must not race the Serve goroutine writing s.listeners.
+	if err := srv.Bind("127.0.0.1:0"); err != nil {
+		_ = country.Close()
+		_ = asn.Close()
+		t.Fatalf("srv.Bind: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	go func() {
-		close(ready)
-		if err := srv.Start(ctx, "127.0.0.1:0"); err != nil && ctx.Err() == nil {
+		defer close(done)
+		if err := srv.Serve(ctx); err != nil && ctx.Err() == nil {
 			t.Logf("server exited: %v", err)
 		}
 	}()
-	<-ready
-	// Give ActivateAndServe a moment to start accepting packets.
-	time.Sleep(30 * time.Millisecond)
 
 	teardown := func() {
 		cancel()
+		<-done
 		_ = country.Close()
 		_ = asn.Close()
-		time.Sleep(20 * time.Millisecond)
 	}
 	return srv, teardown
 }

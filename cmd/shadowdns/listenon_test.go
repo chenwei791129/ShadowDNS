@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // setupListenOnTestDir builds a reload-test fixture via setupReloadTestDir
@@ -36,14 +38,32 @@ func setupListenOnTestDir(t *testing.T, listenOnTokens string) string {
 	return namedConf
 }
 
+// observer is internally synchronized, so writes from run()'s goroutines
+// and reads from the test goroutine are safe under -race.
+func newObservedLogger() (*zap.Logger, *observer.ObservedLogs) {
+	core, recorded := observer.New(zapcore.DebugLevel)
+	return zap.New(core), recorded
+}
+
+func formatObserved(logs *observer.ObservedLogs) string {
+	var sb strings.Builder
+	for _, e := range logs.All() {
+		sb.WriteString(e.Message)
+		for k, v := range e.ContextMap() {
+			fmt.Fprintf(&sb, " %s=%v", k, v)
+		}
+		sb.WriteByte('\n')
+	}
+	return sb.String()
+}
+
 // TestRun_OverrideBranchUsesListenFlag: --listen carries a specific host, so
 // listen-on in named.conf must be ignored. The run() must start successfully
 // and the bound address must be the one from --listen.
 func TestRun_OverrideBranchUsesListenFlag(t *testing.T) {
 	namedConf := setupListenOnTestDir(t, `{ 10.255.255.255; }`) // unreachable IP
 	ctx, cancel := context.WithCancel(context.Background())
-	var buf bytes.Buffer
-	logger := newBufferLogger(zapcore.AddSync(&buf))
+	logger, observed := newObservedLogger()
 	opts := runOptions{
 		NamedConfPath: namedConf,
 		ListenAddr:    "127.0.0.1:0", // has host component → override
@@ -65,13 +85,13 @@ func TestRun_OverrideBranchUsesListenFlag(t *testing.T) {
 		t.Fatal("run did not return within 2s")
 	}
 
-	logOut := buf.String()
+	logOut := formatObserved(observed)
 	// Override path must NOT have attempted to bind 10.255.255.255.
 	if strings.Contains(logOut, "10.255.255.255") {
 		t.Errorf("override path should ignore listen-on address, but log mentions it: %s", logOut)
 	}
 	// Must have successfully bound something on 127.0.0.1.
-	if !strings.Contains(logOut, "listener bound") {
+	if observed.FilterMessage("listener bound").Len() == 0 {
 		t.Errorf("should have logged a successful bind, got: %s", logOut)
 	}
 }
@@ -82,8 +102,7 @@ func TestRun_OverrideBranchUsesListenFlag(t *testing.T) {
 func TestRun_ListenOnBranchBindsListenOnAddresses(t *testing.T) {
 	namedConf := setupListenOnTestDir(t, `{ 127.0.0.1; }`)
 	ctx, cancel := context.WithCancel(context.Background())
-	var buf bytes.Buffer
-	logger := newBufferLogger(zapcore.AddSync(&buf))
+	logger, observed := newObservedLogger()
 	opts := runOptions{
 		NamedConfPath: namedConf,
 		ListenAddr:    ":0", // port hint only; listen-on drives host
@@ -105,12 +124,12 @@ func TestRun_ListenOnBranchBindsListenOnAddresses(t *testing.T) {
 		t.Fatal("run did not return within 2s")
 	}
 
-	logOut := buf.String()
+	logOut := formatObserved(observed)
 	// Must have bound on 127.0.0.1 (from listen-on), not wildcard.
 	if !strings.Contains(logOut, "127.0.0.1") {
 		t.Errorf("listen-on branch should bind on 127.0.0.1, log: %s", logOut)
 	}
-	if !strings.Contains(logOut, "listener bound") {
+	if observed.FilterMessage("listener bound").Len() == 0 {
 		t.Errorf("should have logged a successful bind, got: %s", logOut)
 	}
 }
@@ -121,8 +140,7 @@ func TestRun_ListenOnBranchBindsListenOnAddresses(t *testing.T) {
 func TestRun_ReloadLogsListenAddrChangeHint(t *testing.T) {
 	// Start with listen-on { 127.0.0.1; }.
 	namedConf := setupListenOnTestDir(t, `{ 127.0.0.1; }`)
-	var buf bytes.Buffer
-	logger := newBufferLogger(zapcore.AddSync(&buf))
+	logger, observed := newObservedLogger()
 	opts := runOptions{
 		NamedConfPath: namedConf,
 		ListenAddr:    ":0",
@@ -161,7 +179,7 @@ include "` + masterZones + `";
 	cancel()
 	<-done
 
-	logOut := buf.String()
+	logOut := formatObserved(observed)
 	if !strings.Contains(logOut, "restart") {
 		t.Errorf("expected reload log to mention 'restart', got: %s", logOut)
 	}

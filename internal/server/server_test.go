@@ -118,27 +118,27 @@ func newRootBackupServer(t *testing.T, rootZ, backupZ *zone.Zone) (string, func(
 // a cancel function.  The server is fully ready when this function returns.
 func startTestServer(t *testing.T, srv *Server) (udpAddr, tcpAddr string, cancel func()) {
 	t.Helper()
-	ctx, cancelFn := context.WithCancel(context.Background())
 
-	ready := make(chan struct{})
-	go func() {
-		close(ready)
-		if err := srv.Start(ctx, "127.0.0.1:0"); err != nil && ctx.Err() == nil {
-			t.Logf("server exited: %v", err)
-		}
-	}()
-
-	// Wait for Start to bind (it pre-binds before launching goroutines).
-	<-ready
-	// Give ActivateAndServe a moment to start reading.
-	time.Sleep(20 * time.Millisecond)
+	// UDPAddr()/TCPAddr() reads must not race the Serve goroutine writing s.listeners.
+	if err := srv.Bind("127.0.0.1:0"); err != nil {
+		t.Fatalf("srv.Bind: %v", err)
+	}
 
 	udpAddr = srv.UDPAddr().String()
 	tcpAddr = srv.TCPAddr().String()
 
+	ctx, cancelFn := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := srv.Serve(ctx); err != nil && ctx.Err() == nil {
+			t.Logf("server exited: %v", err)
+		}
+	}()
+
 	cancel = func() {
 		cancelFn()
-		time.Sleep(30 * time.Millisecond)
+		<-done
 	}
 	return udpAddr, tcpAddr, cancel
 }

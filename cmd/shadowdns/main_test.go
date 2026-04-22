@@ -167,8 +167,10 @@ func TestStartupLog_IncludesVersion(t *testing.T) {
 	dir := setupReloadTestDir(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	var buf bytes.Buffer
-	logger := newBufferLogger(zapcore.AddSync(&buf))
+	// run() spawns SIGHUP/notify sub-goroutines that may outlive the
+	// top-level srv.Serve(ctx) return; use the synchronized buffer.
+	buf := &threadSafeBuffer{}
+	logger := newBufferLogger(zapcore.AddSync(buf))
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
 		ListenAddr:    "127.0.0.1:0",

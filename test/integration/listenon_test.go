@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
@@ -92,21 +91,19 @@ func startServerWithListenOn(t *testing.T, listenOnTokens, listenFlag string) (*
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	ready := make(chan struct{})
+	done := make(chan struct{})
 	go func() {
-		close(ready)
+		defer close(done)
 		if err := srv.Serve(ctx); err != nil && ctx.Err() == nil {
 			t.Logf("server exited: %v", err)
 		}
 	}()
-	<-ready
-	time.Sleep(30 * time.Millisecond)
 
 	teardown := func() {
 		cancel()
+		<-done
 		_ = country.Close()
 		_ = asn.Close()
-		time.Sleep(20 * time.Millisecond)
 	}
 	return srv, teardown
 }

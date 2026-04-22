@@ -2,7 +2,7 @@
 
 - `make build` — Build the ShadowDNS binary for the host platform at `bin/shadowdns-$(go env GOOS)-$(go env GOARCH)` (e.g., `bin/shadowdns-darwin-arm64`). Intended for local dev + unit tests on macOS/Linux.
 - `make build-linux` — Cross-compile a linux/amd64 binary (`bin/shadowdns-linux-amd64`). Required input for `make deb`; on linux/amd64 hosts produces the same artefact as `make build`.
-- `make test` — Run unit tests
+- `make test` — Run unit tests with the race detector enabled (`go test -race -count=1`)
 - `make lint` — Run golangci-lint
 - `make smoke` — Smoke test with `--dry-run`
 - `make deb` — Build `.deb` package (implicitly runs `make build-linux`; requires nfpm via `go tool`)
