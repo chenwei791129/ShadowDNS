@@ -807,6 +807,19 @@ func makeCNAMERecord(name, target string, ttl uint32) *dns.CNAME {
 	}
 }
 
+// makeTXTRecord builds a single-string TXT record.
+func makeTXTRecord(name, value string, ttl uint32) *dns.TXT {
+	return &dns.TXT{
+		Hdr: dns.RR_Header{
+			Name:   name,
+			Rrtype: dns.TypeTXT,
+			Class:  dns.ClassINET,
+			Ttl:    ttl,
+		},
+		Txt: []string{value},
+	}
+}
+
 // TestCNAMESynthesis_RootZone verifies CNAME synthesis for various query types
 // against a zone where alias.root.com. has only a CNAME record.
 func TestCNAMESynthesis_RootZone(t *testing.T) {

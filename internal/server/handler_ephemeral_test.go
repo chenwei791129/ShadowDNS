@@ -252,3 +252,191 @@ func TestEphemeral_BackupNamespaceTXTReturned(t *testing.T) {
 		t.Errorf("TXT value = %q, want backup-token", txt.Txt[0])
 	}
 }
+
+// TestEphemeral_ExactBeatsWildcardTXT verifies that when the zone carries a
+// wildcard TXT and the ephemeral store has an exact-qname TXT entry, the
+// response contains only the ephemeral value (ephemeral exact match > zone
+// wildcard).
+func TestEphemeral_ExactBeatsWildcardTXT(t *testing.T) {
+	rootZ := buildRootZone("example.com.",
+		makeTXTRecord("*.example.com.", "wild-value", 300),
+	)
+	store := ephemeral.NewStore()
+	store.Put("foo.example.com.", "ephemeral-value", 120)
+
+	addr, cancel := newRootOnlyServerWithEphemeral(t, rootZ, store)
+	defer cancel()
+
+	resp := query(t, "udp", addr, "foo.example.com.", dns.TypeTXT)
+
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("Rcode = %d, want NOERROR", resp.Rcode)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("Answer len = %d, want 1 (ephemeral only, no wildcard); Answer=%v", len(resp.Answer), resp.Answer)
+	}
+	txt, ok := resp.Answer[0].(*dns.TXT)
+	if !ok {
+		t.Fatalf("Answer[0] type = %T, want *dns.TXT", resp.Answer[0])
+	}
+	if len(txt.Txt) != 1 || txt.Txt[0] != "ephemeral-value" {
+		t.Errorf("TXT value = %v, want [ephemeral-value] (wildcard must not leak into answer)", txt.Txt)
+	}
+}
+
+// TestEphemeral_ExactBeatsWildcardCNAME verifies that when the zone carries a
+// wildcard CNAME and the ephemeral store has an exact-qname TXT entry, a TXT
+// query returns the ephemeral value instead of the synthesized CNAME.
+func TestEphemeral_ExactBeatsWildcardCNAME(t *testing.T) {
+	rootZ := buildRootZone("example.com.",
+		makeCNAMERecord("*.example.com.", "target.other.com.", 300),
+	)
+	store := ephemeral.NewStore()
+	store.Put("_acme-challenge.foo.example.com.", "token", 120)
+
+	addr, cancel := newRootOnlyServerWithEphemeral(t, rootZ, store)
+	defer cancel()
+
+	resp := query(t, "udp", addr, "_acme-challenge.foo.example.com.", dns.TypeTXT)
+
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("Rcode = %d, want NOERROR", resp.Rcode)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("Answer len = %d, want 1 (only ephemeral TXT); Answer=%v", len(resp.Answer), resp.Answer)
+	}
+	txt, ok := resp.Answer[0].(*dns.TXT)
+	if !ok {
+		t.Fatalf("Answer[0] type = %T, want *dns.TXT (ephemeral must suppress wildcard CNAME synthesis)", resp.Answer[0])
+	}
+	if len(txt.Txt) != 1 || txt.Txt[0] != "token" {
+		t.Errorf("TXT value = %v, want [token]", txt.Txt)
+	}
+}
+
+// TestEphemeral_WildcardStillAppliesWithoutExactMatch verifies that when the
+// ephemeral store has no exact entry, the zone's wildcard still answers
+// correctly (regression guard for the reordering in 2.1).
+func TestEphemeral_WildcardStillAppliesWithoutExactMatch(t *testing.T) {
+	rootZ := buildRootZone("example.com.",
+		makeARecord("*.example.com.", "1.2.3.4", 300),
+	)
+	store := ephemeral.NewStore()
+
+	addr, cancel := newRootOnlyServerWithEphemeral(t, rootZ, store)
+	defer cancel()
+
+	resp := query(t, "udp", addr, "foo.example.com.", dns.TypeA)
+
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("Rcode = %d, want NOERROR", resp.Rcode)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("Answer len = %d, want 1; Answer=%v", len(resp.Answer), resp.Answer)
+	}
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("Answer[0] type = %T, want *dns.A", resp.Answer[0])
+	}
+	if got := a.A.String(); got != "1.2.3.4" {
+		t.Errorf("A value = %s, want 1.2.3.4", got)
+	}
+	if a.Hdr.Name != "foo.example.com." {
+		t.Errorf("owner name = %q, want foo.example.com. (synthesized)", a.Hdr.Name)
+	}
+}
+
+// TestEphemeral_DoesNotSuppressWildcardForNonTXT verifies that an ephemeral
+// TXT entry does not block wildcard synthesis for non-TXT query types at the
+// same qname.
+func TestEphemeral_DoesNotSuppressWildcardForNonTXT(t *testing.T) {
+	rootZ := buildRootZone("example.com.",
+		makeARecord("*.example.com.", "1.2.3.4", 300),
+	)
+	store := ephemeral.NewStore()
+	store.Put("foo.example.com.", "token", 120)
+
+	addr, cancel := newRootOnlyServerWithEphemeral(t, rootZ, store)
+	defer cancel()
+
+	resp := query(t, "udp", addr, "foo.example.com.", dns.TypeA)
+
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("Rcode = %d, want NOERROR (wildcard A must still answer)", resp.Rcode)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("Answer len = %d, want 1; Answer=%v", len(resp.Answer), resp.Answer)
+	}
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("Answer[0] type = %T, want *dns.A", resp.Answer[0])
+	}
+	if got := a.A.String(); got != "1.2.3.4" {
+		t.Errorf("A value = %s, want 1.2.3.4", got)
+	}
+}
+
+// TestEphemeral_ExactBeatsWildcardTXTInBackupZone verifies that an ephemeral
+// TXT entry at the exact backup-namespace qname takes precedence over a TXT
+// wildcard synthesized from the root zone into the backup namespace.
+func TestEphemeral_ExactBeatsWildcardTXTInBackupZone(t *testing.T) {
+	rootZ := buildRootZone("root.com.",
+		makeTXTRecord("*.root.com.", "wild-value", 300),
+	)
+	backupZ := buildBackupZone("backup.com.")
+	store := ephemeral.NewStore()
+	store.Put("foo.backup.com.", "ephemeral-value", 60)
+
+	addr, cancel := newRootBackupServerWithEphemeral(t, rootZ, backupZ, store)
+	defer cancel()
+
+	resp := query(t, "udp", addr, "foo.backup.com.", dns.TypeTXT)
+
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("Rcode = %d, want NOERROR", resp.Rcode)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("Answer len = %d, want 1 (ephemeral only, no wildcard); Answer=%v", len(resp.Answer), resp.Answer)
+	}
+	txt, ok := resp.Answer[0].(*dns.TXT)
+	if !ok {
+		t.Fatalf("Answer[0] type = %T, want *dns.TXT", resp.Answer[0])
+	}
+	if len(txt.Txt) != 1 || txt.Txt[0] != "ephemeral-value" {
+		t.Errorf("TXT value = %v, want [ephemeral-value] (wildcard must not leak into answer)", txt.Txt)
+	}
+}
+
+// TestEphemeral_ExactBeatsWildcardCNAMEInBackupZone verifies that an ephemeral
+// TXT entry registered under the backup-namespace qname takes precedence over
+// the backup-derived wildcard CNAME synthesized from the root zone.
+func TestEphemeral_ExactBeatsWildcardCNAMEInBackupZone(t *testing.T) {
+	rootZ := buildRootZone("root.com.",
+		makeCNAMERecord("*.root.com.", "target.other.com.", 300),
+	)
+	backupZ := buildBackupZone("backup.com.")
+	store := ephemeral.NewStore()
+	store.Put("_acme-challenge.foo.backup.com.", "backup-token", 60)
+
+	addr, cancel := newRootBackupServerWithEphemeral(t, rootZ, backupZ, store)
+	defer cancel()
+
+	resp := query(t, "udp", addr, "_acme-challenge.foo.backup.com.", dns.TypeTXT)
+
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("Rcode = %d, want NOERROR", resp.Rcode)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("Answer len = %d, want 1 (ephemeral only, no synthesized CNAME); Answer=%v", len(resp.Answer), resp.Answer)
+	}
+	txt, ok := resp.Answer[0].(*dns.TXT)
+	if !ok {
+		t.Fatalf("Answer[0] type = %T, want *dns.TXT (ephemeral must suppress wildcard CNAME synthesis)", resp.Answer[0])
+	}
+	if len(txt.Txt) != 1 || txt.Txt[0] != "backup-token" {
+		t.Errorf("TXT value = %v, want [backup-token]", txt.Txt)
+	}
+	if txt.Hdr.Name != "_acme-challenge.foo.backup.com." {
+		t.Errorf("owner name = %q, want _acme-challenge.foo.backup.com.", txt.Hdr.Name)
+	}
+}

@@ -177,13 +177,36 @@ func TestResolve_CNAMESynthesis_NoCNAMENoA_ReturnsEmpty(t *testing.T) {
 }
 
 func TestResolve_NilRootZone_DoesNotPanic(t *testing.T) {
-	// Should not panic even with nil rootZone.
 	defer func() {
 		if r := recover(); r != nil {
 			t.Errorf("Resolve panicked with nil rootZone: %v", r)
 		}
 	}()
 	_ = Resolve("backup.com.", dns.TypeA, "backup.com.", nil, nil)
+}
+
+func TestResolveExact_NilRootZone_DoesNotPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("ResolveExact panicked with nil rootZone: %v", r)
+		}
+	}()
+	rrs := ResolveExact("backup.com.", dns.TypeA, "backup.com.", nil, nil)
+	if rrs != nil {
+		t.Errorf("expected nil, got %v", rrs)
+	}
+}
+
+func TestResolveWildcard_NilRootZone_DoesNotPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("ResolveWildcard panicked with nil rootZone: %v", r)
+		}
+	}()
+	rrs := ResolveWildcard("backup.com.", dns.TypeA, "backup.com.", nil)
+	if rrs != nil {
+		t.Errorf("expected nil, got %v", rrs)
+	}
 }
 
 // ---------------------------------------------------------------------------

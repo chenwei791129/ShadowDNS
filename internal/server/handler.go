@@ -198,6 +198,13 @@ func (s *Server) handleRootQuery(
 		}
 	}
 
+	// Ephemeral TXT store is treated as an exact match (RFC 4592 §2.2.1):
+	// entries registered under qname must suppress wildcard synthesis for TXT.
+	if answer := s.lookupEphemeralTXT(qname, qtype); answer != nil {
+		replyWithAnswer(w, req, answer)
+		return
+	}
+
 	// Wildcard fallback per RFC 4592.
 	wRRs, wFound := rootZone.LookupWildcard(qname, qtype)
 	if wFound && len(wRRs) > 0 {
@@ -209,11 +216,6 @@ func (s *Server) handleRootQuery(
 			replyWithAnswer(w, req, rootZone.FollowCNAME(nil, rewriteWildcardOwner(wCNAMEs, qname), qtype))
 			return
 		}
-	}
-
-	if answer := s.lookupEphemeralTXT(qname, qtype); answer != nil {
-		replyWithAnswer(w, req, answer)
-		return
 	}
 
 	s.negativeReply(w, req, rootZone, nil, match, qname, rootZone.SOA)
@@ -251,14 +253,21 @@ func (s *Server) handleBackupQuery(
 		return
 	}
 
-	records := alias.Resolve(qname, qtype, match.MatchedZone, backupZone, rootZone)
-	if len(records) > 0 {
+	if records := alias.ResolveExact(qname, qtype, match.MatchedZone, backupZone, rootZone); len(records) > 0 {
 		replyWithAnswer(w, req, records)
 		return
 	}
 
+	// Ephemeral TXT is an exact match per RFC 4592 §2.2.1 and must suppress
+	// root-derived wildcard synthesis. The lookup uses the backup-namespace
+	// qname because API callers PUT entries under that name.
 	if answer := s.lookupEphemeralTXT(qname, qtype); answer != nil {
 		replyWithAnswer(w, req, answer)
+		return
+	}
+
+	if records := alias.ResolveWildcard(qname, qtype, match.MatchedZone, rootZone); len(records) > 0 {
+		replyWithAnswer(w, req, records)
 		return
 	}
 
