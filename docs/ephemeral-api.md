@@ -168,7 +168,46 @@ dig @127.0.0.1 _acme-challenge.example.com TXT +short
 
 ### 與 zone file 的優先順序
 
-若 zone file 已有同名的 TXT record，**zone file 優先**——ephemeral store 不會被查到，避免透過 API 意外覆蓋正式資料。只有 zone 與 wildcard fallback 皆查無結果時，才會落到 ephemeral store。
+若 zone file 已有同名的 TXT record，**zone file 優先**——ephemeral store 不會被查到，避免透過 API 意外覆蓋正式資料。
+
+DNS 查詢分派順序（TXT qtype）：
+
+1. Zone 精確 `(qname, TXT)` 匹配 → 命中則回傳 zone TXT
+2. **Ephemeral store 覆蓋層** → 命中則回傳 ephemeral TXT（見下節）
+3. RFC 1034 §3.6.2 CNAME fallback
+4. RFC 4592 wildcard synthesis
+
+此順序對 root zone 與 backup（alias）zone 一致。
+
+### Ephemeral TXT 覆蓋 exact CNAME（僅 TXT qtype）
+
+典型 ACME DNS-01 delegation 將 `_acme-challenge.<domain>` CNAME 到外部 acme-dns provider：
+
+```
+_acme-challenge.foo.example.com. IN CNAME acme-dns.external.net.
+```
+
+在此情況下透過 API PUT 一筆 `_acme-challenge.foo.example.com.` 的 TXT，**DNS TXT 查詢會回傳 ephemeral TXT 值，而不是 zone 上的 CNAME**。這是相對 RFC 1034 §3.6.2「CNAME 獨佔 owner name」的刻意偏離，限縮在：
+
+- **僅 `TXT` qtype**：`dig CNAME`、`dig A`、`dig AAAA` 等其他 qtype 仍依標準 CNAME fallback 行為，不受 ephemeral store 影響
+- **僅當 ephemeral store 有未過期的 entry 時**：entry 過期或未寫入時自動回退成標準 CNAME 鏈（RFC 1034 §3.6.2）
+- **無狀態切換成本**：當所有 ephemeral entry 消失後，`dig TXT` 行為立刻恢復為 CNAME 跟隨結果，不需人工操作
+
+```bash
+# 寫入 ephemeral TXT
+curl -X PUT http://127.0.0.1:8053/v1/txt/_acme-challenge.foo.example.com \
+  -d '{"value":"token-xyz","ttl":120}'
+
+# TXT 查詢回傳 ephemeral 值（不回 CNAME）
+dig @127.0.0.1 _acme-challenge.foo.example.com TXT +short
+# "token-xyz"
+
+# CNAME 查詢仍回傳 zone 配置的 CNAME
+dig @127.0.0.1 _acme-challenge.foo.example.com CNAME +short
+# acme-dns.external.net.
+```
+
+此覆蓋行為同樣適用於 backup（alias）zone：若透過 API PUT `_acme-challenge.foo.backup.com.`，即使 root zone 在 `_acme-challenge.foo.example.com.` 有 CNAME，對 backup 名稱的 TXT 查詢也會回傳 ephemeral TXT。
 
 ---
 
