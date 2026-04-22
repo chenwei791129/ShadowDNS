@@ -1250,7 +1250,7 @@ tests:
 ---
 ### Requirement: Match wildcard records per RFC 4592 when exact lookup fails
 
-When a query name falls within a loaded zone and exact lookup produces no records, the dns-server SHALL attempt wildcard matching per RFC 4592. The wildcard matching algorithm SHALL:
+When a query name falls within a loaded zone and exact lookup produces no records, the dns-server SHALL attempt wildcard matching per RFC 4592. For the purposes of this requirement, "exact lookup" SHALL include the ephemeral TXT record store: when the query type is TXT and the ephemeral store holds one or more unexpired entries under the exact query name, those entries SHALL be treated as an exact match and SHALL be returned in preference to any wildcard synthesis. The wildcard matching algorithm SHALL:
 
 1. Starting from the query name, strip the leftmost label to produce a parent name.
 2. Check whether a wildcard owner `*.<parent>` exists in the zone. If it does, use those records as the match.
@@ -1260,7 +1260,7 @@ When a query name falls within a loaded zone and exact lookup produces no record
 
 When a wildcard match is found, the dns-server SHALL synthesize the response with the original query name as the owner name in the answer section (not the `*` label), per RFC 4592 §2.2.
 
-This behavior SHALL apply to both root zone queries and backup (alias) zone queries. For backup zone queries, the wildcard lookup SHALL operate on the root zone's records (after qname rewrite to root namespace), and the synthesized response SHALL use the backup-namespace qname as the owner name.
+This behavior SHALL apply to both root zone queries and backup (alias) zone queries. For backup zone queries, the wildcard lookup SHALL operate on the root zone's records (after qname rewrite to root namespace), and the synthesized response SHALL use the backup-namespace qname as the owner name. The ephemeral exact-match check for backup zone queries SHALL use the backup-namespace qname (the name the client actually sent) because API callers PUT entries under the backup-namespace qname.
 
 #### Scenario: Single-level wildcard matches subdomain query
 
@@ -1307,22 +1307,46 @@ This behavior SHALL apply to both root zone queries and backup (alias) zone quer
 - **WHEN** the zone contains `*.example.com. A 1.2.3.4` AND a client queries `foo.example.com. AAAA` AND no CNAME exists at the wildcard
 - **THEN** the response has `RCODE=NOERROR`, empty answer section, and the zone SOA in the authority section
 
+#### Scenario: Ephemeral TXT at exact qname takes precedence over zone wildcard TXT
+
+- **WHEN** the zone contains `*.example.com. TXT "wild-value"` AND the ephemeral store holds a TXT entry with value `ephemeral-value` under `foo.example.com.` AND a client queries `foo.example.com. TXT`
+- **THEN** the response answer section contains exactly one TXT record, `foo.example.com. TXT "ephemeral-value"`, and SHALL NOT contain `"wild-value"`
+
+#### Scenario: Ephemeral TXT at exact qname takes precedence over zone wildcard CNAME
+
+- **WHEN** the zone contains `*.example.com. CNAME target.other.com.` AND the ephemeral store holds a TXT entry with value `token` under `_acme-challenge.foo.example.com.` AND a client queries `_acme-challenge.foo.example.com. TXT`
+- **THEN** the response answer section contains exactly one TXT record, `_acme-challenge.foo.example.com. TXT "token"`, and SHALL NOT contain a synthesized CNAME to `target.other.com.`
+
+#### Scenario: Ephemeral TXT at exact backup-zone qname takes precedence over backup-derived wildcard
+
+- **WHEN** `backup.com.` is a backup of `root.com.` AND the root zone contains `*.root.com. CNAME target.other.com.` AND the ephemeral store holds a TXT entry with value `backup-token` under `_acme-challenge.foo.backup.com.` AND a client queries `_acme-challenge.foo.backup.com. TXT`
+- **THEN** the response answer section contains exactly one TXT record, `_acme-challenge.foo.backup.com. TXT "backup-token"`, and SHALL NOT contain a synthesized CNAME
+
+#### Scenario: Zone wildcard still applies when ephemeral store has no exact match
+
+- **WHEN** the zone contains `*.example.com. A 1.2.3.4` AND the ephemeral store holds no entry under `foo.example.com.` AND a client queries `foo.example.com. A`
+- **THEN** the response answer section contains `foo.example.com. A 1.2.3.4` (wildcard unchanged when no exact ephemeral match exists)
+
+#### Scenario: Ephemeral TXT does not suppress wildcard for non-TXT query types
+
+- **WHEN** the zone contains `*.example.com. A 1.2.3.4` AND the ephemeral store holds a TXT entry under `foo.example.com.` AND a client queries `foo.example.com. A`
+- **THEN** the response answer section contains `foo.example.com. A 1.2.3.4` (ephemeral TXT does not block wildcard for A queries)
+
 <!-- @trace
-source: wildcard-support
-updated: 2026-04-16
+source: exact-match-wins-over-wildcard
+updated: 2026-04-22
 code:
-  - internal/server/handler.go
-  - README.md
-  - internal/zone/zone.go
+  - internal/api/server.go
+  - internal/ephemeral/store.go
   - internal/alias/override.go
-  - testdata/integration/master/example.com_view-other.fwd
-  - testdata/integration/master/example.com_view-th.fwd
+  - internal/server/handler.go
+  - scripts/smoke.sh
+  - docs/ephemeral-api.md
 tests:
-  - internal/alias/override_test.go
-  - test/integration/wildcard_test.go
-  - test/integration/cname_synthesis_test.go
-  - internal/zone/parser_test.go
-  - test/integration/negative_test.go
-  - internal/zone/zone_test.go
   - internal/server/server_test.go
+  - cmd/shadowdns/main_ephemeral_test.go
+  - internal/server/handler_ephemeral_test.go
+  - internal/alias/override_test.go
+  - internal/api/server_test.go
+  - internal/ephemeral/store_test.go
 -->
