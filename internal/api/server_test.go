@@ -458,7 +458,7 @@ func TestServer_GracefulShutdown(t *testing.T) {
 	// Sanity-probe the server is up.
 	resp, err := http.Post(fmt.Sprintf("http://%s/v1/txt/foo.example.com", addr), "application/json", bytes.NewReader([]byte(`{"value":"v","ttl":60}`)))
 	if err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	cancel()
