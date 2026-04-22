@@ -1,0 +1,46 @@
+# shadowdns.yaml - Unified ShadowDNS Configuration
+#
+# This file combines the previous aliases.yaml with the new ephemeral TXT
+# API settings into a single YAML document. It is referenced by the
+# --config CLI flag and reloaded atomically on SIGHUP; if any section
+# fails validation the running server keeps its previous state.
+
+# ---- aliases -----------------------------------------------------------
+#
+# Maps each backup (alias) domain to its root domain. ShadowDNS serves
+# backup domains by rewriting incoming queries to the root domain without
+# loading separate zone data.
+#
+# Rules:
+#   - Each key is a backup domain; each value is its root domain.
+#   - A backup domain may only appear once (after normalization).
+#   - A backup domain cannot equal its root (self-alias is rejected).
+#   - Missing or empty "aliases:" is valid — the server starts with no aliases.
+
+aliases:
+  backup-example.com: example.com
+  mirror-example.com: example.com
+  backup-another.org: another-root.org
+  shadow-service.net: service.example.net
+
+# ---- ephemeral_api -----------------------------------------------------
+#
+# Optional HTTP API for creating short-lived TXT records in memory
+# (typically used for ACME DNS-01 challenges). When this section is
+# omitted, no API server is started.
+#
+# Required fields:
+#   listen — host:port to bind, e.g. "127.0.0.1:8053"
+#   allow  — non-empty list of permitted source IPs or CIDR ranges
+#
+# Optional fields:
+#   token — pre-shared bearer token; when set, every request must carry
+#           "Authorization: Bearer <token>" and be from an allowed IP.
+#           Omit to skip token validation entirely.
+
+ephemeral_api:
+  listen: "127.0.0.1:8053"
+  allow:
+    - "127.0.0.1"
+    - "10.0.0.0/8"
+  # token: "change-me-to-a-long-random-string"

@@ -29,8 +29,8 @@ contents:
   - src: ./packaging/named.conf.example
     dst: /etc/shadowdns/named.conf.example
 
-  - src: ./packaging/aliases.yaml.example
-    dst: /etc/shadowdns/aliases.yaml.example
+  - src: ./packaging/shadowdns.yaml.example
+    dst: /etc/shadowdns/shadowdns.yaml.example
 
 scripts:
   postinstall: ./packaging/postinstall.sh

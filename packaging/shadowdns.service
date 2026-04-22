@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/shadowdns --named-conf /etc/shadowdns/named.conf --aliases /etc/shadowdns/aliases.yaml
+ExecStart=/usr/bin/shadowdns --named-conf /etc/shadowdns/named.conf --config /etc/shadowdns/shadowdns.yaml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
