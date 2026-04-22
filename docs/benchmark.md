@@ -22,7 +22,7 @@ go build -o ./shadowdns ./cmd/shadowdns
 ```bash
 ./shadowdns \
     --named-conf /path/to/named.conf \
-    --aliases    /path/to/aliases.yaml \
+    --config     /path/to/shadowdns.yaml \
     --dry-run
 ```
 
@@ -51,7 +51,7 @@ level=INFO msg="dry-run: configuration loaded successfully" views=N zones=M
 
 ```
 time=2026-04-13T23:28:01.556+08:00 level=INFO msg="shadowdns starting" \
-    named_conf=...named.conf aliases=...aliases.yaml listen=:53
+    named_conf=...named.conf config=...shadowdns.yaml listen=:53
 time=2026-04-13T23:28:01.557+08:00 level=INFO msg="loaded GeoIP country database" \
     path=.../geoip/GeoLite2-Country.mmdb
 time=2026-04-13T23:28:01.558+08:00 level=INFO msg="loaded GeoIP ASN database" \

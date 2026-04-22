@@ -83,8 +83,8 @@ echo "  [OK] /lib/systemd/system/shadowdns.service exists"
 $CTR exec "$CONTAINER_NAME" test -f /etc/shadowdns/named.conf.example
 echo "  [OK] /etc/shadowdns/named.conf.example exists"
 
-$CTR exec "$CONTAINER_NAME" test -f /etc/shadowdns/aliases.yaml.example
-echo "  [OK] /etc/shadowdns/aliases.yaml.example exists"
+$CTR exec "$CONTAINER_NAME" test -f /etc/shadowdns/shadowdns.yaml.example
+echo "  [OK] /etc/shadowdns/shadowdns.yaml.example exists"
 
 $CTR exec "$CONTAINER_NAME" getent passwd shadowdns >/dev/null
 echo "  [OK] shadowdns user exists"
@@ -109,14 +109,14 @@ fi
 echo "--- Dry-run test ---"
 $CTR exec "$CONTAINER_NAME" sh -c '
     cp /tmp/testdata/named.conf /etc/shadowdns/named.conf &&
-    cp /tmp/testdata/aliases.yaml /etc/shadowdns/aliases.yaml &&
+    cp /tmp/testdata/shadowdns.yaml /etc/shadowdns/shadowdns.yaml &&
     cp /tmp/testdata/master.zones /etc/shadowdns/master.zones &&
     cp -r /tmp/testdata/master /etc/shadowdns/master &&
     cp -r /tmp/testdata/geoip /etc/shadowdns/geoip
 '
 $CTR exec "$CONTAINER_NAME" shadowdns \
     --named-conf /etc/shadowdns/named.conf \
-    --aliases /etc/shadowdns/aliases.yaml \
+    --config /etc/shadowdns/shadowdns.yaml \
     --dry-run
 echo "  [OK] --dry-run exited successfully"
 
@@ -129,7 +129,7 @@ $CTR exec "$CONTAINER_NAME" apt-get install -y -qq dnsutils >/dev/null 2>&1
 
 $CTR exec -d "$CONTAINER_NAME" shadowdns \
     --named-conf /etc/shadowdns/named.conf \
-    --aliases /etc/shadowdns/aliases.yaml \
+    --config /etc/shadowdns/shadowdns.yaml \
     --listen 127.0.0.1:1053
 
 # Wait for the server to start accepting queries.

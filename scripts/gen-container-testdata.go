@@ -88,10 +88,10 @@ func main() {
 		log.Fatalf("write master.zones: %v", err)
 	}
 
-	// Copy aliases.yaml.
+	// Copy shadowdns.yaml (unified config with aliases section).
 	copyFile(
-		filepath.Join(fixtureDir, "aliases.yaml"),
-		filepath.Join(*outDir, "aliases.yaml"),
+		filepath.Join(fixtureDir, "shadowdns.yaml"),
+		filepath.Join(*outDir, "shadowdns.yaml"),
 	)
 
 	// Generate mock GeoIP mmdb files.
