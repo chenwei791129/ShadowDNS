@@ -32,3 +32,12 @@ sip       IN A     198.51.100.40
 hop1      IN CNAME hop2.example.com.
 hop2      IN CNAME hop3.example.com.
 hop3      IN A     198.51.100.50
+
+; ACME DNS-01 delegation with out-of-bailiwick target (ephemeral TXT overlay fixture)
+_acme-challenge.foo IN CNAME acme-dns.external.net.
+
+; In-bailiwick ACME delegation with a TXT at the CNAME target (used by the
+; ephemeral-empty regression test to verify standard RFC 1034 §3.6.2 CNAME
+; synthesis still returns [CNAME, target TXT] unchanged).
+acme-local          IN TXT   "zone-target-txt"
+_acme-challenge.bar IN CNAME acme-local.example.com.

@@ -24,6 +24,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
+	"github.com/chenwei791129/ShadowDNS/internal/ephemeral"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
 	"github.com/chenwei791129/ShadowDNS/internal/shadowdnscfg"
 	"github.com/chenwei791129/ShadowDNS/internal/view"
@@ -44,6 +45,21 @@ const testdataPlaceholder = "TESTDATA_DIR_PLACEHOLDER"
 // TESTDATA_DIR_PLACEHOLDER with the actual path, builds in-memory mmdb files,
 // and starts the server.  Returns the server and a cancel func.
 func newTestServer(t *testing.T) (*server.Server, func()) {
+	t.Helper()
+	return buildTestServer(t, nil)
+}
+
+// newTestServerWithEphemeral is newTestServer with an attached ephemeral
+// store. The store is attached after Bind but before Serve starts, so the
+// handler goroutine's reads of srv.EphemeralStore do not race this write.
+func newTestServerWithEphemeral(t *testing.T, store *ephemeral.Store) (*server.Server, func()) {
+	t.Helper()
+	return buildTestServer(t, func(srv *server.Server) {
+		srv.EphemeralStore = store
+	})
+}
+
+func buildTestServer(t *testing.T, preServe func(*server.Server)) (*server.Server, func()) {
 	t.Helper()
 
 	tmpDir := t.TempDir()
@@ -94,6 +110,10 @@ func newTestServer(t *testing.T) (*server.Server, func()) {
 		_ = country.Close()
 		_ = asn.Close()
 		t.Fatalf("srv.Bind: %v", err)
+	}
+
+	if preServe != nil {
+		preServe(srv)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

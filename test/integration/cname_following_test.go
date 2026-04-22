@@ -126,3 +126,44 @@ func TestCNAMEFollowing_WildcardCNAME(t *testing.T) {
 	assertHasCNAME(t, resp, "bar.sub.example.com.", "target.example.com.")
 	assertHasA(t, resp, "target.example.com.", "10.99.99.1")
 }
+
+// TestCNAMEFollowing_ExactCNAMEWithTargetTXT_NoEphemeral verifies that with
+// no ephemeral store attached, a TXT query at a CNAME'd qname returns the
+// standard RFC 1034 §3.6.2 synthesis: [CNAME, target TXT] with AA=1.
+func TestCNAMEFollowing_ExactCNAMEWithTargetTXT_NoEphemeral(t *testing.T) {
+	srv, cancel := newTestServer(t)
+	defer cancel()
+	addr := udpAddr(srv)
+
+	// _acme-challenge.bar.example.com. CNAME acme-local.example.com.
+	// acme-local.example.com. TXT "zone-target-txt"
+	// No ephemeral store attached → should behave as if this change never
+	// landed.
+	resp := queryUDP(t, addr, "_acme-challenge.bar.example.com.", dns.TypeTXT)
+
+	assertNoError(t, resp)
+	assertAuthoritative(t, resp)
+	assertAnswerCount(t, resp, 2)
+
+	cname, ok := resp.Answer[0].(*dns.CNAME)
+	if !ok {
+		t.Fatalf("Answer[0] type = %T, want *dns.CNAME first", resp.Answer[0])
+	}
+	if cname.Hdr.Name != "_acme-challenge.bar.example.com." {
+		t.Errorf("Answer[0].Name = %q, want _acme-challenge.bar.example.com.", cname.Hdr.Name)
+	}
+	if cname.Target != "acme-local.example.com." {
+		t.Errorf("CNAME target = %q, want acme-local.example.com.", cname.Target)
+	}
+
+	txt, ok := resp.Answer[1].(*dns.TXT)
+	if !ok {
+		t.Fatalf("Answer[1] type = %T, want *dns.TXT second", resp.Answer[1])
+	}
+	if txt.Hdr.Name != "acme-local.example.com." {
+		t.Errorf("Answer[1].Name = %q, want acme-local.example.com.", txt.Hdr.Name)
+	}
+	if len(txt.Txt) != 1 || txt.Txt[0] != "zone-target-txt" {
+		t.Errorf("TXT value = %v, want [zone-target-txt]", txt.Txt)
+	}
+}
