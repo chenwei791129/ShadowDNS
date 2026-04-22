@@ -4,6 +4,27 @@
 
 ---
 
+## v0.x 破壞性變更：`--aliases` 已移除
+
+自本版起，`shadowdns` 不再接受 `--aliases` CLI flag，獨立的 `aliases.yaml` 檔案亦不再被讀取；所有設定改由單一 `--config <path>` 指向的 `shadowdns.yaml` 提供。舊設定的遷移屬機械式轉換：
+
+- 原 `aliases.yaml`（root → [backups] 格式）：
+  ```yaml
+  example.com:
+    - backup.example.com
+    - mirror.example.com
+  ```
+- 新 `shadowdns.yaml`（backup → root 反向對照，置於 `aliases:` 區段內）：
+  ```yaml
+  aliases:
+    backup.example.com: example.com
+    mirror.example.com: example.com
+  ```
+
+啟動指令由 `--aliases /path/to/aliases.yaml` 改為 `--config /path/to/shadowdns.yaml`；systemd unit、ansible playbook、管理系統產檔流程均需同步調整。詳細 schema 與可選的 `ephemeral_api:` 區段請見 [README.md](../README.md#shadowdnsyaml-schema)。
+
+---
+
 ## 適用前提
 
 在開始任何切換動作之前，請逐項確認以下環境條件：
@@ -15,7 +36,7 @@
 | Slave IP 清單已知 | 列出所有 BIND slave 的 IP，用於 `allow-transfer` ACL 設定 | ☐ |
 | MaxMind mmdb 可取得 | `GeoLite2-Country.mmdb` 與 `GeoLite2-ASN.mmdb` 可下載或已就位 | ☐ |
 | mmdb 版本與 BIND 一致 | ShadowDNS 使用與 BIND `geoip-directory` 相同的 mmdb 檔，避免 GeoIP 判斷出現差異 | ☐ |
-| `aliases.yaml` 產出機制確認 | 管理系統能自動產出 `aliases.yaml`，或已評估手動維護成本 | ☐ |
+| `shadowdns.yaml` 產出機制確認 | 管理系統能自動產出 `shadowdns.yaml`（含 `aliases:` 區段），或已評估手動維護成本 | ☐ |
 | 監控系統覆蓋兩端 | 監控系統可同時觀測 BIND 與 ShadowDNS 的 query QPS、錯誤率、記憶體 | ☐ |
 | Rollback 程序已演練 | 團隊熟悉各 Phase 的回退流程（見下方 Rollback 策略） | ☐ |
 
@@ -30,7 +51,7 @@
 **執行步驟**：
 
 1. 複製一份生產用 `named.conf`、`master.zones`、zone file 目錄到測試環境。
-2. 準備 `aliases.yaml`（初始可手動整理，或讓管理系統在測試環境產出）。
+2. 準備 `shadowdns.yaml`（單一 YAML 檔，涵蓋 `aliases` 與可選的 `ephemeral_api` 區段；初始可手動整理，或讓管理系統在測試環境產出）。
 3. 建置 ShadowDNS binary：
 
    ```bash
@@ -42,7 +63,7 @@
    ```bash
    ./shadowdns \
        --named-conf /path/to/named.conf \
-       --aliases    /path/to/aliases.yaml
+       --config     /path/to/shadowdns.yaml
    ```
 
 5. 觀察啟動 log，確認：
@@ -92,7 +113,7 @@
    ```bash
    ./shadowdns \
        --named-conf /etc/namedb/named.conf \
-       --aliases    /etc/namedb/aliases.yaml \
+       --config     /etc/namedb/shadowdns.yaml \
        --listen     192.0.2.20:53
    ```
 
@@ -129,11 +150,11 @@
 
 ### Phase 2：Slave 切換
 
-**目標**：讓管理系統正式產出 `aliases.yaml`，逐台將 BIND slave 的 master 指向 ShadowDNS，驗證 AXFR 同步正確。
+**目標**：讓管理系統正式產出 `shadowdns.yaml` 的 `aliases:` 區段，逐台將 BIND slave 的 master 指向 ShadowDNS，驗證 AXFR 同步正確。
 
 **執行步驟**：
 
-1. 管理系統開始正式產出 `aliases.yaml` 並同步至 ShadowDNS 設定目錄。
+1. 管理系統開始正式產出 `shadowdns.yaml` 的 `aliases:` 區段 並同步至 ShadowDNS 設定目錄。
 
 2. 選擇一台 staging BIND slave，將其 `masters { }` 設定由 BIND master IP 改為 ShadowDNS IP，然後重新載入：
 
@@ -164,7 +185,7 @@
 
 - 所有 slave 均成功完成 AXFR，無 transfer failure
 - Slave 上的查詢結果與 Phase 1 基準一致
-- `aliases.yaml` 管理流程穩定，無遺漏 domain
+- `shadowdns.yaml` 的 `aliases:` 區段 管理流程穩定，無遺漏 domain
 
 **預估時間範圍**：中至長（依 slave 數量與逐台驗證節奏而定）
 
@@ -304,14 +325,14 @@ systemctl start named
 
 **Q：切換後某個 backup domain 解到錯誤的 IP**
 
-檢查 `aliases.yaml` 中該 backup domain 的對應是否正確（即指向正確的 root domain）。確認對應的 root domain 在 ShadowDNS 中已正確載入：
+檢查 `shadowdns.yaml` 的 `aliases:` 區段 中該 backup domain 的對應是否正確（即指向正確的 root domain）。確認對應的 root domain 在 ShadowDNS 中已正確載入：
 
 ```bash
 dig @<shadowdns-ip> <root-domain> A
 dig @<shadowdns-ip> <backup-domain> A
 ```
 
-若兩者 RDATA 不一致，表示 root zone 資料與 `aliases.yaml` 的對應有誤，或 root zone 資料本身有問題。
+若兩者 RDATA 不一致，表示 root zone 資料與 `shadowdns.yaml` 的 `aliases:` 區段 的對應有誤，或 root zone 資料本身有問題。
 
 ---
 
@@ -364,7 +385,7 @@ ShadowDNS 在啟動時會拒絕部分 BIND 指令（如 `type slave`、`type for
 
 預期記憶體用量約為 BIND master 的 20%（~50 MB 對應 25,200 zone 的情境）。若實際用量偏高：
 
-1. 確認 `aliases.yaml` 有完整列出所有 backup domain，沒有 backup domain 被誤當成 root 全量載入。
+1. 確認 `shadowdns.yaml` 的 `aliases:` 區段 有完整列出所有 backup domain，沒有 backup domain 被誤當成 root 全量載入。
 2. 用 `ps aux` 或 `cat /proc/<pid>/status | grep VmRSS` 觀察 RSS（常駐記憶體），避免與 VSZ（虛擬記憶體）混淆。
 
 ---

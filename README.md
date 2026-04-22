@@ -54,7 +54,7 @@ Response sent to client
 
 **View Matcher**: Each view's `match-clients` block is compiled into an ordered rule slice at startup. Rules are evaluated left to right; the first rule that matches the client's source IP determines the view. If no view matches, the server returns REFUSED. GeoIP lookups use MaxMind's mmdb format read directly into memory at startup.
 
-**Alias Resolver**: At query time, the resolver performs a longest-suffix match against the alias map (built from `aliases.yaml` at startup). A backup zone entry is a thin pointer — the resolver strips the backup suffix, replaces it with the root suffix, and hands the rewritten name to the zone lookup. The original backup name is retained so the rewrite stage can restore it.
+**Alias Resolver**: At query time, the resolver performs a longest-suffix match against the alias map (built from the `aliases` section of `shadowdns.yaml` at startup). A backup zone entry is a thin pointer — the resolver strips the backup suffix, replaces it with the root suffix, and hands the rewritten name to the zone lookup. The original backup name is retained so the rewrite stage can restore it.
 
 **Zone Lookup**: Zone data is stored as `map[viewName]map[zoneName]*Zone`. Each `Zone` holds a `map[ownerName][]dns.RR`. All structures are read-only after startup; no locking is required on the read path. When an exact match returns no records, the server falls back to wildcard matching per RFC 4592: it strips one DNS label at a time from the query name and probes for a `*.<parent>` entry in the map, stopping at the zone origin or at an existing name that blocks further traversal (the empty non-terminal rule). Backup override records (TXT, MX, SRV from a backup zone's own file, if provided) are stored separately and merged in after the root lookup.
 
@@ -159,7 +159,7 @@ Use the host-specific binary path from step 2; the example below assumes `linux/
 ```bash
 ./bin/shadowdns-linux-amd64 \
     --named-conf /etc/namedb/named.conf \
-    --aliases    /etc/namedb/aliases.yaml
+    --config     /etc/namedb/shadowdns.yaml
 ```
 
 ShadowDNS listens on `:53` (UDP and TCP) by default. Use `--listen` to override.
@@ -171,7 +171,7 @@ ShadowDNS listens on `:53` (UDP and TCP) by default. Use `--listen` to override.
 | Flag              | Default | Required | Description                                              |
 |-------------------|---------|----------|----------------------------------------------------------|
 | `--named-conf`    | —       | Yes      | Path to `named.conf`. The `geoip-directory` option inside this file controls where mmdb files are read from. |
-| `--aliases`       | —       | No       | Path to `aliases.yaml`. If omitted or file is absent, all zones are treated as root zones (no aliasing). |
+| `--config`        | —       | Yes      | Path to the unified ShadowDNS YAML config (`aliases` + `ephemeral_api` sections). See schema below. |
 | `--listen`        | `:53`   | No       | UDP/TCP listen address. Accepts any `host:port` form.    |
 | `--metrics-addr`  | `:9153` | No       | Prometheus `/metrics` HTTP listen address. Empty string disables. |
 | `--pprof-enable`  | `false` | No       | Expose Go pprof profiling endpoints under `/debug/pprof/` on the metrics HTTP server. Requires `--metrics-addr` to be non-empty. Read only at startup — SIGHUP reload does not change its value; restart the process to toggle. **Only enable on a trusted network or with a loopback/localhost bind**: pprof has no authentication, returns debugger-grade runtime state, and the CPU/trace profile endpoints can be used to stall the process for the requested duration. |
@@ -186,29 +186,52 @@ ShadowDNS listens on `:53` (UDP and TCP) by default. Use `--listen` to override.
 |-----------------------------------------|-------------------------------------------------------|
 | `shadowdns reload --named-conf <path>`  | Send SIGHUP to the server identified by the pid-file configured in `named.conf`. Accepts only `--named-conf`; server-startup flags are rejected. |
 
-### aliases.yaml schema
+### shadowdns.yaml schema
 
-`aliases.yaml` maps each root domain to one or more backup domains. Backup domains will be served by rewriting queries to the corresponding root domain rather than loading their own zone data.
+`shadowdns.yaml` is a single YAML document with two optional top-level sections:
+`aliases` (backup → root map) and `ephemeral_api` (HTTP API for short-lived TXT
+records). Any other top-level key is rejected at startup (strict decoding).
 
 ```yaml
-# aliases.yaml
-#
-# Each key is a root domain (fully-loaded zone).
-# Each value is a list of backup domains that alias to that root.
+# shadowdns.yaml
 
-example.com:
-  - backup-example.com
-  - mirror-example.com
+aliases:
+  backup-example.com: example.com
+  mirror-example.com: example.com
+  backup-another.com: another-root.com
 
-another-root.com:
-  - backup-another.com
+ephemeral_api:
+  listen: "127.0.0.1:8053"
+  allow:
+    - "127.0.0.1"
+    - "10.0.0.0/8"
+  # token: "optional-bearer-token"
 ```
 
-Rules:
-- A backup domain may appear under exactly one root. Duplicates cause a fatal startup error.
-- A domain cannot alias itself.
+`aliases` rules:
+- Each key is a backup domain; each value is its root domain.
+- A backup domain may appear at most once (after case-normalization).
+- A backup domain cannot equal its root (self-alias is rejected).
 - Domains not listed here are treated as independent root zones and are loaded in full.
 - Backup zones may optionally provide their own zone file containing TXT, MX, or SRV override records. A, AAAA, CNAME, NS, and SOA records in a backup zone file are discarded with a warning — those record types are always inherited from the root.
+
+`ephemeral_api` fields:
+- `listen` (required) — `host:port` the API server binds to.
+- `allow` (required, non-empty) — list of source IPs or CIDR ranges permitted to reach the API. Empty list is rejected.
+- `token` (optional) — pre-shared bearer token. When set, every request must include `Authorization: Bearer <token>`. When omitted, token validation is skipped (IP ACL still applies).
+
+When the `ephemeral_api` section is absent, no HTTP API server is started. See [docs/ephemeral-api.md](docs/ephemeral-api.md) for endpoint details, request/response schemas, and `curl` examples.
+
+SIGHUP reload re-reads `shadowdns.yaml` and swaps the in-memory alias map
+atomically — if any section fails validation the running server keeps its
+previous state and ephemeral records are preserved. On successful reload the
+ephemeral record store is cleared.
+
+> **Breaking change since v0.x:** the previous `--aliases` CLI flag and
+> `aliases.yaml` file have been removed. Migration is mechanical: take the
+> entries from the old `aliases.yaml` (root → [backups] format) and re-express
+> them inverted as `backup: root` lines under the `aliases:` section of the
+> new `shadowdns.yaml`.
 
 ### GeoIP databases
 
@@ -275,7 +298,7 @@ make build
 
 ./bin/shadowdns-linux-amd64 \
     --named-conf /etc/namedb/named.conf \
-    --aliases    /etc/namedb/aliases.yaml \
+    --config     /etc/namedb/shadowdns.yaml \
     --dry-run
 ```
 
