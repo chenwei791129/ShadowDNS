@@ -5,11 +5,14 @@
 // A single FQDN may hold multiple distinct TXT values simultaneously (for
 // example the apex + wildcard validation tokens ACME issues against the same
 // _acme-challenge.<domain> name). Put semantics are add-or-refresh; Delete
-// wipes every entry associated with an FQDN in one operation.
+// wipes every entry associated with an FQDN in one operation; DeleteValue
+// removes a single entry matching a specific value so one ACME challenge
+// can clean up without disturbing a concurrent sibling challenge.
 package ephemeral
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -131,6 +134,34 @@ func (s *Store) Delete(fqdn string) {
 	s.mu.Lock()
 	delete(s.records, canonical)
 	s.mu.Unlock()
+}
+
+// DeleteValue removes at most one entry under fqdn matching value exactly
+// (case-sensitive, no normalization). Returns whether an entry was removed.
+// Removes the FQDN key when its last entry is deleted so no empty slice is
+// retained.
+func (s *Store) DeleteValue(fqdn, value string) bool {
+	canonical := dnsutil.Canonicalize(fqdn)
+	if canonical == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, ok := s.records[canonical]
+	if !ok {
+		return false
+	}
+	idx := slices.IndexFunc(entries, func(e entry) bool { return e.value == value })
+	if idx == -1 {
+		return false
+	}
+	entries = slices.Delete(entries, idx, idx+1)
+	if len(entries) == 0 {
+		delete(s.records, canonical)
+	} else {
+		s.records[canonical] = entries
+	}
+	return true
 }
 
 // Clear removes all records unconditionally. Used during SIGHUP reload so

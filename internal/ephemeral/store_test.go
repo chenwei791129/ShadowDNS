@@ -243,6 +243,73 @@ func TestStore_DeleteNonExistentIsNoOp(t *testing.T) {
 	s.Delete("missing.example.com.")
 }
 
+func TestStore_DeleteValueRemovesOnlyMatchingEntry(t *testing.T) {
+	s := newStoreWithClock(t, time.Unix(1_000_000, 0))
+
+	s.Put("_acme-challenge.example.com.", "token-A", 120)
+	s.Put("_acme-challenge.example.com.", "token-B", 120)
+
+	if !s.DeleteValue("_acme-challenge.example.com.", "token-A") {
+		t.Fatal("DeleteValue returned false, want true for matching entry")
+	}
+	recs, ok := s.Lookup("_acme-challenge.example.com.")
+	if !ok || len(recs) != 1 || recs[0].Value != "token-B" {
+		t.Errorf("after DeleteValue: recs=%+v ok=%v, want single token-B", recs, ok)
+	}
+}
+
+func TestStore_DeleteValueReturnsFalseWhenNoMatch(t *testing.T) {
+	s := newStoreWithClock(t, time.Unix(1_000_000, 0))
+
+	s.Put("foo.example.com.", "token-A", 120)
+
+	if s.DeleteValue("foo.example.com.", "token-X") {
+		t.Fatal("DeleteValue returned true, want false for non-matching value")
+	}
+	recs, ok := s.Lookup("foo.example.com.")
+	if !ok || len(recs) != 1 || recs[0].Value != "token-A" {
+		t.Errorf("store mutated after non-matching DeleteValue: recs=%+v ok=%v", recs, ok)
+	}
+}
+
+func TestStore_DeleteValueRemovesFQDNKeyWhenLastEntry(t *testing.T) {
+	s := newStoreWithClock(t, time.Unix(1_000_000, 0))
+
+	s.Put("foo.example.com.", "only", 120)
+
+	if !s.DeleteValue("foo.example.com.", "only") {
+		t.Fatal("DeleteValue returned false, want true")
+	}
+	// Directly inspect the internal map to confirm the FQDN key is gone
+	// (not just an empty slice retained).
+	s.mu.RLock()
+	_, present := s.records["foo.example.com."]
+	s.mu.RUnlock()
+	if present {
+		t.Error("expected FQDN key to be removed from the map when last entry is deleted")
+	}
+}
+
+func TestStore_DeleteValueUnknownFQDNReturnsFalse(t *testing.T) {
+	s := NewStore()
+	if s.DeleteValue("missing.example.com.", "whatever") {
+		t.Fatal("DeleteValue on unknown FQDN returned true, want false")
+	}
+}
+
+func TestStore_DeleteValueCanonicalizesFQDN(t *testing.T) {
+	s := newStoreWithClock(t, time.Unix(1_000_000, 0))
+
+	s.Put("foo.example.com.", "v", 120)
+
+	if !s.DeleteValue("FOO.EXAMPLE.COM", "v") {
+		t.Fatal("DeleteValue returned false for non-canonical FQDN, want true after canonicalization")
+	}
+	if _, ok := s.Lookup("foo.example.com."); ok {
+		t.Error("entry still present after DeleteValue with non-canonical FQDN")
+	}
+}
+
 func TestStore_GCSweepRemovesExpired(t *testing.T) {
 	base := time.Unix(1_000_000, 0)
 	s := newStoreWithClock(t, base)

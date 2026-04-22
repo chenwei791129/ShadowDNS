@@ -216,6 +216,67 @@ func TestEphemeralTxtApi_MultiValueEndToEnd(t *testing.T) {
 	}
 }
 
+// TestEphemeralTxtApi_PerValueDeleteEndToEnd verifies the ?value= selector:
+// PUT two values, delete one by value, only the other remains visible via
+// DNS; then wipe-all DELETE clears the FQDN entirely.
+func TestEphemeralTxtApi_PerValueDeleteEndToEnd(t *testing.T) {
+	dir := setupReloadTestDir(t)
+	srv, baseURL, _, _, _, _, cleanup := startEphemeralFixture(t, dir)
+	defer cleanup()
+
+	if code := httpPutJSON(t, baseURL+"/v1/txt/_acme-challenge.example.com",
+		`{"value":"token-A","ttl":120}`); code != http.StatusOK {
+		t.Fatalf("PUT 1 status = %d", code)
+	}
+	if code := httpPutJSON(t, baseURL+"/v1/txt/_acme-challenge.example.com",
+		`{"value":"token-B","ttl":120}`); code != http.StatusOK {
+		t.Fatalf("PUT 2 status = %d", code)
+	}
+
+	if code := httpDelete(t, baseURL+"/v1/txt/_acme-challenge.example.com?value=token-A"); code != http.StatusOK {
+		t.Fatalf("DELETE ?value=token-A status = %d", code)
+	}
+
+	resp := reloadQuery(t, srv, "_acme-challenge.example.com.", dns.TypeTXT)
+	if len(resp.Answer) != 1 {
+		t.Fatalf("after per-value delete: expected 1 RR, got %d: %v", len(resp.Answer), resp.Answer)
+	}
+	if txt := resp.Answer[0].(*dns.TXT); txt.Txt[0] != "token-B" {
+		t.Errorf("surviving TXT = %q, want token-B", txt.Txt[0])
+	}
+
+	if code := httpDelete(t, baseURL+"/v1/txt/_acme-challenge.example.com"); code != http.StatusOK {
+		t.Fatalf("DELETE wipe-all status = %d", code)
+	}
+	resp = reloadQuery(t, srv, "_acme-challenge.example.com.", dns.TypeTXT)
+	if resp.Rcode != dns.RcodeNameError {
+		t.Errorf("after wipe-all: Rcode = %s, want NXDOMAIN", dns.RcodeToString[resp.Rcode])
+	}
+}
+
+// TestEphemeralTxtApi_PerValueDeleteLastEntryClearsFQDN verifies that when
+// ?value= removes the last remaining entry, the FQDN is fully cleared and
+// DNS returns NXDOMAIN (no empty-slice leak in the store).
+func TestEphemeralTxtApi_PerValueDeleteLastEntryClearsFQDN(t *testing.T) {
+	dir := setupReloadTestDir(t)
+	srv, baseURL, _, _, _, _, cleanup := startEphemeralFixture(t, dir)
+	defer cleanup()
+
+	if code := httpPutJSON(t, baseURL+"/v1/txt/_acme-challenge.example.com",
+		`{"value":"only","ttl":120}`); code != http.StatusOK {
+		t.Fatalf("PUT status = %d", code)
+	}
+
+	if code := httpDelete(t, baseURL+"/v1/txt/_acme-challenge.example.com?value=only"); code != http.StatusOK {
+		t.Fatalf("DELETE ?value=only status = %d", code)
+	}
+
+	resp := reloadQuery(t, srv, "_acme-challenge.example.com.", dns.TypeTXT)
+	if resp.Rcode != dns.RcodeNameError {
+		t.Errorf("after per-value delete of last entry: Rcode = %s, want NXDOMAIN", dns.RcodeToString[resp.Rcode])
+	}
+}
+
 // TestEphemeralTxtApi_ReloadFailsOnAliasesKeepsOldState covers task 7.2:
 // a reload with an invalid aliases section must not swap state and must not
 // clear the ephemeral store.

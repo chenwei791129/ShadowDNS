@@ -54,7 +54,7 @@ IP ACL 先於 token 驗證：來源 IP 不在白名單直接回 `403`，就算 t
 
 | 欄位 | 型別 | 必填 | 說明 |
 |------|------|------|------|
-| `value` | string | 必填 | TXT record 的值（例如 ACME challenge token）|
+| `value` | string | 必填 | TXT record 的值（例如 ACME challenge token）；UTF-8 bytes ≤ 255（RFC 1035 TXT character-string 上限），超過回 `400` |
 | `ttl` | integer | 選填（預設 0）| 秒數；會 clamp 至 `[1, 3600]`（`0` → `1`，`7200` → `3600`）|
 
 ### 範例（無 token）
@@ -112,16 +112,36 @@ dig @127.0.0.1 _acme-challenge.example.com TXT +short
 
 ---
 
-## DELETE — 一次清除該 FQDN 下所有 ephemeral records
+## DELETE — 清除 ephemeral records
 
-`DELETE` 一律移除該 FQDN 下**所有** ephemeral entries，無論目前有幾筆、value 為何。不提供「只刪某一筆 value」的 endpoint——若需要更精細的控制，可等 TTL 自然過期。
+`DELETE` 支援兩種模式：
+
+- **不帶 `?value=`（wipe-all）**：移除該 FQDN 下**所有** ephemeral entries，無論目前有幾筆、value 為何。
+- **帶 `?value=<value>`（per-value delete）**：只移除該 FQDN 下 value 與查詢字串完全相符的那一筆 entry；其他 value 不受影響。這是 ACME DNS-01 平行驗證（apex + wildcard 同名不同 token）下收尾單一 challenge 的安全做法——直接 wipe-all 會連同另一個仍在驗證中的 token 一起被清掉。
 
 **DELETE 只影響 ephemeral store；zone file 中的同名 record 完全不受影響**，因此不會發生透過 API 刪除正式資料的情境。
+
+### Wipe-all
 
 ```bash
 curl -X DELETE http://127.0.0.1:8053/v1/txt/_acme-challenge.example.com \
   -H 'Authorization: Bearer secret123'
 ```
+
+### Per-value delete
+
+```bash
+# URL-encode value 中任何非 URL-safe 字元（token 通常是 base64url 不需要編碼）
+curl -X DELETE "http://127.0.0.1:8053/v1/txt/_acme-challenge.example.com?value=token-apex" \
+  -H 'Authorization: Bearer secret123'
+```
+
+比對規則：
+
+- byte-exact、case-sensitive、完全不做 normalization（與 PUT 比對邏輯一致）。
+- `?value=` 值的 UTF-8 bytes ≤ 255（RFC 1035 TXT character-string 上限），超過回 `400`。
+- `?value=`（空字串）會回 `400`，以避免和 wipe-all（不帶 query key）混淆。
+- `?value=xxx` 但 store 中無 matching entry 時回 `200`（idempotent）。
 
 ### 成功回應（200）
 
@@ -132,7 +152,7 @@ curl -X DELETE http://127.0.0.1:8053/v1/txt/_acme-challenge.example.com \
 }
 ```
 
-DELETE 是冪等的——對不存在的 FQDN 呼叫也會回 `200`。多次 DELETE 同一 FQDN 亦安全。
+DELETE 是冪等的——對不存在的 FQDN、或 `?value=` 無匹配，都回 `200`。多次 DELETE 同一 FQDN 亦安全。
 
 ---
 
@@ -161,6 +181,9 @@ dig @127.0.0.1 _acme-challenge.example.com TXT +short
 | 設了 token 但值不符 | `401` | `{"status":"error","error":"invalid token"}` |
 | Body 空、非 JSON、或有未知欄位 | `400` | `{"status":"error","error":"invalid JSON body: ..."}` |
 | Body 缺少 `value` 欄位 | `400` | `{"status":"error","error":"missing required field: value"}` |
+| PUT body 的 `value` 長度 > 255 bytes | `400` | `{"status":"error","error":"value exceeds 255-byte limit (got N)"}` |
+| DELETE `?value=`（空字串）| `400` | `{"status":"error","error":"empty value query parameter"}` |
+| DELETE `?value=` 長度 > 255 bytes | `400` | `{"status":"error","error":"value exceeds 255-byte limit (got N)"}` |
 
 Token 比較使用 `crypto/subtle.ConstantTimeCompare`，可抵抗 timing attack。
 
@@ -191,10 +214,17 @@ curl -X PUT "http://127.0.0.1:8053/v1/txt/_acme-challenge.${CERTBOT_DOMAIN}" \
   -d "{\"value\":\"${CERTBOT_VALIDATION}\",\"ttl\":120}"
 ```
 
-對應的 cleanup hook：
+對應的 cleanup hook——單一 client 場景（`certbot` 只驗證 apex 或 wildcard 其中一個）：
 
 ```bash
 curl -X DELETE "http://127.0.0.1:8053/v1/txt/_acme-challenge.${CERTBOT_DOMAIN}" \
+  -H "Authorization: Bearer ${SHADOWDNS_TOKEN}"
+```
+
+**平行驗證情境**（同時跑 apex + wildcard，或兩支 client 共用 `_acme-challenge.<domain>`）cleanup 時應改用 `?value=`，只收自己那筆 token，避免 wipe-all 誤刪另一支仍在驗證中的 challenge：
+
+```bash
+curl -X DELETE "http://127.0.0.1:8053/v1/txt/_acme-challenge.${CERTBOT_DOMAIN}?value=${CERTBOT_VALIDATION}" \
   -H "Authorization: Bearer ${SHADOWDNS_TOKEN}"
 ```
 

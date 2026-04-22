@@ -324,9 +324,77 @@ func TestServer_DELETE_NonExistentReturns200(t *testing.T) {
 	}
 }
 
-// TestServer_DELETE_RemovesAllEntries verifies the whole-FQDN wipe semantics:
-// DELETE clears every ephemeral value under the FQDN in a single call.
-func TestServer_DELETE_RemovesAllEntries(t *testing.T) {
+// TestServer_DELETE_WithValueSelectorRemovesOnlyMatching covers the
+// per-value delete: ?value=token-A must remove only that entry and keep
+// any other values under the same FQDN.
+func TestServer_DELETE_WithValueSelectorRemovesOnlyMatching(t *testing.T) {
+	s, store := newTestServer(t, "", []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")})
+	store.Put("_acme-challenge.example.com.", "token-A", 120)
+	store.Put("_acme-challenge.example.com.", "token-B", 120)
+
+	w := doRequest(s, "DELETE", "/v1/txt/_acme-challenge.example.com?value=token-A", "", "127.0.0.1", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	recs, ok := store.Lookup("_acme-challenge.example.com.")
+	if !ok || len(recs) != 1 || recs[0].Value != "token-B" {
+		t.Errorf("after ?value=token-A delete: recs=%+v ok=%v, want single token-B", recs, ok)
+	}
+}
+
+// TestServer_DELETE_WithValueSelectorNoMatchReturns200 verifies idempotent
+// semantics: deleting a non-matching value is a no-op but still returns 200.
+func TestServer_DELETE_WithValueSelectorNoMatchReturns200(t *testing.T) {
+	s, store := newTestServer(t, "", []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")})
+	store.Put("foo.example.com.", "token-A", 120)
+
+	w := doRequest(s, "DELETE", "/v1/txt/foo.example.com?value=token-X", "", "127.0.0.1", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (idempotent)", w.Code)
+	}
+	recs, ok := store.Lookup("foo.example.com.")
+	if !ok || len(recs) != 1 || recs[0].Value != "token-A" {
+		t.Errorf("store changed after non-matching delete: recs=%+v ok=%v", recs, ok)
+	}
+}
+
+// TestServer_DELETE_EmptyValueSelectorReturns400 verifies that a present-but-empty
+// ?value= query must not be conflated with the wipe-all semantics (?value= absent).
+func TestServer_DELETE_EmptyValueSelectorReturns400(t *testing.T) {
+	s, store := newTestServer(t, "", []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")})
+	store.Put("foo.example.com.", "a", 120)
+	store.Put("foo.example.com.", "b", 120)
+
+	w := doRequest(s, "DELETE", "/v1/txt/foo.example.com?value=", "", "127.0.0.1", "")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for empty ?value=", w.Code)
+	}
+	recs, _ := store.Lookup("foo.example.com.")
+	if len(recs) != 2 {
+		t.Errorf("store mutated on 400 response: got %d entries, want 2", len(recs))
+	}
+}
+
+// TestServer_DELETE_OversizeValueSelectorReturns400 verifies RFC 1035 limit
+// is enforced before touching the store.
+func TestServer_DELETE_OversizeValueSelectorReturns400(t *testing.T) {
+	s, store := newTestServer(t, "", []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")})
+	store.Put("foo.example.com.", "a", 120)
+
+	oversize := strings.Repeat("x", 256)
+	w := doRequest(s, "DELETE", "/v1/txt/foo.example.com?value="+oversize, "", "127.0.0.1", "")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for oversize ?value=", w.Code)
+	}
+	recs, _ := store.Lookup("foo.example.com.")
+	if len(recs) != 1 {
+		t.Errorf("store mutated on oversize 400: got %d entries, want 1", len(recs))
+	}
+}
+
+// TestServer_DELETE_NoValueSelectorWipesAll is a regression check that the
+// legacy wipe-all semantics still hold when ?value= is absent.
+func TestServer_DELETE_NoValueSelectorWipesAll(t *testing.T) {
 	s, store := newTestServer(t, "", []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")})
 	store.Put("foo.example.com.", "a", 120)
 	store.Put("foo.example.com.", "b", 120)
@@ -334,10 +402,25 @@ func TestServer_DELETE_RemovesAllEntries(t *testing.T) {
 
 	w := doRequest(s, "DELETE", "/v1/txt/foo.example.com", "", "127.0.0.1", "")
 	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
+		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	if _, ok := store.Lookup("foo.example.com."); ok {
-		t.Error("expected every entry to be deleted")
+		t.Error("wipe-all DELETE (no ?value=) must remove every entry")
+	}
+}
+
+// TestServer_PUT_OversizeValueRejected verifies RFC 1035 255-byte cap on PUT.
+func TestServer_PUT_OversizeValueRejected(t *testing.T) {
+	s, store := newTestServer(t, "", []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")})
+
+	oversize := strings.Repeat("x", 256)
+	body := fmt.Sprintf(`{"value":%q,"ttl":120}`, oversize)
+	w := doRequest(s, "PUT", "/v1/txt/foo.example.com", body, "127.0.0.1", "")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for oversize value", w.Code)
+	}
+	if _, ok := store.Lookup("foo.example.com."); ok {
+		t.Error("store must not be modified when PUT is rejected")
 	}
 }
 

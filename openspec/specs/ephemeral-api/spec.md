@@ -107,7 +107,7 @@ tests:
 ---
 ### Requirement: PUT endpoint adds or refreshes an ephemeral TXT value
 
-The API SHALL accept `PUT /v1/txt/{fqdn}` with a JSON body containing `value` (string) and `ttl` (integer, seconds). The FQDN path parameter SHALL be canonicalized to lowercase with a trailing dot. The TTL SHALL be clamped to the range [1, 3600]. On success, the API SHALL respond with HTTP 200 and a JSON body confirming the operation.
+The API SHALL accept `PUT /v1/txt/{fqdn}` with a JSON body containing `value` (string) and `ttl` (integer, seconds). The FQDN path parameter SHALL be canonicalized to lowercase with a trailing dot. The TTL SHALL be clamped to the range [1, 3600]. The `value` field SHALL be validated to be at most 255 UTF-8 bytes in length (the RFC 1035 TXT character-string limit); PUT requests with a longer value SHALL be rejected with HTTP 400 before touching the store. On success, the API SHALL respond with HTTP 200 and a JSON body confirming the operation.
 
 PUT SHALL support multiple distinct values per FQDN. When the posted value does not match any existing entry under the FQDN, the API SHALL append a new entry. When the posted value matches an existing entry exactly, the API SHALL refresh that entry's expiration using the new TTL instead of creating a duplicate. The operation SHALL remain idempotent: two consecutive identical PUT calls SHALL produce the same final state as a single call.
 
@@ -146,194 +146,90 @@ The response body SHALL include the canonical FQDN, the clamped TTL applied to t
 - **WHEN** a PUT request has an empty body, invalid JSON, or missing `value` field
 - **THEN** the API SHALL respond with HTTP 400 and a JSON error message
 
+#### Scenario: PUT with oversize value returns 400
+
+- **WHEN** a PUT request body contains a `value` field whose UTF-8 byte length exceeds 255
+- **THEN** the API SHALL respond with HTTP 400
+- **THEN** no ephemeral entry SHALL be created or modified
+
 
 <!-- @trace
-source: ephemeral-txt-api
+source: delete-ephemeral-by-value
 updated: 2026-04-22
 code:
-  - docs/ephemeral-api.md
-  - go.sum
-  - .release-please-manifest.json
-  - cmd/shadowdns/main.go
-  - internal/transfer/notify.go
-  - internal/config/zones.go
-  - Makefile
   - scripts/smoke.sh
   - internal/ephemeral/store.go
-  - go.mod
-  - docs/benchmark.md
-  - scripts/gen-container-testdata.go
-  - testdata/integration/master/example.com_view-other.fwd
-  - internal/server/server.go
-  - internal/server/listener.go
-  - cmd/shadowdns/pprof.go
-  - internal/view/loader.go
-  - internal/shadowdnscfg/config.go
-  - internal/zone/parser.go
-  - internal/server/handler.go
-  - internal/alias/override.go
-  - .github/workflows/release-please.yml
-  - CLAUDE.md
-  - internal/server/listenaddr.go
-  - internal/zone/classify.go
-  - CHANGELOG.md
-  - testdata/integration/master/example.com_view-th.fwd
-  - cmd/shadowdns/reload.go
-  - internal/transfer/axfr.go
-  - internal/zone/zone.go
-  - internal/config/options.go
-  - packaging/shadowdns.service
   - internal/api/server.go
-  - packaging/shadowdns.yaml.example
-  - packaging/aliases.yaml.example
-  - packaging/named.conf.example
-  - internal/server/build.go
-  - internal/config/aliases.go
-  - scripts/test-deb.sh
-  - nfpm.yaml
-  - internal/server/fingerprint.go
-  - internal/logging/logger.go
-  - docs/migration.md
-  - README.md
+  - docs/ephemeral-api.md
 tests:
   - cmd/shadowdns/main_ephemeral_test.go
-  - test/integration/notify_test.go
-  - internal/server/server_test.go
-  - test/integration/negative_test.go
-  - internal/transfer/axfr_test.go
   - internal/ephemeral/store_test.go
-  - internal/zone/classify_test.go
-  - internal/zone/parser_test.go
-  - internal/config/aliases_test.go
-  - cmd/shadowdns/listenon_test.go
-  - cmd/shadowdns/pprof_test.go
-  - cmd/shadowdns/main_test.go
   - internal/api/server_test.go
-  - internal/config/zones_test.go
-  - internal/server/fingerprint_test.go
-  - test/integration/axfr_test.go
-  - internal/logging/logger_test.go
-  - test/integration/helpers_test.go
-  - internal/view/loader_test.go
-  - test/integration/reload_diff_test.go
-  - test/integration/cname_following_test.go
-  - internal/shadowdnscfg/config_test.go
-  - internal/alias/override_test.go
-  - internal/server/handler_ephemeral_test.go
-  - internal/zone/zone_test.go
-  - internal/transfer/notify_test.go
-  - internal/server/listenaddr_test.go
-  - internal/server/build_test.go
-  - internal/config/options_test.go
-  - test/integration/listenon_test.go
-  - test/integration/wildcard_test.go
-  - test/integration/cname_synthesis_test.go
 -->
 
 ---
 ### Requirement: DELETE endpoint removes all ephemeral TXT entries for an FQDN
 
-The API SHALL accept `DELETE /v1/txt/{fqdn}`. The FQDN SHALL be canonicalized to lowercase with a trailing dot. DELETE SHALL remove every ephemeral entry for that FQDN in a single operation regardless of how many distinct values are currently stored. The API SHALL NOT accept a per-value selector — value-specific deletion is explicitly out of scope. DELETE SHALL only touch the ephemeral record store; TXT records served from zone files SHALL be unaffected. On success (including when no ephemeral entries exist for the FQDN), the API SHALL respond with HTTP 200.
+The API SHALL accept `DELETE /v1/txt/{fqdn}`. The FQDN SHALL be canonicalized to lowercase with a trailing dot. DELETE SHALL only touch the ephemeral record store; TXT records served from zone files SHALL be unaffected. On success (including when no matching ephemeral entries exist), the API SHALL respond with HTTP 200.
 
-#### Scenario: Delete removes every ephemeral entry for the FQDN
+DELETE SHALL support an optional `value` query-string parameter. When `value` is absent, DELETE SHALL remove every ephemeral entry for the FQDN in a single operation regardless of how many distinct values are currently stored. When `value` is present and non-empty, DELETE SHALL remove only the single entry whose stored value exactly matches the supplied value (byte-exact, case-sensitive, no normalization) and SHALL leave any other entries under the same FQDN intact. When `value` is present but empty (`?value=`), the API SHALL reject the request with HTTP 400.
 
-- **WHEN** two ephemeral entries exist for `_acme-challenge.example.com.` (values `token-A` and `token-B`) and a DELETE request is sent to `/v1/txt/_acme-challenge.example.com`
+When `value` is present and exceeds 255 bytes (the RFC 1035 TXT character-string limit), the API SHALL reject the request with HTTP 400 before touching the store.
+
+#### Scenario: Delete without value selector removes every ephemeral entry for the FQDN
+
+- **WHEN** two ephemeral entries exist for `_acme-challenge.example.com.` (values `token-A` and `token-B`) and a DELETE request is sent to `/v1/txt/_acme-challenge.example.com` with no `value` parameter
 - **THEN** the API SHALL respond with HTTP 200
 - **THEN** a subsequent DNS TXT query SHALL not return either ephemeral value
 
+#### Scenario: Delete with value selector removes only the matching entry
+
+- **WHEN** two ephemeral entries exist for `_acme-challenge.example.com.` (values `token-A` and `token-B`) and a DELETE request is sent to `/v1/txt/_acme-challenge.example.com?value=token-A`
+- **THEN** the API SHALL respond with HTTP 200
+- **THEN** a subsequent DNS TXT query SHALL return only `token-B`
+
+#### Scenario: Delete with value selector that matches no entry returns 200
+
+- **WHEN** an ephemeral entry with value `token-A` exists for `_acme-challenge.example.com.` and a DELETE request is sent to `/v1/txt/_acme-challenge.example.com?value=token-X`
+- **THEN** the API SHALL respond with HTTP 200 (idempotent delete)
+- **THEN** a subsequent DNS TXT query SHALL still return `token-A`
+
 #### Scenario: Delete a non-existent record returns 200
 
-- **WHEN** a DELETE request is sent for an FQDN that has no ephemeral record
-- **THEN** the API SHALL respond with HTTP 200 (idempotent delete)
+- **WHEN** a DELETE request is sent for an FQDN that has no ephemeral record (with or without a `value` parameter)
+- **THEN** the API SHALL respond with HTTP 200
 
 #### Scenario: Delete does not affect zone file records
 
-- **WHEN** a zone file defines a TXT record for `_acme-challenge.example.com.` with value `static-value`, an ephemeral entry with value `token-A` has been added via the API, and a DELETE request is sent for that FQDN
+- **WHEN** a zone file defines a TXT record for `_acme-challenge.example.com.` with value `static-value`, an ephemeral entry with value `token-A` has been added via the API, and a DELETE request is sent for that FQDN with no `value` parameter
 - **THEN** the API SHALL respond with HTTP 200
 - **THEN** a subsequent DNS TXT query SHALL still return `static-value` from the zone file
 
+#### Scenario: Delete with empty value selector returns 400
+
+- **WHEN** a DELETE request is sent to `/v1/txt/_acme-challenge.example.com?value=`
+- **THEN** the API SHALL respond with HTTP 400
+- **THEN** no ephemeral entry SHALL be modified
+
+#### Scenario: Delete with oversize value selector returns 400
+
+- **WHEN** a DELETE request is sent with a `value` query parameter whose UTF-8 byte length exceeds 255
+- **THEN** the API SHALL respond with HTTP 400
+- **THEN** no ephemeral entry SHALL be modified
+
 
 <!-- @trace
-source: ephemeral-txt-api
+source: delete-ephemeral-by-value
 updated: 2026-04-22
 code:
-  - docs/ephemeral-api.md
-  - go.sum
-  - .release-please-manifest.json
-  - cmd/shadowdns/main.go
-  - internal/transfer/notify.go
-  - internal/config/zones.go
-  - Makefile
   - scripts/smoke.sh
   - internal/ephemeral/store.go
-  - go.mod
-  - docs/benchmark.md
-  - scripts/gen-container-testdata.go
-  - testdata/integration/master/example.com_view-other.fwd
-  - internal/server/server.go
-  - internal/server/listener.go
-  - cmd/shadowdns/pprof.go
-  - internal/view/loader.go
-  - internal/shadowdnscfg/config.go
-  - internal/zone/parser.go
-  - internal/server/handler.go
-  - internal/alias/override.go
-  - .github/workflows/release-please.yml
-  - CLAUDE.md
-  - internal/server/listenaddr.go
-  - internal/zone/classify.go
-  - CHANGELOG.md
-  - testdata/integration/master/example.com_view-th.fwd
-  - cmd/shadowdns/reload.go
-  - internal/transfer/axfr.go
-  - internal/zone/zone.go
-  - internal/config/options.go
-  - packaging/shadowdns.service
   - internal/api/server.go
-  - packaging/shadowdns.yaml.example
-  - packaging/aliases.yaml.example
-  - packaging/named.conf.example
-  - internal/server/build.go
-  - internal/config/aliases.go
-  - scripts/test-deb.sh
-  - nfpm.yaml
-  - internal/server/fingerprint.go
-  - internal/logging/logger.go
-  - docs/migration.md
-  - README.md
+  - docs/ephemeral-api.md
 tests:
   - cmd/shadowdns/main_ephemeral_test.go
-  - test/integration/notify_test.go
-  - internal/server/server_test.go
-  - test/integration/negative_test.go
-  - internal/transfer/axfr_test.go
   - internal/ephemeral/store_test.go
-  - internal/zone/classify_test.go
-  - internal/zone/parser_test.go
-  - internal/config/aliases_test.go
-  - cmd/shadowdns/listenon_test.go
-  - cmd/shadowdns/pprof_test.go
-  - cmd/shadowdns/main_test.go
   - internal/api/server_test.go
-  - internal/config/zones_test.go
-  - internal/server/fingerprint_test.go
-  - test/integration/axfr_test.go
-  - internal/logging/logger_test.go
-  - test/integration/helpers_test.go
-  - internal/view/loader_test.go
-  - test/integration/reload_diff_test.go
-  - test/integration/cname_following_test.go
-  - internal/shadowdnscfg/config_test.go
-  - internal/alias/override_test.go
-  - internal/server/handler_ephemeral_test.go
-  - internal/zone/zone_test.go
-  - internal/transfer/notify_test.go
-  - internal/server/listenaddr_test.go
-  - internal/server/build_test.go
-  - internal/config/options_test.go
-  - test/integration/listenon_test.go
-  - test/integration/wildcard_test.go
-  - test/integration/cname_synthesis_test.go
 -->
 
 ---

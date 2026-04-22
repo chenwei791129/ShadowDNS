@@ -28,6 +28,8 @@ const (
 	MinTTL          = 1
 	MaxTTL          = 3600
 	ShutdownTimeout = 5 * time.Second
+	// MaxValueBytes is the RFC 1035 TXT character-string length limit.
+	MaxValueBytes = 255
 )
 
 // Server wraps the ephemeral TXT API. Construct with NewServer; start with
@@ -182,20 +184,43 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := validateValue(*req.Value); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	ttl := clampTTL(req.TTL)
 	count := s.store.Put(fqdn, *req.Value, uint32(ttl))
 	writeJSON(w, http.StatusOK, putResponseBody{Status: "ok", FQDN: fqdn, TTL: ttl, Count: count})
 }
 
-// handleDelete removes every ephemeral entry for the FQDN. DELETE is
-// always whole-FQDN — per-value deletion is intentionally not offered.
-// Zone file records are not touched by this handler.
+// handleDelete removes ephemeral entries for the FQDN. When the ?value=
+// query parameter is absent, every entry under the FQDN is wiped. When
+// present, only the matching entry is removed (idempotent: non-matching
+// returns 200). A present-but-empty ?value= is rejected with 400 so it
+// cannot be confused with the wipe-all path. Zone file records are never
+// touched.
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	fqdn, ok := canonicalFQDN(w, r)
 	if !ok {
 		return
 	}
-	s.store.Delete(fqdn)
+	q := r.URL.Query()
+	if !q.Has("value") {
+		s.store.Delete(fqdn)
+		writeJSON(w, http.StatusOK, okResponseBody{Status: "ok", FQDN: fqdn})
+		return
+	}
+	value := q.Get("value")
+	if value == "" {
+		writeError(w, http.StatusBadRequest, "empty value query parameter")
+		return
+	}
+	if err := validateValue(value); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.store.DeleteValue(fqdn, value)
 	writeJSON(w, http.StatusOK, okResponseBody{Status: "ok", FQDN: fqdn})
 }
 
@@ -211,6 +236,17 @@ func canonicalFQDN(w http.ResponseWriter, r *http.Request) (string, bool) {
 }
 
 // ---------- helpers ----------
+
+// validateValue enforces the RFC 1035 TXT character-string 255-byte limit.
+// Empty values pass this check. PUT accepts them (no ACME use case needs
+// "" but rejecting it is out of this change's scope); DELETE's ?value=
+// handler rejects present-but-empty values before calling validateValue.
+func validateValue(v string) error {
+	if len(v) > MaxValueBytes {
+		return fmt.Errorf("value exceeds %d-byte limit (got %d)", MaxValueBytes, len(v))
+	}
+	return nil
+}
 
 func clampTTL(ttl int) int {
 	switch {
