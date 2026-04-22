@@ -134,10 +134,10 @@ The `.deb` package SHALL install example configuration files under `/etc/shadowd
 - **WHEN** the package is installed
 - **THEN** `/etc/shadowdns/named.conf.example` SHALL exist and contain a valid `named.conf` skeleton with `options`, `geoip-directory`, and `view` blocks
 
-#### Scenario: Example aliases.yaml is installed
+#### Scenario: Example shadowdns.yaml is installed
 
 - **WHEN** the package is installed
-- **THEN** `/etc/shadowdns/aliases.yaml.example` SHALL exist and contain a valid aliases mapping with at least one root-to-backup example
+- **THEN** `/etc/shadowdns/shadowdns.yaml.example` SHALL exist and contain a valid unified config skeleton including the `aliases:` section (one-to-many `root: [backups]` format) and the `ephemeral_api:` section
 
 #### Scenario: Example files are not overwritten on upgrade
 

@@ -196,9 +196,11 @@ records). Any other top-level key is rejected at startup (strict decoding).
 # shadowdns.yaml
 
 aliases:
-  backup-example.com: example.com
-  mirror-example.com: example.com
-  backup-another.com: another-root.com
+  example.com:
+    - backup-example.com
+    - mirror-example.com
+  another-root.com:
+    - backup-another.com
 
 ephemeral_api:
   listen: "127.0.0.1:8053"
@@ -209,8 +211,8 @@ ephemeral_api:
 ```
 
 `aliases` rules:
-- Each key is a backup domain; each value is its root domain.
-- A backup domain may appear at most once (after case-normalization).
+- Each key is a root domain; the value is a list of its backup domains.
+- A backup domain may appear at most once across all roots (after normalization).
 - A backup domain cannot equal its root (self-alias is rejected).
 - Domains not listed here are treated as independent root zones and are loaded in full.
 - Backup zones may optionally provide their own zone file containing TXT, MX, or SRV override records. A, AAAA, CNAME, NS, and SOA records in a backup zone file are discarded with a warning — those record types are always inherited from the root.
@@ -229,9 +231,8 @@ ephemeral record store is cleared.
 
 > **Breaking change since v0.x:** the previous `--aliases` CLI flag and
 > `aliases.yaml` file have been removed. Migration is mechanical: take the
-> entries from the old `aliases.yaml` (root → [backups] format) and re-express
-> them inverted as `backup: root` lines under the `aliases:` section of the
-> new `shadowdns.yaml`.
+> entries from the old `aliases.yaml` (root → [backups] format) and move them
+> under the `aliases:` section of the new `shadowdns.yaml`.
 
 ### GeoIP databases
 

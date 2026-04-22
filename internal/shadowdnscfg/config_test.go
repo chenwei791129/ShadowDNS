@@ -25,7 +25,8 @@ func writeConfig(t *testing.T, contents string) string {
 func TestLoad_ValidConfigBothSections(t *testing.T) {
 	path := writeConfig(t, `
 aliases:
-  backup.com: root.com
+  root.com:
+    - backup.com
 ephemeral_api:
   listen: "127.0.0.1:8053"
   allow:
@@ -59,7 +60,7 @@ ephemeral_api:
 func TestLoad_AliasesOnly(t *testing.T) {
 	path := writeConfig(t, `
 aliases:
-  backup.com: root.com
+  root.com: ["backup.com"]
 `)
 	cfg, err := Load(path, nil)
 	if err != nil {
@@ -70,6 +71,74 @@ aliases:
 	}
 	if len(cfg.Aliases) != 1 {
 		t.Errorf("Aliases len = %d, want 1", len(cfg.Aliases))
+	}
+}
+
+func TestLoad_AliasesOneToMany(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  root.com:
+    - backup.com
+    - mirror.com
+`)
+	cfg, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Aliases) != 2 {
+		t.Errorf("Aliases len = %d, want 2", len(cfg.Aliases))
+	}
+	if cfg.Aliases["backup.com."] != "root.com." {
+		t.Errorf("backup.com. -> %q, want root.com.", cfg.Aliases["backup.com."])
+	}
+	if cfg.Aliases["mirror.com."] != "root.com." {
+		t.Errorf("mirror.com. -> %q, want root.com.", cfg.Aliases["mirror.com."])
+	}
+}
+
+// Same backup repeated under the same root is silently deduplicated rather
+// than rejected — a user typo but not a semantic conflict.
+func TestLoad_AliasesDuplicateBackupSameRootAccepted(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  root.com:
+    - backup.com
+    - backup.com
+`)
+	cfg, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Aliases) != 1 {
+		t.Errorf("Aliases len = %d, want 1", len(cfg.Aliases))
+	}
+	if cfg.Aliases["backup.com."] != "root.com." {
+		t.Errorf("backup.com. -> %q, want root.com.", cfg.Aliases["backup.com."])
+	}
+}
+
+func TestLoad_AliasesEmptyListAccepted(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  root.com: []
+`)
+	cfg, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Aliases) != 0 {
+		t.Errorf("Aliases len = %d, want 0", len(cfg.Aliases))
+	}
+}
+
+func TestLoad_AliasesLegacyFormatFails(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  backup.com: root.com
+`)
+	_, err := Load(path, nil)
+	if err == nil {
+		t.Fatal("expected error for legacy backup: root format (bare string instead of list)")
 	}
 }
 
@@ -112,7 +181,7 @@ ephemeral_api:
 func TestLoad_UnknownTopLevelKeyFails(t *testing.T) {
 	path := writeConfig(t, `
 aliases:
-  backup.com: root.com
+  root.com: ["backup.com"]
 unknown_section:
   foo: bar
 `)
@@ -152,12 +221,10 @@ func TestLoad_MissingFileFails(t *testing.T) {
 // ---------- aliases validation ----------
 
 func TestLoad_AliasesDuplicateBackupFails(t *testing.T) {
-	// Use case-difference to force a post-normalization duplicate (YAML parser
-	// would error on two literally-identical map keys).
 	path := writeConfig(t, `
 aliases:
-  Backup.com: root1.com
-  backup.com: root2.com
+  root1.com: ["backup.com"]
+  root2.com: ["BACKUP.com"]
 `)
 	_, err := Load(path, nil)
 	if err == nil {
@@ -171,7 +238,7 @@ aliases:
 func TestLoad_AliasesSelfAliasFails(t *testing.T) {
 	path := writeConfig(t, `
 aliases:
-  example.com: example.com
+  example.com: ["example.com"]
 `)
 	_, err := Load(path, nil)
 	if err == nil {

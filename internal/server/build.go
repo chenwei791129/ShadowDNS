@@ -76,8 +76,8 @@ func BuildState(
 			seenSet[origin] = true
 		}
 
-		// Aliased backups declared in aliases.yaml but missing from master.zones
-		// still need an origin entry so Detect() can match them.
+		// Aliased backups declared in the config aliases section but missing from
+		// master.zones still need an origin entry so Detect() can match them.
 		for backup, root := range aliases {
 			if _, ok := rootZones[v.Name][root]; !ok {
 				continue

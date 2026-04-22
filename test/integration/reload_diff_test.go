@@ -16,6 +16,7 @@ import (
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
+	"github.com/chenwei791129/ShadowDNS/internal/shadowdnscfg"
 	"github.com/chenwei791129/ShadowDNS/internal/view"
 )
 
@@ -63,10 +64,11 @@ func TestReloadDiff_NoChange_PointersIdentical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadNamedConf: %v", err)
 	}
-	aliases, err := config.LoadAliases(filepath.Join(tmpDir, "aliases.yaml"), logger)
+	sdCfg, err := shadowdnscfg.Load(filepath.Join(tmpDir, "shadowdns.yaml"), logger)
 	if err != nil {
-		t.Fatalf("LoadAliases: %v", err)
+		t.Fatalf("shadowdnscfg.Load: %v", err)
 	}
+	aliases := sdCfg.Aliases
 	country, asn, err := view.LoadGeoIP(geoIPDir, logger)
 	if err != nil {
 		t.Fatalf("LoadGeoIP: %v", err)
@@ -141,10 +143,11 @@ func TestReloadDiff_SameSizeContentChange_HashDetects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadNamedConf: %v", err)
 	}
-	aliases, err := config.LoadAliases(filepath.Join(tmpDir, "aliases.yaml"), logger)
+	sdCfg, err := shadowdnscfg.Load(filepath.Join(tmpDir, "shadowdns.yaml"), logger)
 	if err != nil {
-		t.Fatalf("LoadAliases: %v", err)
+		t.Fatalf("shadowdnscfg.Load: %v", err)
 	}
+	aliases := sdCfg.Aliases
 	country, asn, err := view.LoadGeoIP(geoIPDir, logger)
 	if err != nil {
 		t.Fatalf("LoadGeoIP: %v", err)
@@ -273,10 +276,11 @@ func TestReloadDiff_NoneMode_AlwaysReparses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadNamedConf: %v", err)
 	}
-	aliases, err := config.LoadAliases(filepath.Join(tmpDir, "aliases.yaml"), logger)
+	sdCfg, err := shadowdnscfg.Load(filepath.Join(tmpDir, "shadowdns.yaml"), logger)
 	if err != nil {
-		t.Fatalf("LoadAliases: %v", err)
+		t.Fatalf("shadowdnscfg.Load: %v", err)
 	}
+	aliases := sdCfg.Aliases
 	country, asn, err := view.LoadGeoIP(geoIPDir, logger)
 	if err != nil {
 		t.Fatalf("LoadGeoIP: %v", err)

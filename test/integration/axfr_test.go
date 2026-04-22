@@ -18,6 +18,7 @@ import (
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
+	"github.com/chenwei791129/ShadowDNS/internal/shadowdnscfg"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
 	"github.com/chenwei791129/ShadowDNS/internal/view"
 )
@@ -63,10 +64,11 @@ func axfrServerWithACL(t *testing.T, aclEntries []string) (*server.Server, func(
 		t.Fatalf("LoadNamedConf: %v", err)
 	}
 
-	aliases, err := config.LoadAliases(filepath.Join(tmpDir, "aliases.yaml"), logger)
+	sdCfg, err := shadowdnscfg.Load(filepath.Join(tmpDir, "shadowdns.yaml"), logger)
 	if err != nil {
-		t.Fatalf("LoadAliases: %v", err)
+		t.Fatalf("shadowdnscfg.Load: %v", err)
 	}
+	aliases := sdCfg.Aliases
 
 	country, asnDB, err := view.LoadGeoIP(geoIPDir, logger)
 	if err != nil {

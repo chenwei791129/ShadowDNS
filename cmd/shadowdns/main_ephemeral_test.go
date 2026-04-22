@@ -292,7 +292,8 @@ func TestEphemeralTxtApi_ReloadFailsOnAliasesKeepsOldState(t *testing.T) {
 	// Write a broken aliases section (self-alias is invalid).
 	writeShadowConf(t, dir, `
 aliases:
-  loop.example.com: loop.example.com
+  loop.example.com:
+    - loop.example.com
 ephemeral_api:
   listen: "127.0.0.1:18053"
   allow:
@@ -355,7 +356,8 @@ func TestEphemeralTxtApi_ReloadAllValidClearsStore(t *testing.T) {
 	// Valid new config with an added alias.
 	writeShadowConf(t, dir, `
 aliases:
-  backup.example.com: example.com
+  example.com:
+    - backup.example.com
 ephemeral_api:
   listen: "127.0.0.1:18055"
   allow:

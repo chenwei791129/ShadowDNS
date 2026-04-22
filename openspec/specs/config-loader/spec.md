@@ -413,31 +413,6 @@ tests:
   - internal/transfer/notify_test.go
 -->
 
-### Requirement: Parse aliases.yaml
-
-The config-loader SHALL parse an `aliases.yaml` file that declares root-to-backup domain mappings. The file path SHALL be configurable via command-line flag. The YAML structure SHALL be a top-level mapping from root domain name to a list of backup domain names.
-
-#### Scenario: Well-formed aliases.yaml produces alias map
-
-- **WHEN** `aliases.yaml` contains `root.com: [backup.com, mirror.com]`
-- **THEN** the loader produces a map `{backup.com → root.com, mirror.com → root.com}`
-
-#### Scenario: Backup appearing under two roots is rejected
-
-- **WHEN** `aliases.yaml` declares the same backup domain under two different roots
-- **THEN** the loader returns an error citing both root entries
-
-#### Scenario: Backup domain equal to root domain is rejected
-
-- **WHEN** `aliases.yaml` lists `root.com` as a backup of itself
-- **THEN** the loader returns an error
-
-#### Scenario: Missing aliases.yaml is tolerated
-
-- **WHEN** the `-aliases` flag is not provided or the file does not exist
-- **THEN** the loader returns an empty alias map AND logs an info message; the server still starts normally
-
-
 <!-- @trace
 source: shadowdns-foundation
 updated: 2026-04-14
@@ -799,11 +774,11 @@ The config-loader SHALL emit a warning when a view declares `match-clients { any
 ---
 ### Requirement: Parse aliases.yaml
 
-The config-loader SHALL obtain the root-to-backup alias map from the `aliases` section of the unified ShadowDNS YAML configuration file loaded via the `shadowdns-config` capability, not from a standalone `aliases.yaml` file. The `--aliases` CLI flag SHALL NOT be accepted: because the flag is not registered in the cobra command, passing `--aliases` SHALL cause the server binary to fail to start with cobra's standard `unknown flag: --aliases` error. The alias-map data shape and the duplicate/self-alias rejection rules SHALL remain unchanged; only the source file and loader entry point move.
+The config-loader SHALL obtain the root-to-backup alias map from the `aliases` section of the unified ShadowDNS YAML configuration file loaded via the `shadowdns-config` capability, not from a standalone `aliases.yaml` file. The `--aliases` CLI flag SHALL NOT be accepted: because the flag is not registered in the cobra command, passing `--aliases` SHALL cause the server binary to fail to start with cobra's standard `unknown flag: --aliases` error. The YAML structure SHALL be a top-level mapping from root domain name to a list of backup domain names.
 
 #### Scenario: Well-formed aliases section produces alias map
 
-- **WHEN** the unified config file contains `aliases: {backup.com: root.com, mirror.com: root.com}`
+- **WHEN** the unified config file contains `aliases: {root.com: [backup.com, mirror.com]}`
 - **THEN** the loader produces a map `{backup.com → root.com, mirror.com → root.com}`
 
 #### Scenario: Backup appearing under two roots is rejected
@@ -813,7 +788,7 @@ The config-loader SHALL obtain the root-to-backup alias map from the `aliases` s
 
 #### Scenario: Backup domain equal to root domain is rejected
 
-- **WHEN** the `aliases` section lists `root.com: root.com`
+- **WHEN** the `aliases` section lists `root.com: [root.com]`
 - **THEN** the loader returns an error
 
 #### Scenario: Missing aliases section yields empty map

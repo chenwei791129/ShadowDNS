@@ -7,21 +7,25 @@
 
 # ---- aliases -----------------------------------------------------------
 #
-# Maps each backup (alias) domain to its root domain. ShadowDNS serves
-# backup domains by rewriting incoming queries to the root domain without
-# loading separate zone data.
+# Maps each root domain to its list of backup (alias) domains. ShadowDNS
+# serves backup domains by rewriting incoming queries to the root domain
+# without loading separate zone data.
 #
 # Rules:
-#   - Each key is a backup domain; each value is its root domain.
-#   - A backup domain may only appear once (after normalization).
+#   - Each key is a root domain; the value is a list of its backup domains.
+#   - A backup domain may only appear once across all roots (duplicates rejected).
 #   - A backup domain cannot equal its root (self-alias is rejected).
+#   - An empty list for a root is valid.
 #   - Missing or empty "aliases:" is valid — the server starts with no aliases.
 
 aliases:
-  backup-example.com: example.com
-  mirror-example.com: example.com
-  backup-another.org: another-root.org
-  shadow-service.net: service.example.net
+  example.com:
+    - backup-example.com
+    - mirror-example.com
+  another-root.org:
+    - backup-another.org
+  service.example.net:
+    - shadow-service.net
 
 # ---- ephemeral_api -----------------------------------------------------
 #

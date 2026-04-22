@@ -36,8 +36,8 @@ type EphemeralAPIConfig struct {
 }
 
 type rawConfig struct {
-	Aliases      map[string]string `yaml:"aliases"`
-	EphemeralAPI *rawEphemeralAPI  `yaml:"ephemeral_api"`
+	Aliases      map[string][]string `yaml:"aliases"`
+	EphemeralAPI *rawEphemeralAPI    `yaml:"ephemeral_api"`
 }
 
 type rawEphemeralAPI struct {
@@ -76,7 +76,20 @@ func Load(path string, logger *zap.Logger) (*Config, error) {
 		logger.Sugar().Infow("config has no aliases section; starting with empty alias map", "path", path)
 	}
 
-	aliasMap, err := config.BuildAliasMap(raw.Aliases)
+	// Invert YAML-shaped root→[backups] to backup→root. The same-string
+	// cross-root duplicate must be caught here because map assignment silently
+	// overwrites; BuildAliasMap catches the case-insensitive duplicates.
+	flat := make(map[string]string)
+	for root, backups := range raw.Aliases {
+		for _, backup := range backups {
+			if existing, dup := flat[backup]; dup && existing != root {
+				return nil, fmt.Errorf("aliases: backup domain %q is claimed by two roots: %q and %q", backup, existing, root)
+			}
+			flat[backup] = root
+		}
+	}
+
+	aliasMap, err := config.BuildAliasMap(flat)
 	if err != nil {
 		return nil, fmt.Errorf("aliases: %w", err)
 	}

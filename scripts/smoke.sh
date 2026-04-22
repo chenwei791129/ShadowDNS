@@ -47,15 +47,12 @@ mkdir -p "${SMOKE_DIR}"
 # Copy fixtures (skip geoip/ — we generate it below).
 cp    "${FIXTURE_SRC}/named.conf"    "${SMOKE_DIR}/named.conf"
 cp    "${FIXTURE_SRC}/master.zones"  "${SMOKE_DIR}/master.zones"
-cp    "${FIXTURE_SRC}/aliases.yaml"  "${SMOKE_DIR}/aliases.yaml"
 
-# Generate a minimal unified shadowdns.yaml for --config. The historical
-# standalone aliases.yaml used `root: [backups]` shape; the unified schema
-# uses `aliases: {backup: root}`. Convert by inverting — testdata ships only
-# `example.com: [backup.example]`, so the inverted map is a single entry.
+# Generate a minimal unified shadowdns.yaml for --config.
 cat > "${SMOKE_DIR}/shadowdns.yaml" <<'YAML'
 aliases:
-  backup.example: example.com
+  example.com:
+    - backup.example
 YAML
 # Recursively copy the full master/ tree (zone files plus include fragments
 # that may live in subdirectories such as cnames/).

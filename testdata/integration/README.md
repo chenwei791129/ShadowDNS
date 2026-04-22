@@ -8,7 +8,7 @@
 - `master.zones` — 兩個 view 的宣告：
   - `view-th`：`geoip country TH` 或 `geoip asnum "AS64500 Test ASN"` 命中
   - `view-other`：`any`（fallback）
-- `aliases.yaml` — 宣告 `backup.example` 為 `example.com` 的 backup
+- `shadowdns.yaml` — 統一設定檔，宣告 `example.com` 的備援域名為 `backup.example` (採 `root: [backups]` 格式)
 - `master/*.fwd` — zone files
 
 ## 測試 IP 選擇
