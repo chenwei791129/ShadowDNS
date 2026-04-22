@@ -200,6 +200,44 @@ tests:
   - test/integration/cname_synthesis_test.go
 -->
 
+
+<!-- @trace
+source: ephemeral-txt-overrides-cname
+updated: 2026-04-22
+code:
+  - internal/config/aliases.go
+  - README.md
+  - scripts/test-deb.sh
+  - internal/shadowdnscfg/config.go
+  - testdata/integration/shadowdns.yaml
+  - CHANGELOG.md
+  - docs/ephemeral-api.md
+  - testdata/integration/master/example.com_view-th.fwd
+  - scripts/gen-container-testdata.go
+  - internal/server/build.go
+  - internal/alias/override.go
+  - .release-please-manifest.json
+  - internal/server/handler.go
+  - packaging/shadowdns.yaml.example
+  - scripts/smoke.sh
+  - docs/benchmark.md
+  - testdata/integration/aliases.yaml
+  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/README.md
+tests:
+  - internal/server/handler_ephemeral_test.go
+  - test/integration/cname_following_test.go
+  - internal/shadowdnscfg/config_test.go
+  - internal/alias/override_test.go
+  - test/integration/helpers_test.go
+  - test/integration/axfr_test.go
+  - test/integration/listenon_test.go
+  - internal/config/aliases_test.go
+  - test/integration/ephemeral_overrides_cname_test.go
+  - test/integration/reload_diff_test.go
+  - cmd/shadowdns/main_ephemeral_test.go
+-->
+
 ### Requirement: Operate in authoritative-only mode
 
 The dns-server SHALL set `AA` (authoritative answer) flag in responses for queries matching a loaded zone and SHALL NOT perform recursion regardless of the query's RD (recursion desired) flag. The RA (recursion available) flag SHALL be set to 0.
@@ -859,7 +897,14 @@ tests:
 
 The dns-server SHALL bind both UDP and TCP listeners on the configured address (default `0.0.0.0:53`) and serve DNS queries on both transports. The TCP listener SHALL remain required even when zone transfer is disabled, because TCP is the RFC 7766 fallback for responses larger than the UDP payload limit.
 
-When an ephemeral record store is attached to the server, the DNS handler SHALL consult the ephemeral store after a zone lookup returns no results and before sending a negative reply. Zone file records SHALL take precedence over ephemeral records: the ephemeral store is only consulted when the zone lookup produces no matching records for the queried name and type.
+When an ephemeral record store is attached to the server, the DNS handler SHALL consult the ephemeral store at a defined point in the lookup chain so that ephemeral TXT entries overlay zone data in two specific cases:
+
+1. **Zone miss overlay**: when the exact `(qname, qtype)` lookup on zone data produces no results, the ephemeral store SHALL be consulted before falling back to CNAME synthesis (RFC 1034 §3.6.2) and before wildcard synthesis (RFC 4592). If the ephemeral store returns a live TXT RRSet, the server SHALL return that RRSet and SHALL NOT perform CNAME fallback or wildcard synthesis.
+2. **Exact-qtype zone precedence**: when the zone contains a record whose owner name AND type exactly matches the query (e.g., zone has an explicit TXT at the qname), the zone record SHALL take precedence and the ephemeral store SHALL NOT be consulted for that response.
+
+The ephemeral overlay SHALL only apply when `qtype == TXT`. For all other qtypes (A, AAAA, CNAME, MX, etc.), the ephemeral store SHALL NOT be consulted and the standard RFC 1034 §3.6.2 CNAME fallback plus RFC 4592 wildcard synthesis SHALL apply unchanged.
+
+This overlay SHALL apply equally to root zone queries and backup (alias) zone queries. For backup zone queries, the ephemeral lookup SHALL use the backup-namespace qname (matching the name under which API callers PUT entries).
 
 When the ephemeral store holds multiple unexpired TXT entries for the queried FQDN, the server SHALL return them as a single TXT RRSet — one TXT RR per entry, all sharing the same owner name, each with its own remaining-TTL value. Each entry's TXT value SHALL be encoded as a single string inside its own RR rather than concatenated into one RR.
 
@@ -887,8 +932,39 @@ The TTL value in ephemeral record responses SHALL be the remaining seconds until
 
 #### Scenario: Zone file record takes precedence over ephemeral record
 
-- **WHEN** a DNS TXT query arrives for `_acme-challenge.example.com.` and both the zone file and the ephemeral store contain a TXT record for that name
+- **WHEN** a DNS TXT query arrives for `_acme-challenge.example.com.` and both the zone file AND the ephemeral store contain a TXT record for that name
 - **THEN** the server SHALL respond with the zone file record only
+
+#### Scenario: Ephemeral TXT overrides exact CNAME at the same qname for TXT queries
+
+- **WHEN** the zone contains `_acme-challenge.foo.example.com. CNAME acme-dns.other.com.` AND the ephemeral store contains a TXT record `token-xyz` for `_acme-challenge.foo.example.com.` with 120 seconds remaining AND a DNS TXT query arrives for `_acme-challenge.foo.example.com.`
+- **THEN** the server SHALL respond with the ephemeral TXT `token-xyz` (TTL 120, AA set), SHALL NOT emit the CNAME record in the answer section, and SHALL NOT follow the CNAME target
+
+##### Example: ACME delegation with local ephemeral override
+
+- **GIVEN** zone `example.com.` contains `_acme-challenge.foo.example.com. CNAME acme-dns.external.net.` AND ephemeral store holds `_acme-challenge.foo.example.com. → "token-xyz"` with 120 s remaining
+- **WHEN** client runs `dig +short TXT _acme-challenge.foo.example.com.`
+- **THEN** client receives `"token-xyz"` only (no CNAME, no followed records)
+
+#### Scenario: CNAME query at the same qname still returns the zone CNAME when ephemeral TXT exists
+
+- **WHEN** the zone contains `_acme-challenge.foo.example.com. CNAME acme-dns.other.com.` AND the ephemeral store contains a live TXT record for `_acme-challenge.foo.example.com.` AND a DNS CNAME query arrives for `_acme-challenge.foo.example.com.`
+- **THEN** the server SHALL respond with the zone CNAME `acme-dns.other.com.` only, with the AA flag set
+
+#### Scenario: TXT query falls back to CNAME when ephemeral store has no live entry
+
+- **WHEN** the zone contains `_acme-challenge.foo.example.com. CNAME target.example.com.` AND `target.example.com. TXT "zone-txt"` AND the ephemeral store contains NO entry (or only expired entries) for `_acme-challenge.foo.example.com.` AND a DNS TXT query arrives for `_acme-challenge.foo.example.com.`
+- **THEN** the server SHALL perform standard RFC 1034 §3.6.2 CNAME synthesis and return the CNAME followed by `target.example.com. TXT "zone-txt"`
+
+#### Scenario: Non-TXT qtype at a CNAME name is unaffected by ephemeral store
+
+- **WHEN** the zone contains `foo.example.com. CNAME target.example.com.` AND `target.example.com. A 1.2.3.4` AND the ephemeral store contains a TXT entry for `foo.example.com.` AND a DNS A query arrives for `foo.example.com.`
+- **THEN** the server SHALL perform standard CNAME synthesis and return the CNAME followed by `target.example.com. A 1.2.3.4`; the ephemeral TXT entry SHALL NOT appear in the response
+
+#### Scenario: Ephemeral TXT overrides exact CNAME on backup (alias) zone queries
+
+- **WHEN** `backup.com.` is a backup of `example.com.` AND the root zone contains `_acme-challenge.foo.example.com. CNAME acme-dns.other.com.` AND the ephemeral store contains a TXT entry for `_acme-challenge.foo.backup.com.` (backup-namespace qname) AND a DNS TXT query arrives for `_acme-challenge.foo.backup.com.`
+- **THEN** the server SHALL respond with the ephemeral TXT record only, with owner `_acme-challenge.foo.backup.com.`, AA flag set, and SHALL NOT emit the CNAME synthesized from the root zone
 
 #### Scenario: Expired ephemeral record is not returned
 
@@ -1165,6 +1241,8 @@ When qtype is explicitly CNAME, the existing exact-match lookup behavior SHALL c
 
 When both a CNAME record and other record types coexist at the same name (a configuration error per RFC 1034 §3.6.2, but possible in zone files), the CNAME SHALL take precedence for non-CNAME queries: the server SHALL return the CNAME rather than NODATA.
 
+**Exception — ephemeral TXT overlay**: when `qtype == TXT` AND an ephemeral record store is attached AND the store contains at least one live (unexpired) TXT entry at the queried name, the ephemeral TXT overlay defined in the "Listen for DNS queries on UDP and TCP port 53" Requirement SHALL take precedence over this CNAME synthesis behavior for that specific response. The CNAME SHALL NOT be emitted and the CNAME target SHALL NOT be followed. This exception is intentionally scoped to TXT qtype and live ephemeral entries; all other qtypes and the absence of a live ephemeral entry cause the standard CNAME synthesis behavior to apply unchanged.
+
 #### Scenario: A query at a CNAME name with in-zone target returns CNAME plus target records
 
 - **WHEN** a client queries `alias.root.com. A` AND the zone contains `alias.root.com. CNAME target.root.com.` AND `target.root.com. A 1.2.3.4`
@@ -1218,33 +1296,49 @@ When both a CNAME record and other record types coexist at the same name (a conf
 #### Scenario: Wildcard CNAME with in-zone target is followed
 
 - **WHEN** the zone contains `*.root.com. CNAME service.root.com.` AND `service.root.com. A 10.0.0.1` AND a client queries `foo.root.com. A`
-- **THEN** the response answer section contains `foo.root.com. CNAME service.root.com.` and `service.root.com. A 10.0.0.1`
+- **THEN** the response answer section contains `foo.root.com. CNAME service.root.com.` (wildcard synthesized with the query owner) and `service.root.com. A 10.0.0.1`
 
-#### Scenario: Name with no records and no CNAME returns NXDOMAIN or NODATA as before
+#### Scenario: Ephemeral TXT overlay takes precedence over CNAME synthesis for TXT queries
 
-- **WHEN** a client queries `missing.root.com. A` AND no records of any type exist at `missing.root.com.`
-- **THEN** the response has `RCODE=NXDOMAIN` with the zone SOA in the authority section (unchanged behavior)
-
-#### Scenario: Name with A record but no AAAA and no CNAME returns NODATA as before
-
-- **WHEN** a client queries `www.root.com. AAAA` AND `www.root.com.` has an A record but no AAAA record and no CNAME record
-- **THEN** the response has `RCODE=NOERROR`, empty answer section, and the zone SOA in the authority section (unchanged behavior)
+- **WHEN** a client queries `_acme-challenge.foo.root.com. TXT` AND the zone contains `_acme-challenge.foo.root.com. CNAME acme-dns.external.net.` AND the ephemeral store holds a live TXT entry for `_acme-challenge.foo.root.com.`
+- **THEN** the response answer section contains only the ephemeral TXT RR(s); the CNAME is not emitted and the CNAME target is not followed
 
 
 <!-- @trace
-source: in-zone-cname-following
-updated: 2026-04-16
+source: ephemeral-txt-overrides-cname
+updated: 2026-04-22
 code:
+  - internal/config/aliases.go
+  - README.md
+  - scripts/test-deb.sh
+  - internal/shadowdnscfg/config.go
+  - testdata/integration/shadowdns.yaml
+  - CHANGELOG.md
+  - docs/ephemeral-api.md
   - testdata/integration/master/example.com_view-th.fwd
-  - internal/server/handler.go
+  - scripts/gen-container-testdata.go
+  - internal/server/build.go
   - internal/alias/override.go
+  - .release-please-manifest.json
+  - internal/server/handler.go
+  - packaging/shadowdns.yaml.example
+  - scripts/smoke.sh
+  - docs/benchmark.md
+  - testdata/integration/aliases.yaml
   - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/README.md
 tests:
-  - internal/alias/override_test.go
+  - internal/server/handler_ephemeral_test.go
   - test/integration/cname_following_test.go
-  - internal/server/server_test.go
-  - test/integration/cname_synthesis_test.go
-  - test/integration/wildcard_test.go
+  - internal/shadowdnscfg/config_test.go
+  - internal/alias/override_test.go
+  - test/integration/helpers_test.go
+  - test/integration/axfr_test.go
+  - test/integration/listenon_test.go
+  - internal/config/aliases_test.go
+  - test/integration/ephemeral_overrides_cname_test.go
+  - test/integration/reload_diff_test.go
+  - cmd/shadowdns/main_ephemeral_test.go
 -->
 
 ---

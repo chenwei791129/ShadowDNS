@@ -537,3 +537,75 @@ tests:
   - test/integration/wildcard_test.go
   - test/integration/cname_synthesis_test.go
 -->
+
+---
+### Requirement: Ephemeral TXT entries override exact CNAME at the same qname for TXT queries
+
+An ephemeral TXT entry written via the API for a qname SHALL become visible to DNS TXT queries for that qname even when the zone contains an exact (non-wildcard) CNAME record at the same qname. While any live ephemeral entry exists for the qname, DNS TXT queries SHALL receive the ephemeral TXT RRSet and SHALL NOT receive the zone's CNAME record in the answer section. When all ephemeral entries for that qname expire or are deleted, DNS TXT queries SHALL revert to the standard RFC 1034 §3.6.2 CNAME synthesis behavior without further operator action.
+
+This override SHALL apply only to `TXT` DNS query type. Queries of other types (e.g., `CNAME`, `A`, `AAAA`) at the same qname SHALL observe the zone's CNAME as usual and SHALL NOT be affected by the ephemeral store.
+
+The override SHALL apply equally when the API writes an entry into a root-zone qname and when it writes an entry into a backup (alias) zone qname. The lookup key SHALL be the same qname the API caller used in the PUT request.
+
+#### Scenario: ACME delegation qname with ephemeral TXT returns the ephemeral value to TXT queries
+
+- **WHEN** the zone `example.com.` contains `_acme-challenge.foo.example.com. CNAME acme-dns.external.net.` AND the API PUTs a TXT entry `token-xyz` for `_acme-challenge.foo.example.com.` with TTL 120 AND a DNS TXT query arrives for `_acme-challenge.foo.example.com.`
+- **THEN** the server SHALL respond with `_acme-challenge.foo.example.com. TXT "token-xyz"` (TTL 120, AA set), and SHALL NOT include the CNAME record
+
+##### Example: ACME-01 validation path with local override
+
+- **GIVEN** zone has `_acme-challenge.foo.example.com. CNAME acme-dns.external.net.` AND API PUTs `{"name": "_acme-challenge.foo.example.com.", "value": "token-xyz", "ttl": 120}`
+- **WHEN** ACME validator runs `dig +short TXT _acme-challenge.foo.example.com. @<shadowdns>`
+- **THEN** response contains `"token-xyz"` and nothing else
+
+#### Scenario: CNAME query at the same qname still receives the zone CNAME
+
+- **WHEN** the zone contains `_acme-challenge.foo.example.com. CNAME acme-dns.external.net.` AND a live ephemeral TXT entry exists for that qname AND a DNS CNAME query arrives for `_acme-challenge.foo.example.com.`
+- **THEN** the server SHALL respond with the zone CNAME `acme-dns.external.net.` only; the ephemeral TXT entry SHALL NOT be exposed via CNAME queries
+
+#### Scenario: TXT query falls back to CNAME behavior once ephemeral entries are gone
+
+- **WHEN** the zone contains `_acme-challenge.foo.example.com. CNAME target.example.com.` AND the API previously had a TXT entry for `_acme-challenge.foo.example.com.` that has since expired (or been deleted) AND a DNS TXT query arrives
+- **THEN** the server SHALL perform standard CNAME synthesis as if the ephemeral entry had never existed
+
+#### Scenario: Override applies to backup (alias) zone qnames using the API's qname
+
+- **WHEN** `backup.com.` is a backup of `example.com.` AND the root zone contains `_acme-challenge.foo.example.com. CNAME acme-dns.external.net.` AND the API PUTs a TXT entry for `_acme-challenge.foo.backup.com.` AND a DNS TXT query arrives for `_acme-challenge.foo.backup.com.`
+- **THEN** the server SHALL respond with the ephemeral TXT RR owned by `_acme-challenge.foo.backup.com.`; the backup-rewritten CNAME SHALL NOT be emitted
+
+<!-- @trace
+source: ephemeral-txt-overrides-cname
+updated: 2026-04-22
+code:
+  - internal/config/aliases.go
+  - README.md
+  - scripts/test-deb.sh
+  - internal/shadowdnscfg/config.go
+  - testdata/integration/shadowdns.yaml
+  - CHANGELOG.md
+  - docs/ephemeral-api.md
+  - testdata/integration/master/example.com_view-th.fwd
+  - scripts/gen-container-testdata.go
+  - internal/server/build.go
+  - internal/alias/override.go
+  - .release-please-manifest.json
+  - internal/server/handler.go
+  - packaging/shadowdns.yaml.example
+  - scripts/smoke.sh
+  - docs/benchmark.md
+  - testdata/integration/aliases.yaml
+  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/README.md
+tests:
+  - internal/server/handler_ephemeral_test.go
+  - test/integration/cname_following_test.go
+  - internal/shadowdnscfg/config_test.go
+  - internal/alias/override_test.go
+  - test/integration/helpers_test.go
+  - test/integration/axfr_test.go
+  - test/integration/listenon_test.go
+  - internal/config/aliases_test.go
+  - test/integration/ephemeral_overrides_cname_test.go
+  - test/integration/reload_diff_test.go
+  - cmd/shadowdns/main_ephemeral_test.go
+-->
