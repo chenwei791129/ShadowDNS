@@ -49,6 +49,9 @@ jobs:
             ./cmd/shadowdns
           cp bin/${{ matrix.output }} ${{ matrix.output }}
 
+      - name: Generate shell completions
+        run: make completions
+
       - name: Build .deb package
         run: go tool nfpm package --packager deb
         env:
