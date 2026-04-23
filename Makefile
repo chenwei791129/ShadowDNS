@@ -5,7 +5,7 @@ BINARY := $(BIN_DIR)/shadowdns-$(HOST_GOOS)-$(HOST_GOARCH)
 LINUX_BINARY := $(BIN_DIR)/shadowdns-linux-amd64
 CMD_PKG := ./cmd/shadowdns
 
-.PHONY: all build build-linux test lint smoke deb test-deb
+.PHONY: all build build-linux test lint smoke completions deb test-deb
 
 all: build
 
@@ -35,7 +35,20 @@ smoke: build
 
 VERSION ?= 0.0.0-dev
 
-deb: build-linux
+# `completions` generates shell completion files into $(BIN_DIR) for bash, zsh,
+# and fish. Completion output depends only on the cobra command tree, not the
+# target architecture, so `go run` on the host works even when cross-compiling
+# for linux/amd64. The generated files are picked up by nfpm.yaml `contents:`
+# and installed under /usr/share/{bash-completion,zsh/vendor-completions,fish/vendor_completions.d}/.
+# This target is the single source of truth for which shells are supported —
+# scripts/test-deb.sh also depends on it so the completion set never drifts.
+completions:
+	@mkdir -p $(BIN_DIR)
+	go run $(CMD_PKG) completion bash > $(BIN_DIR)/shadowdns.bash
+	go run $(CMD_PKG) completion zsh > $(BIN_DIR)/shadowdns.zsh
+	go run $(CMD_PKG) completion fish > $(BIN_DIR)/shadowdns.fish
+
+deb: build-linux completions
 	VERSION=$(VERSION) go tool nfpm package --packager deb
 
 test-deb:

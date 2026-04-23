@@ -35,6 +35,7 @@ cleanup() {
     $CTR rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
     rm -f "$PROJECT_ROOT/$DEB_NAME"
     rm -f "$PROJECT_ROOT/bin/shadowdns-linux-amd64"
+    rm -f "$PROJECT_ROOT"/bin/shadowdns.{bash,zsh,fish}
     rm -rf "$TESTDATA_DIR"
 }
 trap cleanup EXIT
@@ -46,6 +47,11 @@ cd "$PROJECT_ROOT"
 # -------------------------------------------------------------------
 echo "--- Cross-compile + build test .deb ---"
 make build-linux
+# Generate shell completions via the Makefile target so the set of supported
+# shells stays in sync with `make deb`. This script invokes nfpm directly
+# (instead of going through `make deb`) only to customize the output filename
+# via --target.
+make completions
 go tool nfpm package --packager deb --target "$DEB_NAME"
 
 # -------------------------------------------------------------------
@@ -103,6 +109,19 @@ else
     exit 1
 fi
 
+# Shell completion files: bash, zsh, fish all installed at vendor paths, dpkg-owned, non-empty.
+COMPLETION_PATHS=(
+    /usr/share/bash-completion/completions/shadowdns
+    /usr/share/zsh/vendor-completions/_shadowdns
+    /usr/share/fish/vendor_completions.d/shadowdns.fish
+)
+for path in "${COMPLETION_PATHS[@]}"; do
+    $CTR exec "$CONTAINER_NAME" test -s "$path"
+    echo "  [OK] $path exists and is non-empty"
+    $CTR exec "$CONTAINER_NAME" sh -c "dpkg -L shadowdns | grep -qx '$path'"
+    echo "  [OK] $path owned by dpkg"
+done
+
 # -------------------------------------------------------------------
 # Step 7: Copy testdata and run -dry-run
 # -------------------------------------------------------------------
@@ -150,6 +169,25 @@ else
     echo "  [FAIL] empty response for backup.example A"
     exit 1
 fi
+
+# -------------------------------------------------------------------
+# Step 9: Package removal — completion files must be cleaned up
+# -------------------------------------------------------------------
+echo "--- Removal test ---"
+# Stop the background shadowdns process so dpkg -r doesn't complain about a
+# running binary, then wait for it to exit before removing the package.
+$CTR exec "$CONTAINER_NAME" pkill -TERM shadowdns || true
+$CTR exec "$CONTAINER_NAME" sh -c 'for _ in $(seq 1 50); do pgrep shadowdns >/dev/null 2>&1 || exit 0; sleep 0.2; done; exit 1'
+$CTR exec "$CONTAINER_NAME" dpkg -r shadowdns >/dev/null
+echo "  [OK] dpkg -r shadowdns succeeded"
+
+for path in "${COMPLETION_PATHS[@]}"; do
+    if $CTR exec "$CONTAINER_NAME" test -e "$path"; then
+        echo "  [FAIL] $path still exists after dpkg -r"
+        exit 1
+    fi
+    echo "  [OK] $path removed after dpkg -r"
+done
 
 echo ""
 echo "=== All tests passed ==="

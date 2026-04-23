@@ -5,7 +5,8 @@
 - `make test` — Run unit tests with the race detector enabled (`go test -race -count=1`)
 - `make lint` — Run golangci-lint
 - `make smoke` — Smoke test with `--dry-run`
-- `make deb` — Build `.deb` package (implicitly runs `make build-linux`; requires nfpm via `go tool`)
+- `make deb` — Build `.deb` package (implicitly runs `make build-linux` and `make completions`; requires nfpm via `go tool`)
+- `make completions` — Generate bash/zsh/fish completion files at `bin/shadowdns.{bash,zsh,fish}` via `go run ./cmd/shadowdns completion <shell>`. Single source of truth for supported shells; consumed by `make deb` and `scripts/test-deb.sh`.
 - `make test-deb` — End-to-end container test of `.deb` package (requires podman or docker)
 
 # Project Structure
