@@ -39,6 +39,19 @@ type ServerState struct {
 	Fingerprints map[string]map[string]zoneFingerprint
 }
 
+// AllOrigins returns a flat slice of every loaded zone origin across all
+// views (root + backup). The same origin may appear more than once when it
+// is present in multiple views; callers that require uniqueness MUST
+// deduplicate. Origins are canonical (lowercase, trailing dot) because
+// BuildState stores them that way.
+func (s *ServerState) AllOrigins() []string {
+	var out []string
+	for _, origins := range s.ZoneOrigins {
+		out = append(out, origins...)
+	}
+	return out
+}
+
 // ZoneCount returns the total number of loaded zones (root + backup) across
 // all views.
 func (s *ServerState) ZoneCount() int {

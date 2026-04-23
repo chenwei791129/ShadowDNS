@@ -41,15 +41,23 @@ func singleAddrPrefix(t *testing.T, ip string) netip.Prefix {
 	return netip.PrefixFrom(a, bits)
 }
 
-func newTestServer(t *testing.T, token string, allow []netip.Prefix) (*Server, *ephemeral.Store) {
+// newTestServer builds a Server for tests. The variadic zones argument
+// supplies the canonical zone origins the lister will return; when omitted,
+// the default {"example.com.", "backup.com."} covers the FQDNs the legacy
+// suite writes through PUT.
+func newTestServer(t *testing.T, token string, allow []netip.Prefix, zones ...string) (*Server, *ephemeral.Store) {
 	t.Helper()
+	if len(zones) == 0 {
+		zones = []string{"example.com.", "backup.com."}
+	}
 	store := ephemeral.NewStore()
 	cfg := &shadowdnscfg.EphemeralAPIConfig{
 		Listen: "127.0.0.1:0",
 		Allow:  allow,
 		Token:  token,
 	}
-	s := NewServer(cfg, store, zap.NewNop())
+	lister := func() []string { return zones }
+	s := NewServer(cfg, store, lister, zap.NewNop())
 	return s, store
 }
 
@@ -424,10 +432,175 @@ func TestServer_PUT_OversizeValueRejected(t *testing.T) {
 	}
 }
 
+// ---------- Zone-membership guard (reject unknown-zone PUTs) ----------
+
+// newTestServerWithZones returns a Server whose ZoneLister reports exactly
+// the supplied origins (including the empty set for "no zones loaded" cases).
+// Distinct from newTestServer whose variadic default injects convenient
+// example/backup zones for the legacy test suite.
+func newTestServerWithZones(t *testing.T, allow []netip.Prefix, zones []string) (*Server, *ephemeral.Store) {
+	t.Helper()
+	store := ephemeral.NewStore()
+	cfg := &shadowdnscfg.EphemeralAPIConfig{
+		Listen: "127.0.0.1:0",
+		Allow:  allow,
+	}
+	lister := func() []string { return zones }
+	return NewServer(cfg, store, lister, zap.NewNop()), store
+}
+
+// TestServer_PUT_OutOfBailiwickReturns422 covers the typo-rejection scenario
+// from the spec: only example.com. is loaded, so PUT on _acme-challenge.exmaple.com
+// SHALL be rejected with 422 and leave the store untouched.
+func TestServer_PUT_OutOfBailiwickReturns422(t *testing.T) {
+	allow := []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")}
+	s, store := newTestServerWithZones(t, allow, []string{"example.com."})
+
+	w := doRequest(s, "PUT", "/v1/txt/_acme-challenge.exmaple.com",
+		`{"value":"test123","ttl":30}`, "127.0.0.1", "")
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", w.Code, w.Body.String())
+	}
+	if _, ok := store.Lookup("_acme-challenge.exmaple.com."); ok {
+		t.Error("store must not be modified on 422 response")
+	}
+
+	// Error body MUST use the existing {"status":"error", ...} shape and
+	// name the rejected FQDN for debuggability.
+	var errBody struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody.Status != "error" {
+		t.Errorf("Status = %q, want \"error\"", errBody.Status)
+	}
+	if !strings.Contains(errBody.Error, "_acme-challenge.exmaple.com.") {
+		t.Errorf("error message %q should name the rejected FQDN", errBody.Error)
+	}
+}
+
+// TestServer_PUT_InBailiwickRootZoneReturns200 is the green-path companion.
+func TestServer_PUT_InBailiwickRootZoneReturns200(t *testing.T) {
+	allow := []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")}
+	s, store := newTestServerWithZones(t, allow, []string{"example.com."})
+
+	w := doRequest(s, "PUT", "/v1/txt/_acme-challenge.example.com",
+		`{"value":"token123","ttl":120}`, "127.0.0.1", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if _, ok := store.Lookup("_acme-challenge.example.com."); !ok {
+		t.Error("expected record to be stored on 200 response")
+	}
+}
+
+// TestServer_PUT_InBailiwickBackupZoneReturns200 verifies backup zones are
+// counted the same as root zones by the membership check.
+func TestServer_PUT_InBailiwickBackupZoneReturns200(t *testing.T) {
+	allow := []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")}
+	s, store := newTestServerWithZones(t, allow, []string{"backup.com."})
+
+	w := doRequest(s, "PUT", "/v1/txt/_acme-challenge.foo.backup.com",
+		`{"value":"token-B","ttl":120}`, "127.0.0.1", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if _, ok := store.Lookup("_acme-challenge.foo.backup.com."); !ok {
+		t.Error("expected record to be stored under backup-zone FQDN")
+	}
+}
+
+// TestServer_PUT_ApexIsInBailiwick verifies a PUT on the zone origin itself
+// (e.g. example.com equals zone origin example.com.) is accepted.
+func TestServer_PUT_ApexIsInBailiwick(t *testing.T) {
+	allow := []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")}
+	s, store := newTestServerWithZones(t, allow, []string{"example.com."})
+
+	w := doRequest(s, "PUT", "/v1/txt/example.com",
+		`{"value":"apex","ttl":120}`, "127.0.0.1", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if _, ok := store.Lookup("example.com."); !ok {
+		t.Error("expected record to be stored at the apex")
+	}
+}
+
+// TestServer_DELETE_OutOfBailiwickStillReturns200 protects the spec rule that
+// DELETE MUST remain idempotent regardless of zone membership.
+func TestServer_DELETE_OutOfBailiwickStillReturns200(t *testing.T) {
+	allow := []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")}
+	s, _ := newTestServerWithZones(t, allow, []string{"example.com."})
+
+	w := doRequest(s, "DELETE", "/v1/txt/_acme-challenge.exmaple.com", "", "127.0.0.1", "")
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (DELETE must be idempotent regardless of zone membership)", w.Code)
+	}
+}
+
+// TestServer_PUT_OversizeValuePrecedesZoneCheck verifies validation order:
+// oversize value returns 400 before the zone-membership check runs, so
+// callers never see 422 for malformed bodies.
+func TestServer_PUT_OversizeValuePrecedesZoneCheck(t *testing.T) {
+	allow := []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")}
+	// Deliberately load no zones — the FQDN is out-of-bailiwick, but the
+	// oversize value SHALL trigger 400 first.
+	s, store := newTestServerWithZones(t, allow, nil)
+
+	oversize := strings.Repeat("x", 256)
+	body := fmt.Sprintf(`{"value":%q,"ttl":120}`, oversize)
+	w := doRequest(s, "PUT", "/v1/txt/foo.unknown.com", body, "127.0.0.1", "")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (oversize value precedes zone check)", w.Code)
+	}
+	if _, ok := store.Lookup("foo.unknown.com."); ok {
+		t.Error("store must not be modified on 400 response")
+	}
+}
+
+// TestServer_PUT_IPACLPrecedesZoneCheck verifies the IP ACL rejects requests
+// before the zone check runs: a source IP not on the allow list returns 403
+// even when the FQDN is out of every loaded zone.
+func TestServer_PUT_IPACLPrecedesZoneCheck(t *testing.T) {
+	allow := []netip.Prefix{singleAddrPrefix(t, "10.0.0.5")}
+	s, _ := newTestServerWithZones(t, allow, nil)
+
+	w := doRequest(s, "PUT", "/v1/txt/foo.unknown.com",
+		`{"value":"v","ttl":60}`, "192.168.99.1", "")
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (IP ACL precedes zone check)", w.Code)
+	}
+}
+
+// TestServer_PUT_TokenAuthPrecedesZoneCheck verifies token auth rejects
+// requests before the zone check: an invalid token returns 401 even when
+// the FQDN is out of every loaded zone. Covers the spec's validation-order
+// clause ("after IP ACL, token authentication, ...").
+func TestServer_PUT_TokenAuthPrecedesZoneCheck(t *testing.T) {
+	// Enable token + source IP passes ACL, but lister returns no zones.
+	allow := []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")}
+	store := ephemeral.NewStore()
+	cfg := &shadowdnscfg.EphemeralAPIConfig{
+		Listen: "127.0.0.1:0",
+		Allow:  allow,
+		Token:  "secret123",
+	}
+	s := NewServer(cfg, store, func() []string { return nil }, zap.NewNop())
+
+	w := doRequest(s, "PUT", "/v1/txt/foo.unknown.com",
+		`{"value":"v","ttl":60}`, "127.0.0.1", "Bearer wrong")
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 (token auth precedes zone check)", w.Code)
+	}
+}
+
 // ---------- NewServer returns nil when config absent ----------
 
 func TestNewServer_NilConfigReturnsNil(t *testing.T) {
-	s := NewServer(nil, ephemeral.NewStore(), zap.NewNop())
+	s := NewServer(nil, ephemeral.NewStore(), func() []string { return nil }, zap.NewNop())
 	if s != nil {
 		t.Errorf("expected nil server when cfg is nil, got %+v", s)
 	}
@@ -441,7 +614,7 @@ func TestServer_GracefulShutdown(t *testing.T) {
 		Listen: "127.0.0.1:0",
 		Allow:  []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")},
 	}
-	s := NewServer(cfg, store, zap.NewNop())
+	s := NewServer(cfg, store, func() []string { return []string{"example.com."} }, zap.NewNop())
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

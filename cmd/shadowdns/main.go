@@ -354,7 +354,17 @@ func run(ctx context.Context, opts runOptions) error {
 	// Ephemeral TXT HTTP API (optional — only started when the ephemeral_api
 	// section is present in the unified config).
 	if shadowCfg.EphemeralAPI != nil {
-		apiSrv := api.NewServer(shadowCfg.EphemeralAPI, ephemeralStore, logger)
+		// Read the atomic state snapshot on every call so zones added or
+		// removed by a SIGHUP reload take effect on the next PUT without
+		// restarting the API server.
+		zoneLister := func() []string {
+			st := srv.CurrentState()
+			if st == nil {
+				return nil
+			}
+			return st.AllOrigins()
+		}
+		apiSrv := api.NewServer(shadowCfg.EphemeralAPI, ephemeralStore, zoneLister, logger)
 		go func() {
 			logger.Sugar().Infow("ephemeral API server starting", "listen", shadowCfg.EphemeralAPI.Listen)
 			if err := apiSrv.Run(ctx); err != nil {

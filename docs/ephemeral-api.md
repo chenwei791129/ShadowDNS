@@ -223,6 +223,19 @@ dig @127.0.0.1 _acme-challenge.foo.example.com CNAME +short
 | PUT body 的 `value` 長度 > 255 bytes | `400` | `{"status":"error","error":"value exceeds 255-byte limit (got N)"}` |
 | DELETE `?value=`（空字串）| `400` | `{"status":"error","error":"empty value query parameter"}` |
 | DELETE `?value=` 長度 > 255 bytes | `400` | `{"status":"error","error":"value exceeds 255-byte limit (got N)"}` |
+| PUT FQDN 不在任何已載入 zone 底下 | `422` | `{"status":"error","error":"FQDN \"...\" does not belong to any zone served by this server"}` |
+
+### Zone 歸屬檢查（僅 PUT）
+
+PUT 寫入 ephemeral store 之前會檢查 canonical FQDN 是否落在任一已載入的 zone origin 之下（跨所有 view、root 與 backup 兩種 role 都納入比對）。無匹配時直接回 `422 Unprocessable Entity`，store 不被修改。
+
+此設計可捕捉 caller 端 typo（如 `_acme-challenge.exmaple.com` 誤打）造成的 silent failure：舊版本會回 `200` 但後續 DNS 查詢拿到空結果，新版本會顯式報錯。
+
+檢查順序在 IP ACL、token、FQDN canonicalize、JSON 解析、value 長度、TTL clamp 之後；因此格式錯誤與鑑權失敗仍會回各自的 `400` / `401` / `403`，而非被覆寫為 `422`。
+
+`DELETE` 不受此檢查影響，維持原本的冪等語意——對不在 zone 內的 FQDN 發 DELETE 仍回 `200`。
+
+SIGHUP reload 後，新增或移除的 zone origin 會在下一次 PUT 立即反映，不需要重啟 API server。
 
 Token 比較使用 `crypto/subtle.ConstantTimeCompare`，可抵抗 timing attack。
 

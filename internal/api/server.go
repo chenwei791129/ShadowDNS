@@ -32,19 +32,29 @@ const (
 	MaxValueBytes = 255
 )
 
+// ZoneLister returns the set of zone origins the server is authoritative for
+// at the moment of the call. Returned origins MUST be canonical (lowercase,
+// trailing dot); duplicates are permitted. Implementations are expected to
+// read live state on each call so SIGHUP-driven changes take effect without
+// restarting the API server.
+type ZoneLister func() []string
+
 // Server wraps the ephemeral TXT API. Construct with NewServer; start with
 // Run (which binds the listener) or Serve (for an already-bound listener).
 type Server struct {
 	cfg     *shadowdnscfg.EphemeralAPIConfig
 	store   *ephemeral.Store
+	zones   ZoneLister
 	logger  *zap.Logger
 	handler http.Handler
 }
 
-// NewServer constructs a Server from an API config, ephemeral store, and
-// logger. If cfg is nil (no ephemeral_api section), NewServer returns nil
-// so callers can simply check and skip starting the server.
-func NewServer(cfg *shadowdnscfg.EphemeralAPIConfig, store *ephemeral.Store, logger *zap.Logger) *Server {
+// NewServer constructs a Server from an API config, ephemeral store,
+// zone lister, and logger. If cfg is nil (no ephemeral_api section),
+// NewServer returns nil so callers can simply check and skip starting
+// the server. A nil zones lister is treated as returning an empty slice,
+// which rejects every PUT with 422 (secure default).
+func NewServer(cfg *shadowdnscfg.EphemeralAPIConfig, store *ephemeral.Store, zones ZoneLister, logger *zap.Logger) *Server {
 	if cfg == nil {
 		return nil
 	}
@@ -54,6 +64,7 @@ func NewServer(cfg *shadowdnscfg.EphemeralAPIConfig, store *ephemeral.Store, log
 	s := &Server{
 		cfg:    cfg,
 		store:  store,
+		zones:  zones,
 		logger: logger,
 	}
 	mux := http.NewServeMux()
@@ -190,8 +201,30 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ttl := clampTTL(req.TTL)
+
+	if !s.fqdnInAnyLoadedZone(fqdn) {
+		writeError(w, http.StatusUnprocessableEntity,
+			fmt.Sprintf("FQDN %q does not belong to any zone served by this server", fqdn))
+		return
+	}
+
 	count := s.store.Put(fqdn, *req.Value, uint32(ttl))
 	writeJSON(w, http.StatusOK, putResponseBody{Status: "ok", FQDN: fqdn, TTL: ttl, Count: count})
+}
+
+// fqdnInAnyLoadedZone reports whether fqdn lies within at least one origin
+// returned by the ZoneLister. fqdn and the lister's origins MUST both already
+// be canonical (per ZoneLister's contract). A nil lister rejects every FQDN.
+func (s *Server) fqdnInAnyLoadedZone(fqdn string) bool {
+	if s.zones == nil {
+		return false
+	}
+	for _, origin := range s.zones() {
+		if dnsutil.IsInZone(fqdn, origin) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleDelete removes ephemeral entries for the FQDN. When the ?value=

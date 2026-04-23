@@ -7,8 +7,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -71,7 +73,14 @@ ephemeral_api:
 	store := ephemeral.NewStore()
 	srv.EphemeralStore = store
 
-	apiSrv := api.NewServer(shadowCfg.EphemeralAPI, store, zap.NewNop())
+	zoneLister := func() []string {
+		st := srv.CurrentState()
+		if st == nil {
+			return nil
+		}
+		return st.AllOrigins()
+	}
+	apiSrv := api.NewServer(shadowCfg.EphemeralAPI, store, zoneLister, zap.NewNop())
 	apiCtx, apiCancel := context.WithCancel(context.Background())
 	apiDone := make(chan struct{})
 	go func() {
@@ -376,5 +385,77 @@ ephemeral_api:
 	}
 	if _, ok := store.Lookup("_acme.example.com."); ok {
 		t.Error("ephemeral record was NOT cleared after successful reload")
+	}
+}
+
+// TestEphemeralTxtApi_ZoneListerSnapshotIsDynamic exercises the spec scenarios
+// "Zone added via SIGHUP reload becomes acceptable on the next PUT" and the
+// symmetric removal case. It starts an API server with a mutable zone lister,
+// which models what the real lister does (read state.RootZones/BackupZones
+// on every call) without needing to craft two named.conf files. Mutation is
+// guarded by atomic.Pointer so the test stays race-detector clean.
+func TestEphemeralTxtApi_ZoneListerSnapshotIsDynamic(t *testing.T) {
+	apiAddr := freePortAddr(t)
+
+	var zonesPtr atomic.Pointer[[]string]
+	empty := []string{}
+	zonesPtr.Store(&empty)
+	lister := func() []string {
+		s := zonesPtr.Load()
+		if s == nil {
+			return nil
+		}
+		return *s
+	}
+
+	store := ephemeral.NewStore()
+	cfg := &shadowdnscfg.EphemeralAPIConfig{
+		Listen: apiAddr,
+		Allow:  []netip.Prefix{netip.PrefixFrom(netip.MustParseAddr("127.0.0.1"), 32)},
+	}
+	apiSrv := api.NewServer(cfg, store, lister, zap.NewNop())
+
+	apiCtx, apiCancel := context.WithCancel(context.Background())
+	apiDone := make(chan struct{})
+	go func() {
+		defer close(apiDone)
+		_ = apiSrv.Run(apiCtx)
+	}()
+	t.Cleanup(func() {
+		apiCancel()
+		select {
+		case <-apiDone:
+		case <-time.After(6 * time.Second):
+		}
+	})
+
+	baseURL := "http://" + apiAddr
+	waitHTTPReady(t, baseURL)
+
+	// 1. Empty lister rejects the PUT.
+	putURL := baseURL + "/v1/txt/foo.newzone.com"
+	body := `{"value":"tok","ttl":30}`
+	if code := httpPutJSON(t, putURL, body); code != http.StatusUnprocessableEntity {
+		t.Fatalf("empty lister: PUT status = %d, want 422", code)
+	}
+	if _, ok := store.Lookup("foo.newzone.com."); ok {
+		t.Error("empty lister: store must not be modified on 422")
+	}
+
+	// 2. Simulate SIGHUP adding newzone.com.
+	added := []string{"newzone.com."}
+	zonesPtr.Store(&added)
+	if code := httpPutJSON(t, putURL, body); code != http.StatusOK {
+		t.Fatalf("after zone add: PUT status = %d, want 200", code)
+	}
+	if _, ok := store.Lookup("foo.newzone.com."); !ok {
+		t.Error("after zone add: expected record to be stored")
+	}
+
+	// 3. Simulate SIGHUP removing newzone.com.
+	removed := []string{"other.com."}
+	zonesPtr.Store(&removed)
+	if code := httpPutJSON(t, putURL, body); code != http.StatusUnprocessableEntity {
+		t.Fatalf("after zone remove: PUT status = %d, want 422", code)
 	}
 }
