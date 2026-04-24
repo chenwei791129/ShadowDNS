@@ -506,10 +506,11 @@ func replyRcode(w dns.ResponseWriter, req *dns.Msg, rcode int) {
 	_ = w.WriteMsg(m)
 }
 
-// replyWithAnswer sends a successful authoritative response.
-// AA=1, RA=0 per RFC 1034. Authority and additional sections are omitted
-// (minimal responses). TC=1 and payload truncated to effective UDP size when
-// the transport is UDP.
+// replyWithAnswer sends a successful authoritative response with AA=1, RA=0
+// and minimal Authority/Additional sections. Name compression (RFC 1035
+// §4.1.4) is always enabled. On UDP the wire size is strictly bounded by
+// udpMaxSize(req) via truncateForUDP, which drops trailing Answer RRs and
+// sets TC=1 when the response would overflow.
 func replyWithAnswer(w dns.ResponseWriter, req *dns.Msg, answer []dns.RR) {
 	m := new(dns.Msg)
 	m.SetReply(req)
@@ -517,16 +518,39 @@ func replyWithAnswer(w dns.ResponseWriter, req *dns.Msg, answer []dns.RR) {
 	m.Authoritative = true
 	m.Rcode = dns.RcodeSuccess
 	m.Answer = answer
+	// Must be set before any Pack() so truncateForUDP measures compressed size.
+	m.Compress = true
 
-	// Apply UDP truncation per RFC 1035 §4.2.1 / RFC 7766.
-	// If the client sent an EDNS0 OPT record, honour its advertised buffer size;
-	// otherwise the legacy limit is 512 bytes (dns.MinMsgSize).
 	if dnsutil.IsUDP(w) {
-		maxSize := udpMaxSize(req)
-		m.Truncate(maxSize)
+		truncateForUDP(m, udpMaxSize(req))
 	}
 
 	_ = w.WriteMsg(m)
+}
+
+// truncateForUDP mutates m so it Packs to no more than budget bytes. While
+// the packed size exceeds budget it drops the trailing Answer RR, sets TC=1,
+// and re-packs. If Answer empties before the packed size fits (oversized
+// question/authority), TC=1 is set on the header-only remainder. The caller
+// owns m.Compress; this function honours whatever setting m carries. A Pack
+// failure leaves m unchanged and returns; the subsequent WriteMsg call will
+// surface the same error through the normal path.
+// See RFC 6891 §6.2.5 for the requestor-advertised UDP payload size contract.
+func truncateForUDP(m *dns.Msg, budget int) {
+	for {
+		packed, err := m.Pack()
+		if err != nil {
+			return
+		}
+		if len(packed) <= budget {
+			return
+		}
+		m.Truncated = true
+		if len(m.Answer) == 0 {
+			return
+		}
+		m.Answer = m.Answer[:len(m.Answer)-1]
+	}
 }
 
 // udpMaxSize returns the maximum UDP payload size for the response.
