@@ -286,11 +286,19 @@ func (s *Server) handleBackupQuery(
 	s.negativeReply(w, req, rootZone, backupZone, match, qname, backupSOA)
 }
 
+// EphemeralResponseTTL is the TTL (in seconds) written into every ephemeral
+// TXT RR returned to DNS clients. The API-supplied TTL controls only Store
+// lifespan; DNS response TTL is a fixed short value so downstream resolver
+// caches behave predictably and do not inherit minute-to-minute decrements
+// from remaining Store lifetime.
+const EphemeralResponseTTL uint32 = 30
+
 // lookupEphemeralTXT returns a synthesized TXT RRSet if the ephemeral store
 // holds one or more unexpired TXT entries for qname. Each stored value
 // becomes its own dns.TXT record so DNS clients (and ACME validators) can
-// iterate the RRSet naturally. Returns nil when qtype is not TXT, the store
-// is disabled, or no live entries match.
+// iterate the RRSet naturally. Every RR carries TTL EphemeralResponseTTL
+// regardless of the entry's remaining Store lifetime. Returns nil when qtype
+// is not TXT, the store is disabled, or no live entries match.
 func (s *Server) lookupEphemeralTXT(qname string, qtype uint16) []dns.RR {
 	if qtype != dns.TypeTXT || s.EphemeralStore == nil {
 		return nil
@@ -306,7 +314,7 @@ func (s *Server) lookupEphemeralTXT(qname string, qtype uint16) []dns.RR {
 				Name:   qname,
 				Rrtype: dns.TypeTXT,
 				Class:  dns.ClassINET,
-				Ttl:    rec.TTL,
+				Ttl:    EphemeralResponseTTL,
 			},
 			Txt: []string{rec.Value},
 		})

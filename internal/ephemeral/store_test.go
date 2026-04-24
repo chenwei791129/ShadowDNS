@@ -51,9 +51,6 @@ func TestStore_PutAndLookup(t *testing.T) {
 	if rec.Value != "abc123" {
 		t.Errorf("Value = %q, want %q", rec.Value, "abc123")
 	}
-	if rec.TTL != 120 {
-		t.Errorf("TTL = %d, want 120", rec.TTL)
-	}
 }
 
 func TestStore_LookupCanonicalizesFQDN(t *testing.T) {
@@ -134,8 +131,15 @@ func TestStore_PutSameValueRefreshesTTL(t *testing.T) {
 	if len(recs) != 1 {
 		t.Fatalf("got %d records, want 1 (same value must refresh, not append)", len(recs))
 	}
-	if recs[0].TTL != 120 {
-		t.Errorf("TTL = %d, want 120 (expireAt should have been reset by second Put)", recs[0].TTL)
+
+	// The original entry would have expired at T+60 (now=T+30, ttl=60).
+	// After the refresh with ttl=120, the new expiry is T+30+120=T+150.
+	// Advance past the original expiry (to T+90) and confirm the entry
+	// survives, proving the refresh actually reset expireAt.
+	s.advanceClock(60 * time.Second)
+	recs, ok := s.Lookup("foo.example.com.")
+	if !ok || len(recs) != 1 || recs[0].Value != "same" {
+		t.Errorf("entry lost after refresh: recs=%+v ok=%v, want single 'same' still live", recs, ok)
 	}
 }
 
@@ -165,30 +169,6 @@ func TestStore_LookupAtExactExpirationReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestStore_LookupTTLIsDynamic(t *testing.T) {
-	s := newStoreWithClock(t, time.Unix(1_000_000, 0))
-
-	s.Put("foo.example.com.", "v", 120)
-	s.advanceClock(30 * time.Second)
-
-	rec := mustLookupOne(t, s, "foo.example.com.")
-	if rec.TTL != 90 {
-		t.Errorf("TTL = %d, want 90 (120 - 30 elapsed)", rec.TTL)
-	}
-}
-
-func TestStore_LookupTTLMinimumOne(t *testing.T) {
-	s := newStoreWithClock(t, time.Unix(1_000_000, 0))
-
-	s.Put("foo.example.com.", "v", 2)
-	s.advanceClock(1500 * time.Millisecond)
-
-	rec := mustLookupOne(t, s, "foo.example.com.")
-	if rec.TTL != 1 {
-		t.Errorf("TTL = %d, want 1 (sub-second remainder floors below 1)", rec.TTL)
-	}
-}
-
 func TestStore_PerEntryExpiration(t *testing.T) {
 	s := newStoreWithClock(t, time.Unix(1_000_000, 0))
 
@@ -206,10 +186,6 @@ func TestStore_PerEntryExpiration(t *testing.T) {
 	}
 	if recs[0].Value != "long" {
 		t.Errorf("surviving record value = %q, want long", recs[0].Value)
-	}
-	// ~269 seconds remaining; allow small tolerance for integer floor.
-	if recs[0].TTL < 260 || recs[0].TTL > 269 {
-		t.Errorf("surviving TTL = %d, want approx 269", recs[0].TTL)
 	}
 }
 

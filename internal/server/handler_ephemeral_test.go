@@ -68,9 +68,34 @@ func TestEphemeral_TXTReturnedWhenZoneHasNoMatch(t *testing.T) {
 	if len(txt.Txt) != 1 || txt.Txt[0] != "token-abc" {
 		t.Errorf("TXT value = %v, want [token-abc]", txt.Txt)
 	}
-	// TTL should be remaining seconds (≤ original TTL, > 0).
-	if txt.Hdr.Ttl == 0 || txt.Hdr.Ttl > 120 {
-		t.Errorf("TTL = %d, want remaining seconds in (0, 120]", txt.Hdr.Ttl)
+	if txt.Hdr.Ttl != EphemeralResponseTTL {
+		t.Errorf("TTL = %d, want %d (fixed ephemeral response TTL)", txt.Hdr.Ttl, EphemeralResponseTTL)
+	}
+}
+
+// TestEphemeral_MultipleEntriesShareFixedRRTTL verifies that entries with
+// very different Store lifetimes all surface as RRs carrying the same fixed
+// response TTL. Covers the dns-server spec's "Multiple ephemeral TXT entries
+// are returned as separate RRs" scenario under the fixed-TTL rule — the
+// single-entry path is covered by TestEphemeral_TXTReturnedWhenZoneHasNoMatch.
+func TestEphemeral_MultipleEntriesShareFixedRRTTL(t *testing.T) {
+	rootZ := buildRootZone("example.com.")
+	store := ephemeral.NewStore()
+	store.Put("_acme-challenge.example.com.", "tok-A", 90)
+	store.Put("_acme-challenge.example.com.", "tok-B", 3600)
+
+	addr, cancel := newRootOnlyServerWithEphemeral(t, rootZ, store)
+	defer cancel()
+
+	resp := query(t, "udp", addr, "_acme-challenge.example.com.", dns.TypeTXT)
+	if len(resp.Answer) != 2 {
+		t.Fatalf("Answer len = %d, want 2", len(resp.Answer))
+	}
+	for _, rr := range resp.Answer {
+		txt := rr.(*dns.TXT)
+		if txt.Hdr.Ttl != EphemeralResponseTTL {
+			t.Errorf("entry %q: TTL = %d, want %d (fixed regardless of Store lifetime)", txt.Txt[0], txt.Hdr.Ttl, EphemeralResponseTTL)
+		}
 	}
 }
 

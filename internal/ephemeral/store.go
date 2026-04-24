@@ -22,11 +22,11 @@ import (
 // DefaultGCInterval is the default interval between garbage-collection sweeps.
 const DefaultGCInterval = 30 * time.Second
 
-// Record is one unexpired ephemeral TXT entry returned from Lookup. TTL is
-// the remaining seconds until expiration, with a minimum of 1.
+// Record is one unexpired ephemeral TXT entry returned from Lookup. The
+// entry's remaining lifetime is deliberately not exposed: DNS response TTL
+// is fixed by the handler, not derived from Store expiry.
 type Record struct {
 	Value string
-	TTL   uint32
 }
 
 // Store holds ephemeral TXT records keyed by canonical FQDN (lowercased,
@@ -87,35 +87,23 @@ func (s *Store) Put(fqdn, value string, ttl uint32) int {
 
 // Lookup returns every unexpired entry for fqdn, preserving insertion order.
 // When no entries exist or all have expired, ok is false and the slice is nil.
-// The returned TTL of each record is the remaining seconds until expiration
-// (minimum 1).
+// Only the value is returned; response TTL is owned by the DNS handler.
 func (s *Store) Lookup(fqdn string) ([]Record, bool) {
 	canonical := dnsutil.Canonicalize(fqdn)
 	if canonical == "" {
 		return nil, false
 	}
 	s.mu.RLock()
-	entries := s.records[canonical]
-	// Sample now inside the lock so per-entry TTL math is consistent with
-	// the copied snapshot; copy the slice under the lock so the caller's
-	// view is stable even if a concurrent Put triggers a grow-reallocation
-	// of the underlying array after we release.
+	defer s.mu.RUnlock()
+	// Sample now inside the lock so the expiry comparison uses the same
+	// epoch as the entries slice we are reading, matching gcSweep's pattern.
 	now := s.now()
-	snapshot := make([]entry, len(entries))
-	copy(snapshot, entries)
-	s.mu.RUnlock()
-
+	entries := s.records[canonical]
 	var out []Record
-	for _, e := range snapshot {
-		remaining := e.expireAt.Sub(now)
-		if remaining <= 0 {
-			continue
+	for _, e := range entries {
+		if e.expireAt.After(now) {
+			out = append(out, Record{Value: e.value})
 		}
-		ttl := uint32(remaining / time.Second)
-		if ttl < 1 {
-			ttl = 1
-		}
-		out = append(out, Record{Value: e.value, TTL: ttl})
 	}
 	if len(out) == 0 {
 		return nil, false

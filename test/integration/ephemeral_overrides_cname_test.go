@@ -13,6 +13,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/chenwei791129/ShadowDNS/internal/ephemeral"
+	"github.com/chenwei791129/ShadowDNS/internal/server"
 )
 
 // TestEphemeralOverrideCNAME_TXTReturnsEphemeralOverBothTransports verifies
@@ -50,6 +51,9 @@ func TestEphemeralOverrideCNAME_TXTReturnsEphemeralOverBothTransports(t *testing
 			}
 			if txt.Hdr.Name != "_acme-challenge.foo.example.com." {
 				t.Errorf("owner name = %q, want _acme-challenge.foo.example.com.", txt.Hdr.Name)
+			}
+			if txt.Hdr.Ttl != server.EphemeralResponseTTL {
+				t.Errorf("RR TTL = %d, want %d (API ttl 120 must not leak into response)", txt.Hdr.Ttl, server.EphemeralResponseTTL)
 			}
 			for _, rr := range resp.Answer {
 				if _, isCNAME := rr.(*dns.CNAME); isCNAME {
