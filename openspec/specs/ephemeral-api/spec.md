@@ -109,9 +109,11 @@ tests:
 
 The API SHALL accept `PUT /v1/txt/{fqdn}` with a JSON body containing `value` (string) and `ttl` (integer, seconds). The FQDN path parameter SHALL be canonicalized to lowercase with a trailing dot. The TTL SHALL be clamped to the range [1, 3600]. The `value` field SHALL be validated to be at most 255 UTF-8 bytes in length (the RFC 1035 TXT character-string limit); PUT requests with a longer value SHALL be rejected with HTTP 400 before touching the store. On success, the API SHALL respond with HTTP 200 and a JSON body confirming the operation.
 
+The `ttl` field in the PUT body SHALL control only the Store-side lifespan of the entry (its expiration timestamp). It SHALL NOT influence the TTL value written into DNS response packets; DNS response TTL is fixed by the `dns-server` spec.
+
 PUT SHALL support multiple distinct values per FQDN. When the posted value does not match any existing entry under the FQDN, the API SHALL append a new entry. When the posted value matches an existing entry exactly, the API SHALL refresh that entry's expiration using the new TTL instead of creating a duplicate. The operation SHALL remain idempotent: two consecutive identical PUT calls SHALL produce the same final state as a single call.
 
-The response body SHALL include the canonical FQDN, the clamped TTL applied to the affected entry, and the total number of ephemeral entries currently held for that FQDN.
+The response body SHALL include the canonical FQDN, the clamped TTL applied to the affected entry (the Store-side lifespan value), and the total number of ephemeral entries currently held for that FQDN.
 
 #### Scenario: Create a new ephemeral TXT record
 
@@ -127,9 +129,9 @@ The response body SHALL include the canonical FQDN, the clamped TTL applied to t
 
 #### Scenario: PUT with the same value refreshes the existing entry
 
-- **WHEN** an ephemeral entry with value `token-A` and remaining TTL 30 exists for `_acme-challenge.example.com.` and a PUT request is sent with body `{"value": "token-A", "ttl": 300}`
-- **THEN** the API SHALL respond with HTTP 200 and body whose `count` is `1`
-- **THEN** a subsequent DNS TXT query SHALL return `token-A` with TTL approximately 300 (not 30)
+- **WHEN** an ephemeral entry with value `token-A` and 30 seconds of remaining lifetime exists for `_acme-challenge.example.com.` and a PUT request is sent with body `{"value": "token-A", "ttl": 300}`
+- **THEN** the API SHALL respond with HTTP 200 and body whose `count` is `1` and `ttl` is `300`
+- **THEN** the entry's Store-side expiration SHALL be extended so that a DNS TXT query at T+31 seconds still returns `token-A` (proving the refresh, whereas without refresh the original entry would have expired at T+30)
 
 #### Scenario: TTL below minimum is clamped to 1
 
@@ -146,25 +148,17 @@ The response body SHALL include the canonical FQDN, the clamped TTL applied to t
 - **WHEN** a PUT request has an empty body, invalid JSON, or missing `value` field
 - **THEN** the API SHALL respond with HTTP 400 and a JSON error message
 
-#### Scenario: PUT with oversize value returns 400
-
-- **WHEN** a PUT request body contains a `value` field whose UTF-8 byte length exceeds 255
-- **THEN** the API SHALL respond with HTTP 400
-- **THEN** no ephemeral entry SHALL be created or modified
-
 
 <!-- @trace
-source: delete-ephemeral-by-value
-updated: 2026-04-22
+source: ephemeral-fixed-response-ttl
+updated: 2026-04-24
 code:
-  - scripts/smoke.sh
   - internal/ephemeral/store.go
-  - internal/api/server.go
-  - docs/ephemeral-api.md
+  - internal/server/handler.go
 tests:
-  - cmd/shadowdns/main_ephemeral_test.go
+  - test/integration/ephemeral_overrides_cname_test.go
+  - internal/server/handler_ephemeral_test.go
   - internal/ephemeral/store_test.go
-  - internal/api/server_test.go
 -->
 
 ---
@@ -549,8 +543,8 @@ The override SHALL apply equally when the API writes an entry into a root-zone q
 
 #### Scenario: ACME delegation qname with ephemeral TXT returns the ephemeral value to TXT queries
 
-- **WHEN** the zone `example.com.` contains `_acme-challenge.foo.example.com. CNAME acme-dns.external.net.` AND the API PUTs a TXT entry `token-xyz` for `_acme-challenge.foo.example.com.` with TTL 120 AND a DNS TXT query arrives for `_acme-challenge.foo.example.com.`
-- **THEN** the server SHALL respond with `_acme-challenge.foo.example.com. TXT "token-xyz"` (TTL 120, AA set), and SHALL NOT include the CNAME record
+- **WHEN** the zone `example.com.` contains `_acme-challenge.foo.example.com. CNAME acme-dns.external.net.` AND the API PUTs a TXT entry `token-xyz` for `_acme-challenge.foo.example.com.` with `ttl` 120 AND a DNS TXT query arrives for `_acme-challenge.foo.example.com.`
+- **THEN** the server SHALL respond with `_acme-challenge.foo.example.com. TXT "token-xyz"` (RR TTL 30, AA set), and SHALL NOT include the CNAME record
 
 ##### Example: ACME-01 validation path with local override
 
@@ -573,41 +567,17 @@ The override SHALL apply equally when the API writes an entry into a root-zone q
 - **WHEN** `backup.com.` is a backup of `example.com.` AND the root zone contains `_acme-challenge.foo.example.com. CNAME acme-dns.external.net.` AND the API PUTs a TXT entry for `_acme-challenge.foo.backup.com.` AND a DNS TXT query arrives for `_acme-challenge.foo.backup.com.`
 - **THEN** the server SHALL respond with the ephemeral TXT RR owned by `_acme-challenge.foo.backup.com.`; the backup-rewritten CNAME SHALL NOT be emitted
 
+
 <!-- @trace
-source: ephemeral-txt-overrides-cname
-updated: 2026-04-22
+source: ephemeral-fixed-response-ttl
+updated: 2026-04-24
 code:
-  - internal/config/aliases.go
-  - README.md
-  - scripts/test-deb.sh
-  - internal/shadowdnscfg/config.go
-  - testdata/integration/shadowdns.yaml
-  - CHANGELOG.md
-  - docs/ephemeral-api.md
-  - testdata/integration/master/example.com_view-th.fwd
-  - scripts/gen-container-testdata.go
-  - internal/server/build.go
-  - internal/alias/override.go
-  - .release-please-manifest.json
+  - internal/ephemeral/store.go
   - internal/server/handler.go
-  - packaging/shadowdns.yaml.example
-  - scripts/smoke.sh
-  - docs/benchmark.md
-  - testdata/integration/aliases.yaml
-  - testdata/integration/master/example.com_view-other.fwd
-  - testdata/integration/README.md
 tests:
-  - internal/server/handler_ephemeral_test.go
-  - test/integration/cname_following_test.go
-  - internal/shadowdnscfg/config_test.go
-  - internal/alias/override_test.go
-  - test/integration/helpers_test.go
-  - test/integration/axfr_test.go
-  - test/integration/listenon_test.go
-  - internal/config/aliases_test.go
   - test/integration/ephemeral_overrides_cname_test.go
-  - test/integration/reload_diff_test.go
-  - cmd/shadowdns/main_ephemeral_test.go
+  - internal/server/handler_ephemeral_test.go
+  - internal/ephemeral/store_test.go
 -->
 
 ---

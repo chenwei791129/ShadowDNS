@@ -238,6 +238,19 @@ tests:
   - cmd/shadowdns/main_ephemeral_test.go
 -->
 
+
+<!-- @trace
+source: ephemeral-fixed-response-ttl
+updated: 2026-04-24
+code:
+  - internal/ephemeral/store.go
+  - internal/server/handler.go
+tests:
+  - test/integration/ephemeral_overrides_cname_test.go
+  - internal/server/handler_ephemeral_test.go
+  - internal/ephemeral/store_test.go
+-->
+
 ### Requirement: Operate in authoritative-only mode
 
 The dns-server SHALL set `AA` (authoritative answer) flag in responses for queries matching a loaded zone and SHALL NOT perform recursion regardless of the query's RD (recursion desired) flag. The RA (recursion available) flag SHALL be set to 0.
@@ -906,9 +919,9 @@ The ephemeral overlay SHALL only apply when `qtype == TXT`. For all other qtypes
 
 This overlay SHALL apply equally to root zone queries and backup (alias) zone queries. For backup zone queries, the ephemeral lookup SHALL use the backup-namespace qname (matching the name under which API callers PUT entries).
 
-When the ephemeral store holds multiple unexpired TXT entries for the queried FQDN, the server SHALL return them as a single TXT RRSet — one TXT RR per entry, all sharing the same owner name, each with its own remaining-TTL value. Each entry's TXT value SHALL be encoded as a single string inside its own RR rather than concatenated into one RR.
+When the ephemeral store holds multiple unexpired TXT entries for the queried FQDN, the server SHALL return them as a single TXT RRSet — one TXT RR per entry, all sharing the same owner name. Each entry's TXT value SHALL be encoded as a single string inside its own RR rather than concatenated into one RR.
 
-The TTL value in ephemeral record responses SHALL be the remaining seconds until expiration (minimum 1 second). The Authoritative Answer (AA) flag SHALL be set on responses containing ephemeral records, consistent with zone-based responses.
+The TTL value in ephemeral record responses SHALL be fixed at **30 seconds** for every ephemeral TXT RR, independent of the record's remaining lifetime in the Store. The API-supplied TTL SHALL control only the record's lifespan in the Store (its expiration timestamp) and SHALL NOT leak into the DNS response TTL field. The Authoritative Answer (AA) flag SHALL be set on responses containing ephemeral records, consistent with zone-based responses.
 
 #### Scenario: UDP query receives response
 
@@ -927,8 +940,8 @@ The TTL value in ephemeral record responses SHALL be the remaining seconds until
 
 #### Scenario: Ephemeral TXT record is returned when zone has no match
 
-- **WHEN** a DNS TXT query arrives for `_acme-challenge.example.com.` and the zone file has no record for that name, but the ephemeral store contains a TXT record for that FQDN with 90 seconds remaining
-- **THEN** the server SHALL respond with the ephemeral TXT record, TTL set to 90, and the AA flag set
+- **WHEN** a DNS TXT query arrives for `_acme-challenge.example.com.` and the zone file has no record for that name, but the ephemeral store contains a TXT record for that FQDN with 90 seconds remaining lifetime
+- **THEN** the server SHALL respond with the ephemeral TXT record, TTL set to 30, and the AA flag set
 
 #### Scenario: Zone file record takes precedence over ephemeral record
 
@@ -937,14 +950,14 @@ The TTL value in ephemeral record responses SHALL be the remaining seconds until
 
 #### Scenario: Ephemeral TXT overrides exact CNAME at the same qname for TXT queries
 
-- **WHEN** the zone contains `_acme-challenge.foo.example.com. CNAME acme-dns.other.com.` AND the ephemeral store contains a TXT record `token-xyz` for `_acme-challenge.foo.example.com.` with 120 seconds remaining AND a DNS TXT query arrives for `_acme-challenge.foo.example.com.`
-- **THEN** the server SHALL respond with the ephemeral TXT `token-xyz` (TTL 120, AA set), SHALL NOT emit the CNAME record in the answer section, and SHALL NOT follow the CNAME target
+- **WHEN** the zone contains `_acme-challenge.foo.example.com. CNAME acme-dns.other.com.` AND the ephemeral store contains a TXT record `token-xyz` for `_acme-challenge.foo.example.com.` with 120 seconds remaining lifetime AND a DNS TXT query arrives for `_acme-challenge.foo.example.com.`
+- **THEN** the server SHALL respond with the ephemeral TXT `token-xyz` (TTL 30, AA set), SHALL NOT emit the CNAME record in the answer section, and SHALL NOT follow the CNAME target
 
 ##### Example: ACME delegation with local ephemeral override
 
-- **GIVEN** zone `example.com.` contains `_acme-challenge.foo.example.com. CNAME acme-dns.external.net.` AND ephemeral store holds `_acme-challenge.foo.example.com. → "token-xyz"` with 120 s remaining
+- **GIVEN** zone `example.com.` contains `_acme-challenge.foo.example.com. CNAME acme-dns.external.net.` AND ephemeral store holds `_acme-challenge.foo.example.com. → "token-xyz"` with 120 s remaining lifetime
 - **WHEN** client runs `dig +short TXT _acme-challenge.foo.example.com.`
-- **THEN** client receives `"token-xyz"` only (no CNAME, no followed records)
+- **THEN** client receives `"token-xyz"` only (no CNAME, no followed records); the response RR TTL SHALL be 30
 
 #### Scenario: CNAME query at the same qname still returns the zone CNAME when ephemeral TXT exists
 
@@ -978,8 +991,20 @@ The TTL value in ephemeral record responses SHALL be the remaining seconds until
 
 #### Scenario: Multiple ephemeral TXT entries are returned as separate RRs
 
-- **WHEN** two ephemeral TXT entries exist for `_acme-challenge.example.com.` with values `token-A` (90 s remaining) and `token-B` (250 s remaining), and the zone file has no record for that name, and a DNS TXT query arrives
-- **THEN** the server SHALL return both entries in the answer section as two separate TXT RRs — one for each value — each with its own remaining TTL (90 and 250 respectively) and the AA flag set
+- **WHEN** two ephemeral TXT entries exist for `_acme-challenge.example.com.` with values `token-A` (90 s remaining lifetime) and `token-B` (250 s remaining lifetime), and the zone file has no record for that name, and a DNS TXT query arrives
+- **THEN** the server SHALL return both entries in the answer section as two separate TXT RRs — one for each value — each with TTL 30 and the AA flag set
+
+#### Scenario: Response TTL does not decrement across repeated queries
+
+- **WHEN** an ephemeral TXT entry for `_acme-challenge.example.com.` is inserted via the API with `ttl=3600` and a client issues the same DNS TXT query at T+0, T+500, and T+3599
+- **THEN** every response SHALL carry the same RR TTL value of 30
+
+##### Example: fixed response TTL with long API TTL
+
+- **GIVEN** API PUT `{"value": "tok", "ttl": 3600}` at time T
+- **WHEN** clients observe `dig +noall +answer TXT _acme-challenge.example.com.` at T+0, T+500, T+3599
+- **THEN** each response SHALL show the same RR TTL value of 30
+- **AND** at T+3600 the record SHALL have expired and the query SHALL receive NODATA
 
 ---
 ### Requirement: Derive listen address set from named.conf listen-on
