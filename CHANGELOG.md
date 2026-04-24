@@ -7,6 +7,13 @@
 * **cli:** add opt-in `--pprof-enable` flag that exposes Go pprof endpoints on the metrics HTTP server under `/debug/pprof/` (disabled by default)
 * **cli:** migrate command-line parsing to cobra. All flags now use POSIX-style double dashes (e.g. `--named-conf`, `--listen`, `--reload-verify`); `--version` gains a `-v` short alias shown as `-v, --version` in `--help`. The former `-reload` flag is replaced by the `shadowdns reload` subcommand, which accepts only `--named-conf`. Existing single-dash flag invocations (`-named-conf`, `-listen`, `-reload`, etc.) are no longer recognized — update systemd units, scripts, and wrappers accordingly.
 
+## [0.12.3](https://github.com/chenwei791129/ShadowDNS/compare/v0.12.2...v0.12.3) (2026-04-24)
+
+
+### Bug Fixes
+
+* **handler:** enforce UDP budget via Pack() and enable name compression ([#21](https://github.com/chenwei791129/ShadowDNS/issues/21)) ([bda64fc](https://github.com/chenwei791129/ShadowDNS/commit/bda64fc984446309406e8980fdf68bc63123e630))
+
 ## [0.12.2](https://github.com/chenwei791129/ShadowDNS/compare/v0.12.1...v0.12.2) (2026-04-24)
 
 
