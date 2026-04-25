@@ -291,7 +291,7 @@ func (s *Server) handleBackupQuery(
 // lifespan; DNS response TTL is a fixed short value so downstream resolver
 // caches behave predictably and do not inherit minute-to-minute decrements
 // from remaining Store lifetime.
-const EphemeralResponseTTL uint32 = 30
+const EphemeralResponseTTL uint32 = 0
 
 // lookupEphemeralTXT returns a synthesized TXT RRSet if the ephemeral store
 // holds one or more unexpired TXT entries for qname. Each stored value
