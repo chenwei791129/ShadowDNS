@@ -55,7 +55,7 @@ The dns-server SHALL produce successful authoritative answer responses with DNS 
 
 ##### Example: 48 TXT RRs at `_acme-challenge.example.com.` with 43-byte values
 
-- **GIVEN** 48 TXT RRs sharing owner name `_acme-challenge.example.com.`, each carrying a 43-byte base64url challenge value, TTL 30
+- **GIVEN** 48 TXT RRs sharing owner name `_acme-challenge.example.com.`, each carrying a 43-byte base64url challenge value, TTL 0
 - **WHEN** the server packs an authoritative reply
 - **THEN** the packed wire size SHALL be under 3000 bytes (compressed), not around 4000 bytes (uncompressed), enabling fit within a 4096-byte EDNS0 UDP buffer without truncation
 
@@ -1466,6 +1466,6 @@ The dns-server SHALL produce successful authoritative answer responses with DNS 
 
 ##### Example: 48 TXT RRs at `_acme-challenge.example.com.` with 43-byte values
 
-- **GIVEN** 48 TXT RRs sharing owner name `_acme-challenge.example.com.`, each carrying a 43-byte base64url challenge value, TTL 30
+- **GIVEN** 48 TXT RRs sharing owner name `_acme-challenge.example.com.`, each carrying a 43-byte base64url challenge value, TTL 0
 - **WHEN** the server packs an authoritative reply
 - **THEN** the packed wire size SHALL be under 3000 bytes (compressed), not around 4000 bytes (uncompressed), enabling fit within a 4096-byte EDNS0 UDP buffer without truncation
