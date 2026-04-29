@@ -152,6 +152,52 @@ func TestBuildAliasMap_EmptyMap(t *testing.T) {
 	}
 }
 
+// BuildAliasMap must not mutate the caller's AliasGroup.Members slice. The
+// fold-for-comparison happens in a local variable so the operator-authored
+// case is preserved on the original group for the rewrite path to consume.
+func TestBuildAliasMap_MembersOriginalCasePreserved(t *testing.T) {
+	groups := map[string]AliasGroup{
+		"Root.Com": {
+			Members: []string{"Example.Com", "MIRROR.com"},
+		},
+	}
+	if _, _, err := BuildAliasMap(groups); err != nil {
+		t.Fatalf("BuildAliasMap: %v", err)
+	}
+	got := groups["Root.Com"].Members
+	if len(got) != 2 {
+		t.Fatalf("Members len = %d, want 2", len(got))
+	}
+	if got[0] != "Example.Com" {
+		t.Errorf("Members[0] = %q, want %q (original yaml case must survive)", got[0], "Example.Com")
+	}
+	if got[1] != "MIRROR.com" {
+		t.Errorf("Members[1] = %q, want %q (original yaml case must survive)", got[1], "MIRROR.com")
+	}
+}
+
+// BuildAliasMap: lookup with the lowercase fold of a mixed-case backup hits
+// the same root the YAML declared, regardless of how the operator cased the
+// names in config. Both keys and values in the returned map are LookupKey
+// folds so callers index with dnsutil.LookupKey(qname).
+func TestBuildAliasMap_LookupViaLowercaseFold(t *testing.T) {
+	m, flags, err := BuildAliasMap(map[string]AliasGroup{
+		"Root.Com": {
+			Members:            []string{"Example.Com"},
+			RewriteRDATALabels: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildAliasMap: %v", err)
+	}
+	if got := m["example.com."]; got != "root.com." {
+		t.Errorf("m[example.com.] = %q, want %q", got, "root.com.")
+	}
+	if !flags["example.com."] {
+		t.Errorf("flags[example.com.] = false, want true")
+	}
+}
+
 // BuildAliasMap: a root whose Members list is empty yields empty maps and no error.
 func TestBuildAliasMap_EmptyMembers(t *testing.T) {
 	m, flags, err := BuildAliasMap(map[string]AliasGroup{

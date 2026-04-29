@@ -30,7 +30,12 @@ func ParseFile(path string, origin string, logger *zap.Logger) (*Zone, error) {
 	}
 	defer func() { _ = f.Close() }()
 
-	canonOrigin := dnsutil.Canonicalize(origin)
+	// Lowercase-fold the origin: it is used as the zone's lookup-comparison
+	// anchor (z.Origin keying, IsInZone bailiwick checks) and as miekg's
+	// default origin for relative owner names. Per RFC 4343, comparisons are
+	// case-insensitive, so storing the fold is canonical. Owner-name case in
+	// the zone file is still preserved on the stored RR by miekg's parser.
+	canonOrigin := dnsutil.LookupKey(origin)
 
 	z := &Zone{
 		Origin:  canonOrigin,
@@ -53,6 +58,10 @@ func ParseFile(path string, origin string, logger *zap.Logger) (*Zone, error) {
 	zp.SetIncludeAllowed(true)
 
 	for rr, ok := zp.Next(); ok; rr, ok = zp.Next() {
+		// ownerName is a local lowercase fold used solely for the IsInZone
+		// bailiwick check and the warn log; the RR itself is passed to
+		// AddRR unmodified, so rr.Header().Name retains its zone-file case
+		// for on-wire transmission (per the AddRR case-preservation invariant).
 		ownerName := strings.ToLower(rr.Header().Name)
 		if !dnsutil.IsInZone(ownerName, canonOrigin) {
 			attrs := []any{"file", path, "owner", ownerName, "zone", canonOrigin}

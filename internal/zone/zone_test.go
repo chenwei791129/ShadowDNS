@@ -299,6 +299,35 @@ func TestZone_LookupReturnsSharedBacking(t *testing.T) {
 	}
 }
 
+// TestZone_AddRR_PreservesOwnerCase asserts the invariant documented on AddRR:
+// the lowercase key is purely an index key, and the stored RR is the same
+// pointer with Header().Name byte-for-byte unchanged.
+func TestZone_AddRR_PreservesOwnerCase(t *testing.T) {
+	z := &Zone{Origin: "root.com.", Records: make(map[string]*qtypeStore)}
+	rr := newTestA("Service.Root.Com.", "1.2.3.4")
+	z.AddRR(rr)
+
+	// Lookup uses the lowercase-folded owner per RFC 4343.
+	got := z.Lookup("service.root.com.", dns.TypeA)
+	if len(got) != 1 {
+		t.Fatalf("Lookup: got %d records, want 1", len(got))
+	}
+	if got[0] != dns.RR(rr) {
+		t.Errorf("Lookup did not return the same RR pointer that was inserted")
+	}
+	if got[0].Header().Name != "Service.Root.Com." {
+		t.Errorf("stored owner case: got %q, want %q (byte-for-byte)",
+			got[0].Header().Name, "Service.Root.Com.")
+	}
+
+	// Lookup with the original mixed case must NOT match (Lookup expects
+	// pre-folded keys per its doc comment); this guards against future
+	// callers being tempted to skip the fold.
+	if got := z.Lookup("Service.Root.Com.", dns.TypeA); len(got) != 0 {
+		t.Errorf("Lookup with mixed-case key: got %d records, want 0 (caller must fold)", len(got))
+	}
+}
+
 func TestQtypeStore_InlineToPromoted(t *testing.T) {
 	z := &Zone{
 		Origin:  "example.com.",

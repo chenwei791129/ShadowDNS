@@ -29,6 +29,12 @@ type ServerState struct {
 	// label-anywhere rule. A missing key (or a nil map) is equivalent to
 	// false (in-bailiwick suffix-only rewrite).
 	AliasFlags config.AliasFlags
+	// BackupOriginalCase maps the lookup-fold backup origin (lowercase, with
+	// trailing dot) to the operator-authored original case that the alias
+	// rewrite path emits on the wire. A missing key (or a nil map) is
+	// equivalent to "no case-preserving override" — callers must fall back to
+	// the lookup-fold form.
+	BackupOriginalCase map[string]string
 	// view name → zone origin → *zone.Zone (root zones)
 	RootZones map[string]map[string]*zone.Zone
 	// view name → zone origin → *zone.Zone (backup-override zones; may be empty or nil)
@@ -86,6 +92,9 @@ func (s *ServerState) sanitize() {
 	}
 	if s.AliasFlags == nil {
 		s.AliasFlags = make(config.AliasFlags)
+	}
+	if s.BackupOriginalCase == nil {
+		s.BackupOriginalCase = make(map[string]string)
 	}
 	if s.Fingerprints == nil {
 		s.Fingerprints = make(map[string]map[string]zoneFingerprint)

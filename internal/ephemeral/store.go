@@ -29,9 +29,10 @@ type Record struct {
 	Value string
 }
 
-// Store holds ephemeral TXT records keyed by canonical FQDN (lowercased,
-// with trailing dot). Each FQDN may have multiple entries distinguished by
-// their TXT value. All methods are safe for concurrent use.
+// Store holds ephemeral TXT records keyed by lookup-fold FQDN (lowercased,
+// with trailing dot, via dnsutil.LookupKey). Each FQDN may have multiple
+// entries distinguished by their TXT value. All methods are safe for
+// concurrent use.
 type Store struct {
 	mu      sync.RWMutex
 	records map[string][]entry
@@ -63,7 +64,7 @@ func NewStore() *Store {
 // There is no per-FQDN cap: scan / memory growth is bounded in practice
 // by the ephemeral_api IP ACL rather than a hard limit here.
 func (s *Store) Put(fqdn, value string, ttl uint32) int {
-	canonical := dnsutil.Canonicalize(fqdn)
+	canonical := dnsutil.LookupKey(fqdn)
 	if canonical == "" {
 		return 0
 	}
@@ -89,7 +90,7 @@ func (s *Store) Put(fqdn, value string, ttl uint32) int {
 // When no entries exist or all have expired, ok is false and the slice is nil.
 // Only the value is returned; response TTL is owned by the DNS handler.
 func (s *Store) Lookup(fqdn string) ([]Record, bool) {
-	canonical := dnsutil.Canonicalize(fqdn)
+	canonical := dnsutil.LookupKey(fqdn)
 	if canonical == "" {
 		return nil, false
 	}
@@ -115,7 +116,7 @@ func (s *Store) Lookup(fqdn string) ([]Record, bool) {
 // Calling Delete for an FQDN with no entries is a no-op. Delete only
 // touches the ephemeral store; zone file records are unaffected.
 func (s *Store) Delete(fqdn string) {
-	canonical := dnsutil.Canonicalize(fqdn)
+	canonical := dnsutil.LookupKey(fqdn)
 	if canonical == "" {
 		return
 	}
@@ -129,7 +130,7 @@ func (s *Store) Delete(fqdn string) {
 // Removes the FQDN key when its last entry is deleted so no empty slice is
 // retained.
 func (s *Store) DeleteValue(fqdn, value string) bool {
-	canonical := dnsutil.Canonicalize(fqdn)
+	canonical := dnsutil.LookupKey(fqdn)
 	if canonical == "" {
 		return false
 	}

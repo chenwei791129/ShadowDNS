@@ -29,12 +29,19 @@ func RewriteQName(qname, backup, root string) string {
 }
 
 // RewriteName applies the in-bailiwick rule to a single DNS name n:
-//   - if n == root → return backup
-//   - if n ends with "." + root → strip root suffix, append backup
-//   - otherwise → return n unchanged
+//   - if n == root (case-insensitively) → return backup verbatim
+//   - if n ends with "." + root (case-insensitively) → preserve n's
+//     original-case prefix, append "." + backup verbatim
+//   - otherwise → return n unchanged (original case preserved)
 //
-// root and backup MUST be pre-canonicalized (lowercased FQDNs with trailing dot,
-// e.g. via dnsutil.Canonicalize). Only n is lowercased here.
+// Case contract (RFC 4343 / preserve-dns-name-case-in-responses):
+//   - root MUST be the lookup-fold (lowercased FQDN with trailing dot,
+//     produced via dnsutil.LookupKey by the caller).
+//   - backup MUST be the operator-authored original case (FQDN with trailing
+//     dot, produced via dnsutil.Canonicalize by the caller).
+//   - n carries on-wire case (mixed case from a 0x20 query or zone-file RDATA)
+//     and is preserved byte-for-byte in the output where it does not overlap
+//     the matched root suffix.
 func RewriteName(n, root, backup string) string {
 	if n == "" {
 		return n
@@ -46,25 +53,30 @@ func RewriteName(n, root, backup string) string {
 	}
 	suffix := "." + root
 	if strings.HasSuffix(lower, suffix) {
-		prefix := lower[:len(lower)-len(suffix)]
+		prefix := n[:len(n)-len(suffix)]
 		return prefix + "." + backup
 	}
-	return lower
+	return n
 }
 
 // RewriteNameAnywhere replaces the leftmost occurrence of root that begins
 // at the start of n or at a label boundary (preceded by ".") with backup,
-// and returns the resulting (lowercased) name. Used by RewriteRR for RDATA
-// name fields when an alias group declares rewrite_rdata_labels: true to
-// handle templated CNAME / NS / MX / SRV / PTR / SOA records that embed the
-// root origin as a middle label.
+// preserving n's original case in the prefix and trailing portions. Used by
+// RewriteRR for RDATA name fields when an alias group declares
+// rewrite_rdata_labels: true to handle templated CNAME / NS / MX / SRV / PTR
+// / SOA records that embed the root origin as a middle label.
 //
 // First match wins: if root appears at multiple label-boundary positions,
 // only the leftmost occurrence is rewritten. This matches the
 // templated-CNAME convention where a single root-origin marker is expected.
 //
-// root and backup MUST be pre-canonicalized (lowercased FQDNs with trailing
-// dot, e.g. via dnsutil.Canonicalize). Only n is lowercased here.
+// Case contract (RFC 4343 / preserve-dns-name-case-in-responses):
+//   - root MUST be the lookup-fold (lowercased FQDN with trailing dot,
+//     produced via dnsutil.LookupKey by the caller).
+//   - backup MUST be the operator-authored original case (FQDN with trailing
+//     dot, produced via dnsutil.Canonicalize by the caller).
+//   - n carries on-wire case and is preserved byte-for-byte in the output
+//     outside the matched root span.
 func RewriteNameAnywhere(n, root, backup string) string {
 	if n == "" || root == "" {
 		return n
@@ -79,22 +91,22 @@ func RewriteNameAnywhere(n, root, backup string) string {
 	for start <= len(lower) {
 		idx := strings.Index(lower[start:], root)
 		if idx < 0 {
-			return lower
+			return n
 		}
 		absIdx := start + idx
 		// Leading-edge boundary: must be name start or a label separator.
 		// Trailing edge is implicit because root ends with ".".
 		if absIdx == 0 || lower[absIdx-1] == '.' {
 			var b strings.Builder
-			b.Grow(len(lower) - len(root) + len(backup))
-			b.WriteString(lower[:absIdx])
+			b.Grow(len(n) - len(root) + len(backup))
+			b.WriteString(n[:absIdx])
 			b.WriteString(backup)
-			b.WriteString(lower[absIdx+len(root):])
+			b.WriteString(n[absIdx+len(root):])
 			return b.String()
 		}
 		start = absIdx + 1
 	}
-	return lower
+	return n
 }
 
 // RewriteRR returns a new dns.RR with its owner name unconditionally rewritten
@@ -113,6 +125,9 @@ func RewriteNameAnywhere(n, root, backup string) string {
 // root zone's bailiwick.
 //
 // The input rr is NOT mutated; a copy is made (use dns.Copy from miekg/dns).
+//
+// root and backup follow the case contract documented on RewriteName: root is
+// the lookup-fold, backup is operator-authored original case.
 //
 // Supported types for value rewrite: *dns.CNAME, *dns.NS, *dns.MX, *dns.PTR,
 // *dns.SRV, *dns.SOA. Other types pass through with only the owner name rewritten.

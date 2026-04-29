@@ -11,9 +11,11 @@ func TestCanonicalize(t *testing.T) {
 		{name: "empty", in: "", want: ""},
 		{name: "simple no dot", in: "example.com", want: "example.com."},
 		{name: "already FQDN", in: "example.com.", want: "example.com."},
-		{name: "uppercase", in: "EXAMPLE.COM", want: "example.com."},
-		{name: "mixed case with dot", in: "Example.Com.", want: "example.com."},
+		{name: "uppercase preserved", in: "EXAMPLE.COM", want: "EXAMPLE.COM."},
+		{name: "mixed case with dot preserved", in: "Example.Com.", want: "Example.Com."},
+		{name: "mixed case no dot preserved", in: "Example.Com", want: "Example.Com."},
 		{name: "single label", in: "localhost", want: "localhost."},
+		{name: "single label uppercase", in: "Localhost", want: "Localhost."},
 		{name: "root dot", in: ".", want: "."},
 	}
 
@@ -22,6 +24,32 @@ func TestCanonicalize(t *testing.T) {
 			got := Canonicalize(tc.in)
 			if got != tc.want {
 				t.Errorf("Canonicalize(%q) = %q; want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLookupKey(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty", in: "", want: ""},
+		{name: "simple no dot", in: "example.com", want: "example.com."},
+		{name: "already FQDN", in: "example.com.", want: "example.com."},
+		{name: "uppercase folded", in: "EXAMPLE.COM", want: "example.com."},
+		{name: "mixed case with dot folded", in: "Example.Com.", want: "example.com."},
+		{name: "mixed case no dot folded", in: "Example.Com", want: "example.com."},
+		{name: "single label uppercase folded", in: "Localhost", want: "localhost."},
+		{name: "root dot", in: ".", want: "."},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := LookupKey(tc.in)
+			if got != tc.want {
+				t.Errorf("LookupKey(%q) = %q; want %q", tc.in, got, tc.want)
 			}
 		})
 	}

@@ -502,6 +502,58 @@ aliases:
 	}
 }
 
+// ---------- aliases case preservation ----------
+
+// Mixed-case backup names in YAML must be addressable via the lowercase fold
+// while their original yaml case is preserved on the Config struct so the
+// alias rewrite path can emit on-wire names with operator-authored case.
+func TestLoad_AliasesMixedCaseBackupPreservesOriginalCase(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  Root.Com:
+    - Example.Com
+    - MIRROR.com
+`)
+	cfg, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Aliases["example.com."]; got != "root.com." {
+		t.Errorf("Aliases[example.com.] = %q, want root.com.", got)
+	}
+	if got := cfg.Aliases["mirror.com."]; got != "root.com." {
+		t.Errorf("Aliases[mirror.com.] = %q, want root.com.", got)
+	}
+	if got := cfg.BackupOriginalCase["example.com."]; got != "Example.Com." {
+		t.Errorf("BackupOriginalCase[example.com.] = %q, want %q", got, "Example.Com.")
+	}
+	if got := cfg.BackupOriginalCase["mirror.com."]; got != "MIRROR.com." {
+		t.Errorf("BackupOriginalCase[mirror.com.] = %q, want %q", got, "MIRROR.com.")
+	}
+}
+
+// Mixed-case backup must hit the AliasFlags map via lookup fold and the flag
+// value must be propagated to every member regardless of case.
+func TestLoad_AliasesMixedCaseBackupFlagPropagated(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  Root.Com:
+    members:
+      - Example.Com
+    rewrite_rdata_labels: true
+`)
+	cfg, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AliasFlags["example.com."] {
+		t.Errorf("AliasFlags[example.com.] = false, want true")
+	}
+	if got := cfg.BackupOriginalCase["example.com."]; got != "Example.Com." {
+		t.Errorf("BackupOriginalCase[example.com.] = %q, want %q", got, "Example.Com.")
+	}
+}
+
 func TestLoad_EphemeralAPIWithoutToken(t *testing.T) {
 	path := writeConfig(t, `
 ephemeral_api:

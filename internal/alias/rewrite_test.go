@@ -110,6 +110,44 @@ func TestRewriteName(t *testing.T) {
 			backup: "backup.com.",
 			want:   "",
 		},
+		// Case-preservation contract: root is lookup-fold (lowercase), backup
+		// is original yaml case, n is the on-wire query/RDATA name. Output
+		// preserves n's original-case prefix and emits backup verbatim.
+		{
+			name:   "mixed-case query of apex root rewritten to original-case backup",
+			n:      "RoOt.CoM.",
+			root:   "root.com.",
+			backup: "BackUp.Com.",
+			want:   "BackUp.Com.",
+		},
+		{
+			name:   "mixed-case query of subdomain preserves prefix case and emits original-case backup",
+			n:      "WwW.RoOt.CoM.",
+			root:   "root.com.",
+			backup: "BackUp.Com.",
+			want:   "WwW.BackUp.Com.",
+		},
+		{
+			name:   "all-uppercase query under root preserves prefix and emits original-case backup",
+			n:      "WWW.ROOT.COM.",
+			root:   "root.com.",
+			backup: "BackUp.Com.",
+			want:   "WWW.BackUp.Com.",
+		},
+		{
+			name:   "non-matching mixed-case name preserved unchanged",
+			n:      "Cdn.AmazonAWS.com.",
+			root:   "root.com.",
+			backup: "BackUp.Com.",
+			want:   "Cdn.AmazonAWS.com.",
+		},
+		{
+			name:   "deep mixed-case subdomain rewritten with prefix preserved",
+			n:      "A.b.RooT.cOm.",
+			root:   "root.com.",
+			backup: "BACKUP.COM.",
+			want:   "A.b.BACKUP.COM.",
+		},
 	}
 
 	for _, tc := range tests {

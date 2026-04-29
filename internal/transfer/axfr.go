@@ -49,8 +49,16 @@ func HandleAXFR(w dns.ResponseWriter, req *dns.Msg, z *zone.Zone, logger *zap.Lo
 // rootZone MUST not be nil. backupZone MAY be nil (alias declared without its
 // own .fwd file).
 //
+// Case contract (RFC 4343 / preserve-dns-name-case-in-responses):
+//   - backupOrigin MUST be the lookup-fold backup FQDN; used to derive the
+//     override-map key against backupZone.Records (which is lookup-fold).
+//   - backupOriginalCase MUST be the operator-authored YAML case for the same
+//     backup origin; used for on-wire owner / RDATA rewriting via BackupSOA
+//     and RewriteRR. Pass backupOrigin verbatim when no case-preserving form
+//     is available.
+//
 // MUST NOT panic on any input.
-func HandleAliasAXFR(w dns.ResponseWriter, req *dns.Msg, backupOrigin string, rootZone *zone.Zone, backupZone *zone.Zone, rewriteRDATALabels bool, logger *zap.Logger) {
+func HandleAliasAXFR(w dns.ResponseWriter, req *dns.Msg, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, backupZone *zone.Zone, rewriteRDATALabels bool, logger *zap.Logger) {
 	// Network guard: AXFR over UDP is always REFUSED.
 	if dnsutil.IsUDP(w) {
 		replyRefused(w, req)
@@ -63,18 +71,22 @@ func HandleAliasAXFR(w dns.ResponseWriter, req *dns.Msg, backupOrigin string, ro
 		return
 	}
 
-	// Build the backup SOA.
-	soa := alias.BackupSOA(rootZone.SOA, rootZone.Origin, backupOrigin)
+	// Build the backup SOA in operator case so AXFR consumers see the same
+	// on-wire case as query responses.
+	soa := alias.BackupSOA(rootZone.SOA, rootZone.Origin, backupOriginalCase)
 
 	// Walk root zone records deterministically (sorted by owner, then by type).
 	// Skip root SOA; emit override or rewritten records.
-	records := buildAliasRecords(rootZone, backupZone, rootZone.Origin, backupOrigin, rewriteRDATALabels)
+	records := buildAliasRecords(rootZone, backupZone, rootZone.Origin, backupOrigin, backupOriginalCase, rewriteRDATALabels)
 
 	streamAXFR(w, req, soa, records, logger)
 }
 
 // buildAliasRecords produces the non-SOA record list for a backup-zone AXFR.
-func buildAliasRecords(rootZone, backupZone *zone.Zone, rootOrigin, backupOrigin string, rewriteRDATALabels bool) []dns.RR {
+//
+// backupOrigin is the lookup-fold backup FQDN (used to key the override map);
+// backupOriginalCase is the operator-authored case (used for on-wire emission).
+func buildAliasRecords(rootZone, backupZone *zone.Zone, rootOrigin, backupOrigin, backupOriginalCase string, rewriteRDATALabels bool) []dns.RR {
 	// Collect and sort owners for determinism.
 	owners := make([]string, 0, len(rootZone.Records))
 	for owner := range rootZone.Records {
@@ -134,7 +146,7 @@ func buildAliasRecords(rootZone, backupZone *zone.Zone, rootOrigin, backupOrigin
 
 			// No override: rewrite root records into backup namespace.
 			for _, rr := range typeMap[rrtype] {
-				result = append(result, alias.RewriteRR(rr, rootOrigin, backupOrigin, rewriteRDATALabels))
+				result = append(result, alias.RewriteRR(rr, rootOrigin, backupOriginalCase, rewriteRDATALabels))
 			}
 		}
 	}

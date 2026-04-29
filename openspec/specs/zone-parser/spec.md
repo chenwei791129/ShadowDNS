@@ -646,3 +646,68 @@ tests:
   - internal/zone/parser_test.go
   - internal/zone/zone_test.go
 -->
+
+---
+### Requirement: Preserve zone-file case in stored RRs while indexing on lowercase
+
+The zone-parser SHALL store each parsed resource record in memory with its owner name field (`Header().Name`) and any name-bearing RDATA field (CNAME target, NS, MX exchange, PTR, SRV target, SOA MNAME, SOA RNAME) byte-for-byte as written in the zone file. The internal lookup index keyed on owner name SHALL use a lowercase-folded form of the name solely as the index key, without modifying the stored RR. Subsequent lookups SHALL fold the query name to the same lowercase form before comparing against index keys, satisfying RFC 4343 case-insensitive matching while keeping stored data case-preserving for response emission.
+
+#### Scenario: Mixed-case owner in zone file is stored as written
+
+- **WHEN** a zone file contains `Service.Root.Com. IN A 1.2.3.4`
+- **THEN** the in-memory zone has at least one RR whose `Header().Name` equals `Service.Root.Com.` byte-for-byte
+
+#### Scenario: Lookup with lowercase query finds the mixed-case stored record
+
+- **WHEN** a zone file contains `Service.Root.Com. IN A 1.2.3.4` and a lookup is performed with key `service.root.com.`
+- **THEN** the lookup returns the stored RR (case-insensitive index hit) whose `Header().Name` remains `Service.Root.Com.`
+
+#### Scenario: Lookup with mixed-case query finds the same record
+
+- **WHEN** a zone file contains `Service.Root.Com. IN A 1.2.3.4` and a lookup is performed with key `SERVICE.root.COM.`
+- **THEN** the lookup returns the stored RR with `Header().Name` = `Service.Root.Com.`
+
+#### Scenario: Mixed-case CNAME target is preserved
+
+- **WHEN** a zone file contains `alias.root.com. IN CNAME Target.Root.Com.`
+- **THEN** the stored CNAME RDATA `Target` field equals `Target.Root.Com.` byte-for-byte
+
+<!-- @trace
+source: preserve-dns-name-case-in-responses
+updated: 2026-04-29
+code:
+  - internal/transfer/axfr.go
+  - internal/server/server.go
+  - cmd/shadowdns/main.go
+  - internal/zone/zone.go
+  - internal/alias/rewrite.go
+  - internal/ephemeral/store.go
+  - internal/api/server.go
+  - internal/server/build.go
+  - internal/config/aliases.go
+  - internal/shadowdnscfg/config.go
+  - internal/zone/parser.go
+  - internal/dnsutil/dnsutil.go
+  - CHANGELOG.md
+  - internal/alias/override.go
+  - internal/server/handler.go
+tests:
+  - internal/zone/parser_test.go
+  - cmd/shadowdns/main_test.go
+  - internal/transfer/axfr_test.go
+  - test/integration/case_preservation_test.go
+  - internal/dnsutil/dnsutil_test.go
+  - internal/zone/zone_test.go
+  - internal/server/build_test.go
+  - test/integration/reload_diff_test.go
+  - internal/alias/rewrite_test.go
+  - test/integration/listenon_test.go
+  - internal/config/aliases_test.go
+  - internal/server/handler_test.go
+  - internal/shadowdnscfg/config_test.go
+  - internal/alias/override_test.go
+  - test/integration/axfr_test.go
+  - test/integration/helpers_test.go
+  - internal/server/server_test.go
+  - internal/alias/rewrite_anywhere_test.go
+-->

@@ -16,17 +16,34 @@ var OverridableTypes = map[uint16]bool{
 	dns.TypeSRV: true,
 }
 
-// Canonicalize returns the lowercased FQDN form of a DNS name (with trailing dot).
-// Empty input returns "".
+// Canonicalize returns the FQDN form of a DNS name (with trailing dot), preserving
+// the original case of every label byte-for-byte. It only normalizes the trailing
+// dot. Empty input returns "".
+//
+// Per RFC 4343, DNS name comparisons are case-insensitive, but on-wire names should
+// be transmitted with their original case preserved (BIND9, Knot, NSD, PowerDNS all
+// behave this way). Use LookupKey for case-folded comparisons / map keys.
 func Canonicalize(name string) string {
 	if name == "" {
 		return ""
 	}
-	return strings.TrimSuffix(strings.ToLower(name), ".") + "."
+	return strings.TrimSuffix(name, ".") + "."
+}
+
+// LookupKey returns the lowercase-folded FQDN form of a DNS name (with trailing
+// dot), suitable as a case-insensitive comparison key per RFC 4343. Empty input
+// returns "". Use this for map keys and equality checks; use Canonicalize for
+// stored / output names where case must be preserved.
+func LookupKey(name string) string {
+	if name == "" {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSuffix(name, ".")) + "."
 }
 
 // IsInZone returns true iff name equals zone or is a subdomain of zone.
-// Both arguments MUST already be canonicalized via Canonicalize (lowercased FQDN).
+// Both arguments MUST already be lowercase-folded via LookupKey for correct
+// case-insensitive matching.
 func IsInZone(name, zone string) bool {
 	return name == zone || strings.HasSuffix(name, "."+zone)
 }

@@ -7,6 +7,9 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
+
+	"github.com/chenwei791129/ShadowDNS/internal/config"
+	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
 
 // recordingWriter is a UDP dns.ResponseWriter stub that captures the bytes
@@ -177,6 +180,197 @@ func TestReplyWithAnswer_UDPNoEDNSFallsBackTo512(t *testing.T) {
 	}
 	if !resp.Truncated {
 		t.Error("expected TC=1 when answers are dropped to fit 512-byte budget")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Case preservation tests (RFC 4343 + DNS-0x20 echo)
+// ---------------------------------------------------------------------------
+
+// TestRootZone_MixedCaseQuery_PreservesCase covers two contracts in one
+// round trip:
+//   - Question section MUST echo the on-wire case bit-for-bit (RFC 4343).
+//   - Answer owner case MUST come from the zone-file storage, not from the
+//     lookup-fold qname; the zone-file case is the source of truth.
+func TestRootZone_MixedCaseQuery_PreservesCase(t *testing.T) {
+	const (
+		zoneFileOwner = "WwW.Root.Com." // operator-authored zone-file case
+		queryOnWire   = "wWw.RoOt.cOm." // arbitrary 0x20-randomized query case
+	)
+	rootZ := buildRootZone("root.com.",
+		makeARecord(zoneFileOwner, "1.2.3.4", 300),
+	)
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}, nil)
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, queryOnWire, dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if got := resp.Question[0].Name; got != queryOnWire {
+		t.Errorf("Question section case: got %q, want echo %q", got, queryOnWire)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected exactly 1 answer, got %d", len(resp.Answer))
+	}
+	if got := resp.Answer[0].Header().Name; got != zoneFileOwner {
+		t.Errorf("Answer owner case: got %q, want zone-file %q", got, zoneFileOwner)
+	}
+}
+
+// TestRootZone_WildcardMixedCaseQuery_OwnerEchoesQuery covers RFC 4592
+// wildcard synthesis: the synthesized owner MUST adopt the on-wire case of
+// the qname, because there is no zone-file owner to draw from for the
+// wildcard label.
+func TestRootZone_WildcardMixedCaseQuery_OwnerEchoesQuery(t *testing.T) {
+	const queryOnWire = "WWW.Root.Com."
+	rootZ := buildRootZone("root.com.",
+		makeARecord("*.root.com.", "1.2.3.4", 300),
+	)
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{},
+		Aliases:     config.AliasMap{},
+	}, nil)
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, queryOnWire, dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if got := resp.Question[0].Name; got != queryOnWire {
+		t.Errorf("Question section case: got %q, want echo %q", got, queryOnWire)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected exactly 1 answer, got %d", len(resp.Answer))
+	}
+	if got := resp.Answer[0].Header().Name; got != queryOnWire {
+		t.Errorf("synthesized wildcard owner: got %q, want qname-echo %q", got, queryOnWire)
+	}
+}
+
+// TestBackupAlias_MixedCaseQuery_PreservesAliasConfigCase exercises the
+// alias rewrite path with three different operator-authored backup yaml
+// cases, asserting:
+//   - lookup is case-insensitive (every variant resolves the same record);
+//   - Question section echoes the on-wire case of the query;
+//   - Answer owner suffix matches the operator-authored backup yaml case
+//     byte-for-byte (this is the exact-match path, so the owner prefix is
+//     the zone-file storage case, not the qname case).
+func TestBackupAlias_MixedCaseQuery_PreservesAliasConfigCase(t *testing.T) {
+	const queryOnWire = "wWw.ExAmPlE.cOm."
+
+	cases := []struct {
+		name            string
+		backupYAMLCase  string // operator-authored case in YAML (with trailing dot)
+		wantAnswerOwner string // expected Answer[0].Header().Name
+	}{
+		{
+			name:            "lowercase backup yaml",
+			backupYAMLCase:  "example.com.",
+			wantAnswerOwner: "www.example.com.", // prefix from zone-file, suffix from yaml
+		},
+		{
+			name:            "mixed-case backup yaml",
+			backupYAMLCase:  "Example.Com.",
+			wantAnswerOwner: "www.Example.Com.",
+		},
+		{
+			name:            "all-uppercase backup yaml",
+			backupYAMLCase:  "EXAMPLE.COM.",
+			wantAnswerOwner: "www.EXAMPLE.COM.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rootZ := buildRootZone("root.com.",
+				makeARecord("www.root.com.", "1.2.3.4", 300),
+			)
+			backupZ := buildBackupZone("example.com.")
+
+			srv := NewServer(ServerState{
+				Matcher:     makeAnyMatcher("default"),
+				ZoneOrigins: map[string][]string{"default": {"root.com.", "example.com."}},
+				RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+				BackupZones: map[string]map[string]*zone.Zone{"default": {"example.com.": backupZ}},
+				Aliases:     config.AliasMap{"example.com.": "root.com."},
+				BackupOriginalCase: map[string]string{
+					"example.com.": tc.backupYAMLCase,
+				},
+			}, nil)
+
+			udpAddr, _, cancel := startTestServer(t, srv)
+			defer cancel()
+
+			resp := query(t, "udp", udpAddr, queryOnWire, dns.TypeA)
+			if resp.Rcode != dns.RcodeSuccess {
+				t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+			}
+			if got := resp.Question[0].Name; got != queryOnWire {
+				t.Errorf("Question section case: got %q, want echo %q", got, queryOnWire)
+			}
+			if len(resp.Answer) != 1 {
+				t.Fatalf("expected exactly 1 answer, got %d", len(resp.Answer))
+			}
+			if got := resp.Answer[0].Header().Name; got != tc.wantAnswerOwner {
+				t.Errorf("Answer owner: got %q, want %q", got, tc.wantAnswerOwner)
+			}
+		})
+	}
+}
+
+// TestBackupAlias_WildcardMixedCaseQuery_OwnerPreservesCase covers wildcard
+// synthesis through the alias-rewrite path: the synthesized owner prefix
+// must come from qnameOrig and the suffix from the operator-authored backup
+// yaml case.
+func TestBackupAlias_WildcardMixedCaseQuery_OwnerPreservesCase(t *testing.T) {
+	const (
+		queryOnWire    = "HoSt.Example.Com."
+		backupYAMLCase = "Example.Com."
+		wantOwner      = "HoSt.Example.Com." // prefix from qname, suffix from yaml
+	)
+	rootZ := buildRootZone("root.com.",
+		makeARecord("*.root.com.", "1.2.3.4", 300),
+	)
+	backupZ := buildBackupZone("example.com.")
+
+	srv := NewServer(ServerState{
+		Matcher:     makeAnyMatcher("default"),
+		ZoneOrigins: map[string][]string{"default": {"root.com.", "example.com."}},
+		RootZones:   map[string]map[string]*zone.Zone{"default": {"root.com.": rootZ}},
+		BackupZones: map[string]map[string]*zone.Zone{"default": {"example.com.": backupZ}},
+		Aliases:     config.AliasMap{"example.com.": "root.com."},
+		BackupOriginalCase: map[string]string{
+			"example.com.": backupYAMLCase,
+		},
+	}, nil)
+
+	udpAddr, _, cancel := startTestServer(t, srv)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, queryOnWire, dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if got := resp.Question[0].Name; got != queryOnWire {
+		t.Errorf("Question section case: got %q, want echo %q", got, queryOnWire)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected exactly 1 answer, got %d", len(resp.Answer))
+	}
+	if got := resp.Answer[0].Header().Name; got != wantOwner {
+		t.Errorf("synthesized wildcard owner: got %q, want %q", got, wantOwner)
 	}
 }
 

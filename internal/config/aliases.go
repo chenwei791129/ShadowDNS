@@ -7,17 +7,25 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
 )
 
-// AliasMap is a one-way lookup: backup domain (FQDN, lowercased, with trailing dot)
-// → root domain (same normalization). The map is empty when no aliases are declared.
+// AliasMap is a one-way lookup: backup domain (FQDN, lowercase-folded for
+// case-insensitive matching per RFC 4343, with trailing dot) → root domain
+// (same fold). Both keys and values are derived via dnsutil.LookupKey; the
+// fold is for comparison/lookup only, original case is preserved on
+// AliasGroup.Members and on the backups field below for on-wire output.
+//
+// The map is empty when no aliases are declared.
 type AliasMap map[string]string
 
-// AliasFlags is a backup-domain → rewrite_rdata_labels lookup. A missing key
-// is equivalent to false (default behavior: in-bailiwick suffix-only rewrite).
+// AliasFlags is a backup-domain → rewrite_rdata_labels lookup keyed on the
+// LookupKey fold of the backup. A missing key is equivalent to false
+// (default behavior: in-bailiwick suffix-only rewrite).
 type AliasFlags map[string]bool
 
 // AliasGroup describes one root-keyed alias group: its backup members and
 // the per-group rewrite_rdata_labels flag. Members are pre-normalization
-// strings as supplied by the loader; BuildAliasMap canonicalizes them.
+// strings as supplied by the loader (yaml original case is preserved
+// byte-for-byte); BuildAliasMap derives the lookup-fold for the AliasMap
+// key without mutating Members.
 type AliasGroup struct {
 	Members            []string
 	RewriteRDATALabels bool
@@ -67,10 +75,12 @@ func BuildAliasMap(raw map[string]AliasGroup) (AliasMap, AliasFlags, error) {
 	return resultMap, resultFlags, nil
 }
 
-// normalizeDomain validates a domain name and returns its canonical form
-// (lowercased, with a trailing dot). It rejects empty strings and names
-// containing whitespace before delegating the pure transformation to
-// dnsutil.Canonicalize.
+// normalizeDomain validates a domain name and returns its lookup-fold form
+// (lowercased, with a trailing dot) suitable as an AliasMap key/value per
+// RFC 4343 case-insensitive matching. It rejects empty strings and names
+// containing whitespace before delegating the pure fold transformation to
+// dnsutil.LookupKey. Original yaml case is preserved on AliasGroup.Members;
+// this helper is used only for the case-insensitive comparison path.
 func normalizeDomain(name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("domain name must not be empty")
@@ -78,5 +88,5 @@ func normalizeDomain(name string) (string, error) {
 	if strings.ContainsAny(name, " \t\r\n") {
 		return "", fmt.Errorf("domain name %q must not contain whitespace", name)
 	}
-	return dnsutil.Canonicalize(name), nil
+	return dnsutil.LookupKey(name), nil
 }

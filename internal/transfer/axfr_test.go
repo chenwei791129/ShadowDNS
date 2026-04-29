@@ -330,7 +330,7 @@ func TestHandleAliasAXFR_RewritesRecords(t *testing.T) {
 
 	mux := dns.NewServeMux()
 	mux.HandleFunc(backupOrigin, func(w dns.ResponseWriter, req *dns.Msg) {
-		HandleAliasAXFR(w, req, backupOrigin, rootZone, backupZone, false, zap.NewNop())
+		HandleAliasAXFR(w, req, backupOrigin, backupOrigin, rootZone, backupZone, false, zap.NewNop())
 	})
 
 	addr, cleanup := startAXFRServer(t, mux)
@@ -429,7 +429,7 @@ func TestHandleAliasAXFR_NilBackupZone_AllRootRecords(t *testing.T) {
 
 	mux := dns.NewServeMux()
 	mux.HandleFunc(backupOrigin, func(w dns.ResponseWriter, req *dns.Msg) {
-		HandleAliasAXFR(w, req, backupOrigin, rootZone, nil, false, zap.NewNop()) // nil backup zone
+		HandleAliasAXFR(w, req, backupOrigin, backupOrigin, rootZone, nil, false, zap.NewNop()) // nil backup zone
 	})
 
 	addr, cleanup := startAXFRServer(t, mux)
@@ -458,7 +458,7 @@ func TestHandleAliasAXFR_UDP_Refused(t *testing.T) {
 
 	mux := dns.NewServeMux()
 	mux.HandleFunc(backupOrigin, func(w dns.ResponseWriter, req *dns.Msg) {
-		HandleAliasAXFR(w, req, backupOrigin, rootZone, nil, false, zap.NewNop())
+		HandleAliasAXFR(w, req, backupOrigin, backupOrigin, rootZone, nil, false, zap.NewNop())
 	})
 
 	addr, cleanup := startAXFRServer(t, mux)
@@ -473,5 +473,50 @@ func TestHandleAliasAXFR_UDP_Refused(t *testing.T) {
 	}
 	if resp.Rcode != dns.RcodeRefused {
 		t.Errorf("expected REFUSED over UDP for alias AXFR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+}
+
+// TestHandleAliasAXFR_PreservesBackupCase verifies that AXFR output uses the
+// operator-authored backup case (e.g. "Backup.Com.") for owner / RDATA names,
+// not the lookup-fold form passed for override-key matching.
+func TestHandleAliasAXFR_PreservesBackupCase(t *testing.T) {
+	rootZone := buildRootZone()
+	backupOrigin := "backup.com."       // lookup-fold (used to key backupZone.Records)
+	backupOriginalCase := "Backup.Com." // operator-authored case (used on the wire)
+
+	mux := dns.NewServeMux()
+	mux.HandleFunc(backupOrigin, func(w dns.ResponseWriter, req *dns.Msg) {
+		HandleAliasAXFR(w, req, backupOrigin, backupOriginalCase, rootZone, nil, false, zap.NewNop())
+	})
+
+	addr, cleanup := startAXFRServer(t, mux)
+	defer cleanup()
+
+	rrs := collectAXFR(t, backupOrigin, addr)
+	if len(rrs) < 2 {
+		t.Fatalf("expected at least 2 RRs, got %d", len(rrs))
+	}
+
+	// First/last SOA must use operator case.
+	firstSOA, ok := rrs[0].(*dns.SOA)
+	if !ok {
+		t.Fatalf("first RR must be SOA, got %T", rrs[0])
+	}
+	if firstSOA.Hdr.Name != backupOriginalCase {
+		t.Errorf("first SOA owner: want %q, got %q", backupOriginalCase, firstSOA.Hdr.Name)
+	}
+	if firstSOA.Ns != "ns1."+backupOriginalCase {
+		t.Errorf("first SOA Ns: want %q, got %q", "ns1."+backupOriginalCase, firstSOA.Ns)
+	}
+
+	// At least one rewritten owner must carry the operator case suffix.
+	foundCased := false
+	for _, rr := range rrs[1 : len(rrs)-1] {
+		if a, ok := rr.(*dns.A); ok && a.Hdr.Name == "www."+backupOriginalCase {
+			foundCased = true
+		}
+	}
+	if !foundCased {
+		t.Errorf("expected at least one A record with owner %q in AXFR output", "www."+backupOriginalCase)
 	}
 }

@@ -63,7 +63,7 @@ func reload(
 	}
 
 	prev := srv.CurrentState()
-	state, summary, err := server.BuildState(cfg, shadowCfg.Aliases, shadowCfg.AliasFlags, prev, opts.ReloadVerify, country, asn, logger)
+	state, summary, err := server.BuildState(cfg, shadowCfg.Aliases, shadowCfg.AliasFlags, shadowCfg.BackupOriginalCase, prev, opts.ReloadVerify, country, asn, logger)
 	if err != nil {
 		return fmt.Errorf("building server state: %w", err)
 	}
@@ -323,7 +323,7 @@ func run(ctx context.Context, opts runOptions) error {
 		}
 	}()
 
-	state, _, err := server.BuildState(cfg, shadowCfg.Aliases, shadowCfg.AliasFlags, nil, opts.ReloadVerify, country, asn, logger)
+	state, _, err := server.BuildState(cfg, shadowCfg.Aliases, shadowCfg.AliasFlags, shadowCfg.BackupOriginalCase, nil, opts.ReloadVerify, country, asn, logger)
 	if err != nil {
 		return fmt.Errorf("building server state: %w", err)
 	}

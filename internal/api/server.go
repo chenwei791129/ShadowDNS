@@ -257,10 +257,12 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, okResponseBody{Status: "ok", FQDN: fqdn})
 }
 
-// canonicalFQDN extracts and canonicalizes the {fqdn} path parameter. It
-// writes a 400 response and returns ok=false when the parameter is empty.
+// canonicalFQDN extracts and lookup-folds the {fqdn} path parameter (lowercase
+// + trailing dot via dnsutil.LookupKey) so the API key matches the Store key
+// used by DNS lookups. It writes a 400 response and returns ok=false when the
+// parameter is empty.
 func canonicalFQDN(w http.ResponseWriter, r *http.Request) (string, bool) {
-	fqdn := dnsutil.Canonicalize(r.PathValue("fqdn"))
+	fqdn := dnsutil.LookupKey(r.PathValue("fqdn"))
 	if fqdn == "" {
 		writeError(w, http.StatusBadRequest, "missing FQDN")
 		return "", false

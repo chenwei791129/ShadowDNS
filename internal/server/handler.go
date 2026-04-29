@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -80,7 +79,14 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	q := req.Question[0]
-	qname := strings.ToLower(q.Name)
+	// qname is the lookup-fold form (lowercase + trailing dot) used for all
+	// zone matching, alias detection, and zone Lookup calls.
+	// qnameOrig is the on-wire case from req.Question[0].Name and is the only
+	// form fed into response assembly so the Question section, wildcard owner,
+	// and alias-rewrite output preserve the client-supplied case (RFC 4343 +
+	// DNS-0x20 echo).
+	qname := dnsutil.LookupKey(q.Name)
+	qnameOrig := q.Name
 	qtype := q.Qtype
 	qclass := q.Qclass
 
@@ -149,17 +155,22 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	if match.IsBackup {
-		s.handleBackupQuery(w, req, viewName, qname, qtype, match, st)
+		s.handleBackupQuery(w, req, viewName, qname, qnameOrig, qtype, match, st)
 	} else {
-		s.handleRootQuery(w, req, viewName, qname, qtype, match, st)
+		s.handleRootQuery(w, req, viewName, qname, qnameOrig, qtype, match, st)
 	}
 }
 
 // handleRootQuery answers a query from a root (non-alias) zone.
+//
+// qname is the lookup-fold form used for zone matching and Lookup calls;
+// qnameOrig carries the on-wire case from req.Question[0].Name and is used
+// only when assembling response RRs (wildcard owner) and ephemeral TXT
+// synthesis.
 func (s *Server) handleRootQuery(
 	w dns.ResponseWriter,
 	req *dns.Msg,
-	viewName, qname string,
+	viewName, qname, qnameOrig string,
 	qtype uint16,
 	match alias.Match,
 	st *ServerState,
@@ -196,7 +207,7 @@ func (s *Server) handleRootQuery(
 	// queries. Intentional RFC 1034 §3.6.2 deviation scoped to TXT qtype;
 	// lookupEphemeralTXT is a no-op for other qtypes and an empty store.
 	// See docs/ephemeral-api.md §"Ephemeral TXT 覆蓋 exact CNAME".
-	if answer := s.lookupEphemeralTXT(qname, qtype); answer != nil {
+	if answer := s.lookupEphemeralTXT(qname, qnameOrig, qtype); answer != nil {
 		replyWithAnswer(w, req, answer)
 		return
 	}
@@ -209,15 +220,16 @@ func (s *Server) handleRootQuery(
 		}
 	}
 
-	// Wildcard fallback per RFC 4592.
+	// Wildcard fallback per RFC 4592. Synthesized owner is qnameOrig so the
+	// response preserves the client-supplied case.
 	wRRs, wFound := rootZone.LookupWildcard(qname, qtype)
 	if wFound && len(wRRs) > 0 {
-		replyWithAnswer(w, req, rewriteWildcardOwner(wRRs, qname))
+		replyWithAnswer(w, req, rewriteWildcardOwner(wRRs, qnameOrig))
 		return
 	}
 	if qtype != dns.TypeCNAME {
 		if wCNAMEs, _ := rootZone.LookupWildcard(qname, dns.TypeCNAME); len(wCNAMEs) > 0 {
-			replyWithAnswer(w, req, rootZone.FollowCNAME(nil, rewriteWildcardOwner(wCNAMEs, qname), qtype))
+			replyWithAnswer(w, req, rootZone.FollowCNAME(nil, rewriteWildcardOwner(wCNAMEs, qnameOrig), qtype))
 			return
 		}
 	}
@@ -226,10 +238,17 @@ func (s *Server) handleRootQuery(
 }
 
 // handleBackupQuery answers a query from a backup (alias) zone.
+//
+// qname is the lookup-fold form used for zone matching and the in-bailiwick
+// rewrite; qnameOrig carries the on-wire case from req.Question[0].Name and
+// is fed into alias.Resolve* and the ephemeral-TXT synthesis path so the
+// response owner / RDATA preserves client-supplied case (RFC 4343 + DNS-0x20
+// echo). The alias.Resolve* entry points fold qnameOrig internally via
+// dnsutil.LookupKey for matching.
 func (s *Server) handleBackupQuery(
 	w dns.ResponseWriter,
 	req *dns.Msg,
-	viewName, qname string,
+	viewName, qname, qnameOrig string,
 	qtype uint16,
 	match alias.Match,
 	st *ServerState,
@@ -250,9 +269,18 @@ func (s *Server) handleBackupQuery(
 	// Per-alias-group RDATA-rewrite flag (false when not declared).
 	rewriteRDATALabels := st.AliasFlags[match.MatchedZone]
 
+	// Operator-authored backup case (FQDN with trailing dot) for on-wire
+	// rewriting. Falls back to the lookup-fold form when the map has no
+	// entry — this preserves prior behaviour for installations that never
+	// populate BackupOriginalCase.
+	backupOriginalCase := st.BackupOriginalCase[match.MatchedZone]
+	if backupOriginalCase == "" {
+		backupOriginalCase = match.MatchedZone
+	}
+
 	// Precompute the backup SOA once; used for both the apex short-circuit and
 	// the authority section of negative replies.
-	backupSOA := alias.BackupSOA(rootZone.SOA, rootZone.Origin, match.MatchedZone)
+	backupSOA := alias.BackupSOA(rootZone.SOA, rootZone.Origin, backupOriginalCase)
 
 	// SOA at backup apex.
 	if qtype == dns.TypeSOA && qname == match.MatchedZone {
@@ -262,26 +290,26 @@ func (s *Server) handleBackupQuery(
 
 	// Exact match (backup override + root exact), without CNAME fallback —
 	// so zone records win over the ephemeral overlay below.
-	if records := alias.ResolveExactNoCNAME(qname, qtype, match.MatchedZone, backupZone, rootZone, rewriteRDATALabels); len(records) > 0 {
+	if records := alias.ResolveExactNoCNAME(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels); len(records) > 0 {
 		replyWithAnswer(w, req, records)
 		return
 	}
 
 	// Ephemeral TXT overlay. Same layering and RFC 1034 §3.6.2 deviation as
-	// handleRootQuery (scoped to TXT qtype); lookup uses the backup-namespace
+	// handleRootQuery (scoped to TXT qtype); lookup uses the lookup-fold
 	// qname because API callers PUT entries under that name.
-	if answer := s.lookupEphemeralTXT(qname, qtype); answer != nil {
+	if answer := s.lookupEphemeralTXT(qname, qnameOrig, qtype); answer != nil {
 		replyWithAnswer(w, req, answer)
 		return
 	}
 
 	// CNAME fallback per RFC 1034 §3.6.2.
-	if records := alias.ResolveCNAMEFallback(qname, qtype, match.MatchedZone, rootZone, rewriteRDATALabels); len(records) > 0 {
+	if records := alias.ResolveCNAMEFallback(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels); len(records) > 0 {
 		replyWithAnswer(w, req, records)
 		return
 	}
 
-	if records := alias.ResolveWildcard(qname, qtype, match.MatchedZone, rootZone, rewriteRDATALabels); len(records) > 0 {
+	if records := alias.ResolveWildcard(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels); len(records) > 0 {
 		replyWithAnswer(w, req, records)
 		return
 	}
@@ -302,7 +330,13 @@ const EphemeralResponseTTL uint32 = 0
 // iterate the RRSet naturally. Every RR carries TTL EphemeralResponseTTL
 // regardless of the entry's remaining Store lifetime. Returns nil when qtype
 // is not TXT, the store is disabled, or no live entries match.
-func (s *Server) lookupEphemeralTXT(qname string, qtype uint16) []dns.RR {
+//
+// qname is the lookup-fold form used to query the Store (which is keyed by
+// dnsutil.LookupKey, matching the API's path-parameter normalization).
+// qnameOrig is the on-wire case from req.Question[0].Name and is written
+// verbatim into the synthesized RR Hdr.Name so the response owner echoes
+// the client-supplied case.
+func (s *Server) lookupEphemeralTXT(qname, qnameOrig string, qtype uint16) []dns.RR {
 	if qtype != dns.TypeTXT || s.EphemeralStore == nil {
 		return nil
 	}
@@ -314,7 +348,7 @@ func (s *Server) lookupEphemeralTXT(qname string, qtype uint16) []dns.RR {
 	for _, rec := range recs {
 		answers = append(answers, &dns.TXT{
 			Hdr: dns.RR_Header{
-				Name:   qname,
+				Name:   qnameOrig,
 				Rrtype: dns.TypeTXT,
 				Class:  dns.ClassINET,
 				Ttl:    EphemeralResponseTTL,
@@ -453,7 +487,11 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 		rootZone := st.RootZones[viewName][match.RootZone]
 		backupZone := st.BackupZones[viewName][match.MatchedZone] // may be nil
 		rewriteRDATALabels := st.AliasFlags[match.MatchedZone]
-		transfer.HandleAliasAXFR(w, req, match.MatchedZone, rootZone, backupZone, rewriteRDATALabels, s.Logger)
+		backupOriginalCase := st.BackupOriginalCase[match.MatchedZone]
+		if backupOriginalCase == "" {
+			backupOriginalCase = match.MatchedZone
+		}
+		transfer.HandleAliasAXFR(w, req, match.MatchedZone, backupOriginalCase, rootZone, backupZone, rewriteRDATALabels, s.Logger)
 	} else {
 		rootZone := st.RootZones[viewName][match.MatchedZone]
 		transfer.HandleAXFR(w, req, rootZone, s.Logger)
@@ -461,12 +499,14 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 }
 
 // rewriteWildcardOwner returns copies of the given RRs with the owner name
-// set to qname. Used to synthesize wildcard responses per RFC 4592 §2.2.
-func rewriteWildcardOwner(rrs []dns.RR, qname string) []dns.RR {
+// set to qnameOrig. Used to synthesize wildcard responses per RFC 4592 §2.2.
+// qnameOrig MUST be the on-wire case from req.Question[0].Name: wildcards
+// never have a stored owner, so qname case is the only available source.
+func rewriteWildcardOwner(rrs []dns.RR, qnameOrig string) []dns.RR {
 	result := make([]dns.RR, len(rrs))
 	for i, rr := range rrs {
 		cp := dns.Copy(rr)
-		cp.Header().Name = qname
+		cp.Header().Name = qnameOrig
 		result[i] = cp
 	}
 	return result

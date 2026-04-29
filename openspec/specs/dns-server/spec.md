@@ -1469,3 +1469,124 @@ The dns-server SHALL produce successful authoritative answer responses with DNS 
 - **GIVEN** 48 TXT RRs sharing owner name `_acme-challenge.example.com.`, each carrying a 43-byte base64url challenge value, TTL 0
 - **WHEN** the server packs an authoritative reply
 - **THEN** the packed wire size SHALL be under 3000 bytes (compressed), not around 4000 bytes (uncompressed), enabling fit within a 4096-byte EDNS0 UDP buffer without truncation
+
+---
+### Requirement: Preserve query case in the response Question section
+
+The dns-server SHALL copy the Question section of the request into the response byte-for-byte, including the case of every label in the QNAME. The server SHALL NOT alter the case of QNAME bytes between request reception and response emission. This requirement enforces compatibility with DNS-0x20 case-randomization clients (Google Public DNS, Unbound `use-caps-for-id`, dnsmasq ≥2.91rc4) that drop responses whose Question section does not match the case of their query verbatim.
+
+#### Scenario: Lowercase query echoed in lowercase
+
+- **WHEN** a client sends a query for `www.example.com.`
+- **THEN** the response's Question section contains `www.example.com.` byte-for-byte
+
+#### Scenario: Mixed-case query echoed in mixed case
+
+- **WHEN** a client sends a query for `WwW.eXaMpLe.CoM.`
+- **THEN** the response's Question section contains `WwW.eXaMpLe.CoM.` byte-for-byte
+
+#### Scenario: Uppercase query echoed in uppercase
+
+- **WHEN** a client sends a query for `WWW.EXAMPLE.COM.`
+- **THEN** the response's Question section contains `WWW.EXAMPLE.COM.` byte-for-byte
+
+
+<!-- @trace
+source: preserve-dns-name-case-in-responses
+updated: 2026-04-29
+code:
+  - internal/transfer/axfr.go
+  - internal/server/server.go
+  - cmd/shadowdns/main.go
+  - internal/zone/zone.go
+  - internal/alias/rewrite.go
+  - internal/ephemeral/store.go
+  - internal/api/server.go
+  - internal/server/build.go
+  - internal/config/aliases.go
+  - internal/shadowdnscfg/config.go
+  - internal/zone/parser.go
+  - internal/dnsutil/dnsutil.go
+  - CHANGELOG.md
+  - internal/alias/override.go
+  - internal/server/handler.go
+tests:
+  - internal/zone/parser_test.go
+  - cmd/shadowdns/main_test.go
+  - internal/transfer/axfr_test.go
+  - test/integration/case_preservation_test.go
+  - internal/dnsutil/dnsutil_test.go
+  - internal/zone/zone_test.go
+  - internal/server/build_test.go
+  - test/integration/reload_diff_test.go
+  - internal/alias/rewrite_test.go
+  - test/integration/listenon_test.go
+  - internal/config/aliases_test.go
+  - internal/server/handler_test.go
+  - internal/shadowdnscfg/config_test.go
+  - internal/alias/override_test.go
+  - test/integration/axfr_test.go
+  - test/integration/helpers_test.go
+  - internal/server/server_test.go
+  - internal/alias/rewrite_anywhere_test.go
+-->
+
+---
+### Requirement: Preserve owner-name case in answer, authority, and additional sections
+
+The dns-server SHALL emit owner names in the Answer, Authority, and Additional sections using the case of the data source: zone-file case for records served from a root zone, alias-rewrite output case for records served from a backup zone (which combines query-case prefix and alias-config-case suffix per the alias-resolver capability), and zone-file case for SOA / NS records in the Authority section. The server SHALL NOT lowercase owner names during response assembly.
+
+#### Scenario: Root-zone owner case preserved from zone file
+
+- **WHEN** a root zone file contains `Service.Root.Com. IN A 1.2.3.4` and a client queries `service.root.com. A`
+- **THEN** the response Answer section owner name is `Service.Root.Com.` (zone-file case)
+
+#### Scenario: Wildcard-synthesized owner uses query case
+
+- **WHEN** a root zone has `*.root.com. A 1.2.3.4` and a client queries `WWW.Root.Com. A`
+- **THEN** the synthesized response Answer owner name is `WWW.Root.Com.` (query case, not lowercase)
+
+#### Scenario: SOA in NXDOMAIN authority preserves case
+
+- **WHEN** a query for `nonexistent.root.com.` returns NXDOMAIN and the SOA record in the zone file has owner `Root.Com.`
+- **THEN** the Authority section SOA record has owner `Root.Com.`
+
+<!-- @trace
+source: preserve-dns-name-case-in-responses
+updated: 2026-04-29
+code:
+  - internal/transfer/axfr.go
+  - internal/server/server.go
+  - cmd/shadowdns/main.go
+  - internal/zone/zone.go
+  - internal/alias/rewrite.go
+  - internal/ephemeral/store.go
+  - internal/api/server.go
+  - internal/server/build.go
+  - internal/config/aliases.go
+  - internal/shadowdnscfg/config.go
+  - internal/zone/parser.go
+  - internal/dnsutil/dnsutil.go
+  - CHANGELOG.md
+  - internal/alias/override.go
+  - internal/server/handler.go
+tests:
+  - internal/zone/parser_test.go
+  - cmd/shadowdns/main_test.go
+  - internal/transfer/axfr_test.go
+  - test/integration/case_preservation_test.go
+  - internal/dnsutil/dnsutil_test.go
+  - internal/zone/zone_test.go
+  - internal/server/build_test.go
+  - test/integration/reload_diff_test.go
+  - internal/alias/rewrite_test.go
+  - test/integration/listenon_test.go
+  - internal/config/aliases_test.go
+  - internal/server/handler_test.go
+  - internal/shadowdnscfg/config_test.go
+  - internal/alias/override_test.go
+  - test/integration/axfr_test.go
+  - test/integration/helpers_test.go
+  - internal/server/server_test.go
+  - internal/alias/rewrite_anywhere_test.go
+-->

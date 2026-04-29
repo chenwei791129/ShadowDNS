@@ -15,13 +15,21 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
+	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
 )
 
 // Config is the parsed unified ShadowDNS configuration.
+//
+// Aliases and AliasFlags are keyed by the lookup-fold backup FQDN (lowercase,
+// trailing dot) per RFC 4343 case-insensitive matching. BackupOriginalCase
+// maps that same fold key back to the operator-authored case (with trailing
+// dot) so the alias rewrite path can emit on-wire names that preserve the
+// case the operator wrote in YAML.
 type Config struct {
-	Aliases      config.AliasMap
-	AliasFlags   config.AliasFlags
-	EphemeralAPI *EphemeralAPIConfig
+	Aliases            config.AliasMap
+	AliasFlags         config.AliasFlags
+	BackupOriginalCase map[string]string
+	EphemeralAPI       *EphemeralAPIConfig
 }
 
 // EphemeralAPIConfig holds the settings for the ephemeral TXT API server.
@@ -144,6 +152,18 @@ func Load(path string, logger *zap.Logger) (*Config, error) {
 	}
 	cfg.Aliases = aliasMap
 	cfg.AliasFlags = aliasFlags
+
+	// Snapshot operator-authored backup case (FQDN form) keyed by the same
+	// lookup-fold used by Aliases / AliasFlags. The alias rewrite path reads
+	// this when emitting on-wire names so case-randomized 0x20 queries and
+	// mixed-case YAML configs are echoed back with their original case.
+	backupOriginal := make(map[string]string, len(aliasMap))
+	for _, g := range raw.Aliases {
+		for _, backup := range g.Members {
+			backupOriginal[dnsutil.LookupKey(backup)] = dnsutil.Canonicalize(backup)
+		}
+	}
+	cfg.BackupOriginalCase = backupOriginal
 
 	if raw.EphemeralAPI != nil {
 		apiCfg, err := buildEphemeralAPI(raw.EphemeralAPI)

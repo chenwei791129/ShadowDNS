@@ -63,6 +63,12 @@ func (s *qtypeStore) Each(fn func(qtype uint16, rrs []dns.RR)) {
 
 // AddRR inserts an RR into the index under (owner, qtype).
 // Used by ParseFile internally; can also be used by tests.
+//
+// Case-preservation invariant: the lowercase owner is used solely as the map
+// index key (per RFC 4343 case-insensitive matching). The RR itself is stored
+// without mutation, so rr.Header().Name retains its original byte-for-byte
+// case for on-wire transmission. Callers of Lookup must pre-fold the qname
+// via dnsutil.LookupKey to hit this index.
 func (z *Zone) AddRR(rr dns.RR) {
 	if z.Records == nil {
 		z.Records = make(map[string]*qtypeStore)

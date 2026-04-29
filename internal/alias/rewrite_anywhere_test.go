@@ -62,16 +62,41 @@ func TestRewriteNameAnywhere(t *testing.T) {
 			want: "",
 		},
 		{
-			name: "uppercase input is lowercased on the no-match path",
+			name: "uppercase input on the no-match path preserves original case",
 			in:   "ABC.AMAZONAWS.COM.",
-			want: "abc.amazonaws.com.",
+			want: "ABC.AMAZONAWS.COM.",
 		},
 		{
-			name: "uppercase input is lowercased on the match path",
+			name: "mixed-case input on the match path preserves prefix and suffix case",
 			in:   "Host.ROOT.com.cdn.Example.net.",
-			want: "host.backup.com.cdn.example.net.",
+			want: "Host.backup.com.cdn.Example.net.",
+		},
+		{
+			name: "mixed-case mid-label match preserves surrounding case while emitting lowercase root match",
+			in:   "HoSt.RoOt.CoM.CDN.Example.NET.",
+			want: "HoSt.backup.com.CDN.Example.NET.",
+		},
+		{
+			name: "all-uppercase query under root rewritten to lowercase backup with prefix preserved",
+			in:   "ROOT.COM.",
+			want: "backup.com.",
 		},
 	}
+
+	// Boundary tests with mixed-case backup verify the operator-authored case
+	// is emitted byte-for-byte in the output.
+	t.Run("mixed-case backup emitted verbatim at apex (empty prefix)", func(t *testing.T) {
+		got := RewriteNameAnywhere("root.com.", root, "BackUp.Com.")
+		if got != "BackUp.Com." {
+			t.Errorf("got %q, want BackUp.Com.", got)
+		}
+	})
+	t.Run("all-uppercase backup emitted verbatim with mixed-case n preserved", func(t *testing.T) {
+		got := RewriteNameAnywhere("HoSt.RoOt.CoM.cdn.example.net.", root, "BACKUP.COM.")
+		if got != "HoSt.BACKUP.COM.cdn.example.net." {
+			t.Errorf("got %q, want HoSt.BACKUP.COM.cdn.example.net.", got)
+		}
+	})
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

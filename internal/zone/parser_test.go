@@ -346,6 +346,90 @@ func TestParseFile_UnknownRRType_Error(t *testing.T) {
 	}
 }
 
+// TestParseFile_MixedCaseOwner_Preserved asserts the case-preservation
+// invariant: an owner name written in mixed case in the zone file is
+// stored with byte-for-byte identical case on the RR, while still being
+// reachable via a lowercase-folded Lookup key (RFC 4343).
+func TestParseFile_MixedCaseOwner_Preserved(t *testing.T) {
+	content := `$TTL 3600
+@ IN SOA ns1.root.com. root.ns1.root.com. ( 1 300 120 86400 3600 )
+@ IN NS  ns1.root.com.
+Service.Root.Com. IN A 1.2.3.4
+`
+	path := writeZoneFile(t, content)
+	z, err := ParseFile(path, "root.com.", nil)
+	if err != nil {
+		t.Fatalf("ParseFile error: %v", err)
+	}
+
+	rrs := z.Lookup("service.root.com.", dns.TypeA)
+	if len(rrs) != 1 {
+		t.Fatalf("expected 1 A record under lowercase key, got %d", len(rrs))
+	}
+	if got := rrs[0].Header().Name; got != "Service.Root.Com." {
+		t.Errorf("stored owner case: got %q, want %q (byte-for-byte)",
+			got, "Service.Root.Com.")
+	}
+}
+
+// TestParseFile_MixedCaseCNAMETarget_Preserved asserts that a CNAME's
+// RDATA target is stored byte-for-byte as written in the zone file.
+// CNAME targets feed Answer-section RDATA on the wire, and downstream
+// resolvers using DNS-0x20 case-randomization expect the case the
+// authoritative server emits to round-trip cleanly.
+func TestParseFile_MixedCaseCNAMETarget_Preserved(t *testing.T) {
+	content := `$TTL 3600
+@ IN SOA ns1.root.com. root.ns1.root.com. ( 1 300 120 86400 3600 )
+@ IN NS  ns1.root.com.
+www IN CNAME Target.Example.Com.
+`
+	path := writeZoneFile(t, content)
+	z, err := ParseFile(path, "root.com.", nil)
+	if err != nil {
+		t.Fatalf("ParseFile error: %v", err)
+	}
+
+	rrs := z.Lookup("www.root.com.", dns.TypeCNAME)
+	if len(rrs) != 1 {
+		t.Fatalf("expected 1 CNAME record, got %d", len(rrs))
+	}
+	cname, ok := rrs[0].(*dns.CNAME)
+	if !ok {
+		t.Fatalf("record is not *dns.CNAME: %T", rrs[0])
+	}
+	if cname.Target != "Target.Example.Com." {
+		t.Errorf("CNAME target case: got %q, want %q (byte-for-byte)",
+			cname.Target, "Target.Example.Com.")
+	}
+}
+
+// TestParseFile_LookupLowercaseQname_ReturnsMixedCaseRR asserts the round
+// trip: zone file written with mixed-case owner, queried via lowercase
+// fold, returns the original-case RR. This is the integration of
+// AddRR's case-preservation invariant with miekg's parser output.
+func TestParseFile_LookupLowercaseQname_ReturnsMixedCaseRR(t *testing.T) {
+	content := `$TTL 3600
+@ IN SOA ns1.root.com. root.ns1.root.com. ( 1 300 120 86400 3600 )
+@ IN NS  ns1.root.com.
+WwW.RoOt.CoM. IN A 192.0.2.1
+`
+	path := writeZoneFile(t, content)
+	z, err := ParseFile(path, "root.com.", nil)
+	if err != nil {
+		t.Fatalf("ParseFile error: %v", err)
+	}
+
+	// Caller must pre-fold per Lookup's contract.
+	rrs := z.Lookup("www.root.com.", dns.TypeA)
+	if len(rrs) != 1 {
+		t.Fatalf("Lookup with folded key: got %d records, want 1", len(rrs))
+	}
+	if got := rrs[0].Header().Name; got != "WwW.RoOt.CoM." {
+		t.Errorf("Lookup returned owner case: got %q, want %q",
+			got, "WwW.RoOt.CoM.")
+	}
+}
+
 // TestParseFile_WildcardOwnerName verifies that the parser correctly stores
 // wildcard owner names in the zone's Records map, acting as a regression guard
 // for wildcard support.

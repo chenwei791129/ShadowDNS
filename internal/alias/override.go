@@ -24,15 +24,29 @@ import (
 // the label-anywhere rule (per-alias-group opt-in). It does not affect
 // owner-name rewriting.
 //
+// Case contract (RFC 4343 / preserve-dns-name-case-in-responses):
+//   - qname carries the on-wire case from req.Question[0].Name. Each entry
+//     point folds it via dnsutil.LookupKey internally for matching and
+//     zone Lookup, while preserving the original case for the wildcard owner
+//     synthesis prefix.
+//   - backupOrigin MUST be the lookup-fold backup FQDN (lowercase, trailing
+//     dot) so it matches the lookup-fold qname and the root zone's lookup-
+//     fold Origin during RewriteQName.
+//   - backupOriginalCase MUST be the operator-authored YAML case for the
+//     same backup origin (FQDN with trailing dot); used only for the on-wire
+//     rewrite of owner / RDATA names. Pass the empty string only when no
+//     case-preserving form is available (callers must source it from
+//     ServerState.BackupOriginalCase[match.MatchedZone]).
+//
 // MUST NOT panic on any input.
-func Resolve(qname string, qtype uint16, backupOrigin string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
+func Resolve(qname string, qtype uint16, backupOrigin, backupOriginalCase string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
 	if rootZone == nil {
 		return nil
 	}
-	if rrs := ResolveExact(qname, qtype, backupOrigin, backupZone, rootZone, rewriteRDATALabels); len(rrs) > 0 {
+	if rrs := ResolveExact(qname, qtype, backupOrigin, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels); len(rrs) > 0 {
 		return rrs
 	}
-	if rrs := ResolveWildcard(qname, qtype, backupOrigin, rootZone, rewriteRDATALabels); len(rrs) > 0 {
+	if rrs := ResolveWildcard(qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels); len(rrs) > 0 {
 		return rrs
 	}
 	return nil
@@ -46,24 +60,26 @@ func Resolve(qname string, qtype uint16, backupOrigin string, backupZone *zone.Z
 // and CNAME fallback.
 //
 // MUST NOT panic on any input.
-func ResolveExactNoCNAME(qname string, qtype uint16, backupOrigin string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
+func ResolveExactNoCNAME(qname string, qtype uint16, backupOrigin, backupOriginalCase string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
 	if rootZone == nil {
 		return nil
 	}
 
+	qnameFold := dnsutil.LookupKey(qname)
+
 	if dnsutil.OverridableTypes[qtype] && backupZone != nil {
-		if overrides := backupZone.Lookup(qname, qtype); len(overrides) > 0 {
+		if overrides := backupZone.Lookup(qnameFold, qtype); len(overrides) > 0 {
 			return overrides
 		}
 	}
 
-	rootQName := RewriteQName(qname, backupOrigin, rootZone.Origin)
+	rootQName := RewriteQName(qnameFold, backupOrigin, rootZone.Origin)
 	rootRRs := rootZone.Lookup(rootQName, qtype)
 	if len(rootRRs) == 0 {
 		return nil
 	}
 
-	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOrigin, rewriteRDATALabels)
+	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOriginalCase, rewriteRDATALabels)
 }
 
 // ResolveCNAMEFallback performs only the RFC 1034 §3.6.2 CNAME-fallback
@@ -73,18 +89,19 @@ func ResolveExactNoCNAME(qname string, qtype uint16, backupOrigin string, backup
 // qtypes) or when no CNAME exists at the qname.
 //
 // MUST NOT panic on any input.
-func ResolveCNAMEFallback(qname string, qtype uint16, backupOrigin string, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
+func ResolveCNAMEFallback(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
 	if rootZone == nil || qtype == dns.TypeCNAME {
 		return nil
 	}
 
-	rootQName := RewriteQName(qname, backupOrigin, rootZone.Origin)
+	qnameFold := dnsutil.LookupKey(qname)
+	rootQName := RewriteQName(qnameFold, backupOrigin, rootZone.Origin)
 	rootRRs := rootZone.Lookup(rootQName, dns.TypeCNAME)
 	if len(rootRRs) == 0 {
 		return nil
 	}
 
-	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOrigin, rewriteRDATALabels)
+	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOriginalCase, rewriteRDATALabels)
 }
 
 // ResolveExact performs the exact-match portion of backup-zone resolution:
@@ -93,23 +110,24 @@ func ResolveCNAMEFallback(qname string, qtype uint16, backupOrigin string, rootZ
 // Returns nil when no exact match exists.
 //
 // MUST NOT panic on any input.
-func ResolveExact(qname string, qtype uint16, backupOrigin string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
-	if rrs := ResolveExactNoCNAME(qname, qtype, backupOrigin, backupZone, rootZone, rewriteRDATALabels); len(rrs) > 0 {
+func ResolveExact(qname string, qtype uint16, backupOrigin, backupOriginalCase string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
+	if rrs := ResolveExactNoCNAME(qname, qtype, backupOrigin, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels); len(rrs) > 0 {
 		return rrs
 	}
-	return ResolveCNAMEFallback(qname, qtype, backupOrigin, rootZone, rewriteRDATALabels)
+	return ResolveCNAMEFallback(qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels)
 }
 
 // ResolveWildcard performs the wildcard-synthesis portion of backup-zone
 // resolution. Returns nil when no wildcard covers the rewritten qname.
 //
 // MUST NOT panic on any input.
-func ResolveWildcard(qname string, qtype uint16, backupOrigin string, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
+func ResolveWildcard(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
 	if rootZone == nil {
 		return nil
 	}
 
-	rootQName := RewriteQName(qname, backupOrigin, rootZone.Origin)
+	qnameFold := dnsutil.LookupKey(qname)
+	rootQName := RewriteQName(qnameFold, backupOrigin, rootZone.Origin)
 	wRRs, wFound := rootZone.LookupWildcard(rootQName, qtype)
 	if wFound && len(wRRs) == 0 && qtype != dns.TypeCNAME {
 		wRRs, _ = rootZone.LookupWildcard(rootQName, dns.TypeCNAME)
@@ -124,21 +142,29 @@ func ResolveWildcard(qname string, qtype uint16, backupOrigin string, rootZone *
 		return nil
 	}
 
-	// Rewrite wildcard owners from "*.<zone>" to rootQName so subsequent
-	// CNAME following and final rewrite work uniformly.
+	// Rewrite wildcard owners from "*.<zone>" to the rewritten root qname,
+	// preserving the on-wire case of the original qname's prefix. The suffix
+	// is the lookup-fold root origin; finalizeBackupRRs → RewriteRR will
+	// rewrite that suffix to backupOriginalCase, yielding a fully
+	// case-preserving owner.
+	wildcardOwner := RewriteName(qname, backupOrigin, rootZone.Origin)
 	rootRRs := make([]dns.RR, len(wRRs))
 	for i, rr := range wRRs {
 		cp := dns.Copy(rr)
-		cp.Header().Name = rootQName
+		cp.Header().Name = wildcardOwner
 		rootRRs[i] = cp
 	}
 
-	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOrigin, rewriteRDATALabels)
+	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOriginalCase, rewriteRDATALabels)
 }
 
 // finalizeBackupRRs applies in-zone CNAME following (RFC 1034 §3.6.2) and
 // then rewrites owners from the root namespace to the backup namespace.
-func finalizeBackupRRs(rootRRs []dns.RR, qtype uint16, rootZone *zone.Zone, backupOrigin string, rewriteRDATALabels bool) []dns.RR {
+//
+// backupOriginalCase MUST be the operator-authored YAML case for the backup
+// origin (FQDN with trailing dot); forwarded to RewriteRR as the on-wire
+// backup origin.
+func finalizeBackupRRs(rootRRs []dns.RR, qtype uint16, rootZone *zone.Zone, backupOriginalCase string, rewriteRDATALabels bool) []dns.RR {
 	if len(rootRRs) > 0 && qtype != dns.TypeCNAME {
 		if _, ok := rootRRs[len(rootRRs)-1].(*dns.CNAME); ok {
 			rootRRs = rootZone.FollowCNAME(nil, rootRRs, qtype)
@@ -146,7 +172,7 @@ func finalizeBackupRRs(rootRRs []dns.RR, qtype uint16, rootZone *zone.Zone, back
 	}
 	result := make([]dns.RR, 0, len(rootRRs))
 	for _, rr := range rootRRs {
-		result = append(result, RewriteRR(rr, rootZone.Origin, backupOrigin, rewriteRDATALabels))
+		result = append(result, RewriteRR(rr, rootZone.Origin, backupOriginalCase, rewriteRDATALabels))
 	}
 	return result
 }

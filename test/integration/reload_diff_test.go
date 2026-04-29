@@ -76,7 +76,7 @@ func TestReloadDiff_NoChange_PointersIdentical(t *testing.T) {
 	defer func() { _ = country.Close(); _ = asn.Close() }()
 
 	// Initial build — fingerprints recorded.
-	state1, _, err := server.BuildState(cfg, aliases, nil, nil, server.VerifyModeHash, country, asn, logger)
+	state1, _, err := server.BuildState(cfg, aliases, nil, nil, nil, server.VerifyModeHash, country, asn, logger)
 	if err != nil {
 		t.Fatalf("initial BuildState: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestReloadDiff_NoChange_PointersIdentical(t *testing.T) {
 
 	// Reload with no file changes: every zone must be reused.
 	prev := srv.CurrentState()
-	state2, summary, err := server.BuildState(cfg, aliases, nil, prev, server.VerifyModeHash, country, asn, logger)
+	state2, summary, err := server.BuildState(cfg, aliases, nil, nil, prev, server.VerifyModeHash, country, asn, logger)
 	if err != nil {
 		t.Fatalf("reload BuildState: %v", err)
 	}
@@ -176,13 +176,13 @@ func TestReloadDiff_SameSizeContentChange_HashDetects(t *testing.T) {
 	}
 
 	// --- Build state1 under VerifyModeHash ---
-	state1Hash, _, err := server.BuildState(cfg, aliases, nil, nil, server.VerifyModeHash, country, asn, logger)
+	state1Hash, _, err := server.BuildState(cfg, aliases, nil, nil, nil, server.VerifyModeHash, country, asn, logger)
 	if err != nil {
 		t.Fatalf("initial BuildState (hash): %v", err)
 	}
 
 	// --- Build state1 under VerifyModeSize (separate server for size-mode test) ---
-	state1Size, _, err := server.BuildState(cfg, aliases, nil, nil, server.VerifyModeSize, country, asn, logger)
+	state1Size, _, err := server.BuildState(cfg, aliases, nil, nil, nil, server.VerifyModeSize, country, asn, logger)
 	if err != nil {
 		t.Fatalf("initial BuildState (size): %v", err)
 	}
@@ -225,7 +225,7 @@ func TestReloadDiff_SameSizeContentChange_HashDetects(t *testing.T) {
 	}
 
 	// --- Hash mode: must detect the change ---
-	state2Hash, summaryHash, err := server.BuildState(cfg, aliases, nil, &state1Hash, server.VerifyModeHash, country, asn, logger)
+	state2Hash, summaryHash, err := server.BuildState(cfg, aliases, nil, nil, &state1Hash, server.VerifyModeHash, country, asn, logger)
 	if err != nil {
 		t.Fatalf("reload BuildState (hash): %v", err)
 	}
@@ -238,7 +238,7 @@ func TestReloadDiff_SameSizeContentChange_HashDetects(t *testing.T) {
 	}
 
 	// --- Size mode: must MISS the change (negative control) ---
-	state2Size, summarySize, err := server.BuildState(cfg, aliases, nil, &state1Size, server.VerifyModeSize, country, asn, logger)
+	state2Size, summarySize, err := server.BuildState(cfg, aliases, nil, nil, &state1Size, server.VerifyModeSize, country, asn, logger)
 	if err != nil {
 		t.Fatalf("reload BuildState (size): %v", err)
 	}
@@ -288,14 +288,14 @@ func TestReloadDiff_NoneMode_AlwaysReparses(t *testing.T) {
 	defer func() { _ = country.Close(); _ = asn.Close() }()
 
 	// Initial build with none mode.
-	state1, _, err := server.BuildState(cfg, aliases, nil, nil, server.VerifyModeNone, country, asn, logger)
+	state1, _, err := server.BuildState(cfg, aliases, nil, nil, nil, server.VerifyModeNone, country, asn, logger)
 	if err != nil {
 		t.Fatalf("initial BuildState (none): %v", err)
 	}
 	before := collectZonePointers(&state1)
 
 	// Reload with no file changes but VerifyModeNone.
-	state2, summary, err := server.BuildState(cfg, aliases, nil, &state1, server.VerifyModeNone, country, asn, logger)
+	state2, summary, err := server.BuildState(cfg, aliases, nil, nil, &state1, server.VerifyModeNone, country, asn, logger)
 	if err != nil {
 		t.Fatalf("reload BuildState (none): %v", err)
 	}
