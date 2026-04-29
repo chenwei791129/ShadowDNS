@@ -21,9 +21,14 @@ type BuildSummary struct {
 // BuildState assembles a ServerState from parsed configuration. When prev is
 // non-nil and mode is not VerifyModeNone, unchanged zones (same fingerprint)
 // reuse their existing *zone.Zone pointer rather than re-parsing from disk.
+//
+// aliasFlags is the per-backup-origin rewrite_rdata_labels lookup; pass nil
+// (or an empty map) when no alias group declares the flag, in which case all
+// backup zones use the default in-bailiwick suffix-only rewrite.
 func BuildState(
 	cfg *config.Config,
 	aliases config.AliasMap,
+	aliasFlags config.AliasFlags,
 	prev *ServerState,
 	mode VerifyMode,
 	country *view.CountryDB,
@@ -108,6 +113,7 @@ func BuildState(
 	return ServerState{
 		Matcher:          matcher,
 		Aliases:          aliases,
+		AliasFlags:       aliasFlags,
 		RootZones:        rootZones,
 		BackupZones:      backupZones,
 		ZoneOrigins:      zoneOrigins,

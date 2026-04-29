@@ -6,6 +6,11 @@
 
 * **cli:** add opt-in `--pprof-enable` flag that exposes Go pprof endpoints on the metrics HTTP server under `/debug/pprof/` (disabled by default)
 * **cli:** migrate command-line parsing to cobra. All flags now use POSIX-style double dashes (e.g. `--named-conf`, `--listen`, `--reload-verify`); `--version` gains a `-v` short alias shown as `-v, --version` in `--help`. The former `-reload` flag is replaced by the `shadowdns reload` subcommand, which accepts only `--named-conf`. Existing single-dash flag invocations (`-named-conf`, `-listen`, `-reload`, etc.) are no longer recognized — update systemd units, scripts, and wrappers accordingly.
+* **alias:** add per-alias-group `rewrite_rdata_labels` flag for templated CNAME / NS / MX / SRV / PTR / SOA RDATA. When `true`, RDATA name fields get an additional label-anywhere rewrite that replaces root-origin labels appearing as middle labels (e.g. `host.<root>.cdn.example.net.` → `host.<backup>.cdn.example.net.`). Default is `false`, which preserves the previous in-bailiwick suffix-only behavior. Owner names always use the suffix-only rule regardless of the flag.
+
+### Schema changes
+
+* **shadowdns.yaml:** the `aliases` map now accepts two value shapes per root: the existing list-of-strings (legacy form, equivalent to `rewrite_rdata_labels: false`) and a new object form `{members: [...], rewrite_rdata_labels: <bool>}`. Mixing both shapes across different roots is allowed. Object-form entries with unknown fields, missing `members`, or an empty `members` list are rejected at config load.
 
 ## [0.12.4](https://github.com/chenwei791129/ShadowDNS/compare/v0.12.3...v0.12.4) (2026-04-25)
 

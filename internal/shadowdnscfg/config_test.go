@@ -390,6 +390,118 @@ ephemeral_api:
 	}
 }
 
+// ---------- aliases object form (rewrite_rdata_labels) ----------
+
+func TestLoad_AliasesObjectFormFlagTrue(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  root.com:
+    members:
+      - backup.com
+      - mirror.com
+    rewrite_rdata_labels: true
+`)
+	cfg, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Aliases["backup.com."] != "root.com." {
+		t.Errorf("backup.com. -> %q, want root.com.", cfg.Aliases["backup.com."])
+	}
+	if cfg.Aliases["mirror.com."] != "root.com." {
+		t.Errorf("mirror.com. -> %q, want root.com.", cfg.Aliases["mirror.com."])
+	}
+	if !cfg.AliasFlags["backup.com."] {
+		t.Errorf("AliasFlags[backup.com.] = false, want true")
+	}
+	if !cfg.AliasFlags["mirror.com."] {
+		t.Errorf("AliasFlags[mirror.com.] = false, want true")
+	}
+}
+
+func TestLoad_AliasesObjectFormFlagOmittedDefaultsFalse(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  root.com:
+    members:
+      - backup.com
+`)
+	cfg, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AliasFlags["backup.com."] {
+		t.Errorf("AliasFlags[backup.com.] = true, want false (flag omitted)")
+	}
+}
+
+func TestLoad_AliasesObjectAndListFormsCoexist(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  root-a.net:
+    - alias-a.net
+  root-b.net:
+    members:
+      - alias-b.net
+    rewrite_rdata_labels: true
+`)
+	cfg, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AliasFlags["alias-a.net."] {
+		t.Errorf("AliasFlags[alias-a.net.] = true, want false (list form)")
+	}
+	if !cfg.AliasFlags["alias-b.net."] {
+		t.Errorf("AliasFlags[alias-b.net.] = false, want true (object form)")
+	}
+}
+
+func TestLoad_AliasesObjectMissingMembersFails(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  root.com:
+    rewrite_rdata_labels: true
+`)
+	_, err := Load(path, nil)
+	if err == nil {
+		t.Fatal("expected error when object-form aliases entry omits members")
+	}
+	if !strings.Contains(err.Error(), "members") {
+		t.Errorf("error %q should mention the missing members field", err.Error())
+	}
+}
+
+func TestLoad_AliasesObjectUnknownFieldFails(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  root.com:
+    members:
+      - backup.com
+    unknown_flag: true
+`)
+	_, err := Load(path, nil)
+	if err == nil {
+		t.Fatal("expected error for unknown field inside aliases object form")
+	}
+	if !strings.Contains(err.Error(), "unknown_flag") {
+		t.Errorf("error %q should name the unknown field", err.Error())
+	}
+}
+
+func TestLoad_AliasesObjectEmptyMembersFails(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  root.com:
+    members: []
+    rewrite_rdata_labels: true
+`)
+	_, err := Load(path, nil)
+	if err == nil {
+		t.Fatal("expected error for empty members list in object form")
+	}
+}
+
 func TestLoad_EphemeralAPIWithoutToken(t *testing.T) {
 	path := writeConfig(t, `
 ephemeral_api:

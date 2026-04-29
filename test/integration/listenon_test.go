@@ -71,7 +71,7 @@ func startServerWithListenOn(t *testing.T, listenOnTokens, listenFlag string) (*
 	if err != nil {
 		t.Fatalf("LoadGeoIP: %v", err)
 	}
-	state, _, err := server.BuildState(cfg, aliases, nil, server.VerifyModeHash, country, asn, logger)
+	state, _, err := server.BuildState(cfg, aliases, nil, nil, server.VerifyModeHash, country, asn, logger)
 	if err != nil {
 		_ = country.Close()
 		_ = asn.Close()

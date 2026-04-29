@@ -24,6 +24,11 @@ import (
 type ServerState struct {
 	Matcher *view.Matcher
 	Aliases config.AliasMap
+	// AliasFlags is keyed by backup origin and reports whether RDATA name
+	// fields for that alias group should be rewritten using the
+	// label-anywhere rule. A missing key (or a nil map) is equivalent to
+	// false (in-bailiwick suffix-only rewrite).
+	AliasFlags config.AliasFlags
 	// view name → zone origin → *zone.Zone (root zones)
 	RootZones map[string]map[string]*zone.Zone
 	// view name → zone origin → *zone.Zone (backup-override zones; may be empty or nil)
@@ -78,6 +83,9 @@ func (s *ServerState) sanitize() {
 	}
 	if s.Aliases == nil {
 		s.Aliases = make(config.AliasMap)
+	}
+	if s.AliasFlags == nil {
+		s.AliasFlags = make(config.AliasFlags)
 	}
 	if s.Fingerprints == nil {
 		s.Fingerprints = make(map[string]map[string]zoneFingerprint)

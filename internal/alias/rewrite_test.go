@@ -252,7 +252,7 @@ const (
 
 func TestRewriteRR_A(t *testing.T) {
 	orig := newA("www.root.com.", "1.2.3.4")
-	got := RewriteRR(orig, root, backup)
+	got := RewriteRR(orig, root, backup, false)
 
 	// owner rewritten
 	if got.Header().Name != "www.backup.com." {
@@ -271,7 +271,7 @@ func TestRewriteRR_A(t *testing.T) {
 
 func TestRewriteRR_AAAA(t *testing.T) {
 	orig := newAAAA("v6.root.com.", "2001:db8::1")
-	got := RewriteRR(orig, root, backup)
+	got := RewriteRR(orig, root, backup, false)
 
 	if got.Header().Name != "v6.backup.com." {
 		t.Errorf("AAAA owner: got %q, want %q", got.Header().Name, "v6.backup.com.")
@@ -289,7 +289,7 @@ func TestRewriteRR_AAAA(t *testing.T) {
 func TestRewriteRR_TXT(t *testing.T) {
 	// TXT strings that contain root domain should NOT be rewritten.
 	orig := newTXT("root.com.", "v=spf1 include:root.com. ~all", "plain text")
-	got := RewriteRR(orig, root, backup)
+	got := RewriteRR(orig, root, backup, false)
 
 	if got.Header().Name != "backup.com." {
 		t.Errorf("TXT owner: got %q, want %q", got.Header().Name, "backup.com.")
@@ -305,7 +305,7 @@ func TestRewriteRR_TXT(t *testing.T) {
 
 func TestRewriteRR_CNAME_inBailiwick(t *testing.T) {
 	orig := newCNAME("alias.root.com.", "canonical.root.com.")
-	got := RewriteRR(orig, root, backup)
+	got := RewriteRR(orig, root, backup, false)
 
 	if got.Header().Name != "alias.backup.com." {
 		t.Errorf("CNAME owner: got %q, want %q", got.Header().Name, "alias.backup.com.")
@@ -318,7 +318,7 @@ func TestRewriteRR_CNAME_inBailiwick(t *testing.T) {
 
 func TestRewriteRR_CNAME_external(t *testing.T) {
 	orig := newCNAME("alias.root.com.", "target.amazonaws.com.")
-	got := RewriteRR(orig, root, backup)
+	got := RewriteRR(orig, root, backup, false)
 
 	if got.Header().Name != "alias.backup.com." {
 		t.Errorf("CNAME owner: got %q, want %q", got.Header().Name, "alias.backup.com.")
@@ -331,7 +331,7 @@ func TestRewriteRR_CNAME_external(t *testing.T) {
 
 func TestRewriteRR_NS_inBailiwick(t *testing.T) {
 	orig := newNS("root.com.", "ns1.root.com.")
-	got := RewriteRR(orig, root, backup)
+	got := RewriteRR(orig, root, backup, false)
 
 	if got.Header().Name != "backup.com." {
 		t.Errorf("NS owner: got %q, want %q", got.Header().Name, "backup.com.")
@@ -344,7 +344,7 @@ func TestRewriteRR_NS_inBailiwick(t *testing.T) {
 
 func TestRewriteRR_NS_external(t *testing.T) {
 	orig := newNS("root.com.", "ns1.externaldns.net.")
-	got := RewriteRR(orig, root, backup)
+	got := RewriteRR(orig, root, backup, false)
 
 	if got.Header().Name != "backup.com." {
 		t.Errorf("NS owner: got %q, want %q", got.Header().Name, "backup.com.")
@@ -357,7 +357,7 @@ func TestRewriteRR_NS_external(t *testing.T) {
 
 func TestRewriteRR_MX_inBailiwick(t *testing.T) {
 	orig := newMX("root.com.", 10, "mail.root.com.")
-	got := RewriteRR(orig, root, backup)
+	got := RewriteRR(orig, root, backup, false)
 
 	if got.Header().Name != "backup.com." {
 		t.Errorf("MX owner: got %q, want %q", got.Header().Name, "backup.com.")
@@ -373,7 +373,7 @@ func TestRewriteRR_MX_inBailiwick(t *testing.T) {
 
 func TestRewriteRR_PTR(t *testing.T) {
 	orig := newPTR("4.3.2.1.in-addr.arpa.", "www.root.com.")
-	got := RewriteRR(orig, root, backup)
+	got := RewriteRR(orig, root, backup, false)
 
 	if got.Header().Name != "4.3.2.1.in-addr.arpa." {
 		t.Errorf("PTR owner should not change (out of bailiwick): got %q", got.Header().Name)
@@ -386,7 +386,7 @@ func TestRewriteRR_PTR(t *testing.T) {
 
 func TestRewriteRR_SRV_inBailiwick(t *testing.T) {
 	orig := newSRV("_http._tcp.root.com.", 10, 20, 80, "app.root.com.")
-	got := RewriteRR(orig, root, backup)
+	got := RewriteRR(orig, root, backup, false)
 
 	if got.Header().Name != "_http._tcp.backup.com." {
 		t.Errorf("SRV owner: got %q, want %q", got.Header().Name, "_http._tcp.backup.com.")
@@ -402,7 +402,7 @@ func TestRewriteRR_SRV_inBailiwick(t *testing.T) {
 
 func TestRewriteRR_SOA(t *testing.T) {
 	orig := newSOA("root.com.", "ns1.root.com.", "admin.root.com.", 2024010101, 3600, 900, 604800, 300)
-	got := RewriteRR(orig, root, backup)
+	got := RewriteRR(orig, root, backup, false)
 
 	if got.Header().Name != "backup.com." {
 		t.Errorf("SOA owner: got %q, want %q", got.Header().Name, "backup.com.")
@@ -427,9 +427,110 @@ func TestRewriteRR_SOA(t *testing.T) {
 	}
 }
 
+// ---- RewriteRR with rewriteRDATALabels=true ----
+//
+// These tests pin the contract that the flag dispatches RDATA name fields
+// through RewriteNameAnywhere (label-anywhere) rather than RewriteName
+// (in-bailiwick suffix-only). Any future regression in the switch in
+// RewriteRR would surface here at the unit-test boundary.
+
+func TestRewriteRR_CNAME_FlagTrue_MidLabelRewritten(t *testing.T) {
+	orig := newCNAME("host.root.com.", "host.root.com.cdn.example.net.")
+	got := RewriteRR(orig, root, backup, true)
+
+	c := got.(*dns.CNAME)
+	if c.Hdr.Name != "host.backup.com." {
+		t.Errorf("CNAME owner: got %q, want host.backup.com.", c.Hdr.Name)
+	}
+	if c.Target != "host.backup.com.cdn.example.net." {
+		t.Errorf("CNAME target: got %q, want host.backup.com.cdn.example.net.", c.Target)
+	}
+}
+
+func TestRewriteRR_NS_FlagTrue_MidLabelRewritten(t *testing.T) {
+	orig := newNS("root.com.", "ns1.root.com.cdn.example.net.")
+	got := RewriteRR(orig, root, backup, true)
+
+	n := got.(*dns.NS)
+	if n.Ns != "ns1.backup.com.cdn.example.net." {
+		t.Errorf("NS Ns: got %q, want ns1.backup.com.cdn.example.net.", n.Ns)
+	}
+}
+
+func TestRewriteRR_MX_FlagTrue_MidLabelRewritten(t *testing.T) {
+	orig := newMX("root.com.", 10, "mail.root.com.relay.example.net.")
+	got := RewriteRR(orig, root, backup, true)
+
+	m := got.(*dns.MX)
+	if m.Mx != "mail.backup.com.relay.example.net." {
+		t.Errorf("MX Mx: got %q, want mail.backup.com.relay.example.net.", m.Mx)
+	}
+}
+
+func TestRewriteRR_SRV_FlagTrue_MidLabelRewritten(t *testing.T) {
+	orig := newSRV("_http._tcp.root.com.", 10, 20, 80, "app.root.com.cdn.example.net.")
+	got := RewriteRR(orig, root, backup, true)
+
+	s := got.(*dns.SRV)
+	if s.Target != "app.backup.com.cdn.example.net." {
+		t.Errorf("SRV target: got %q, want app.backup.com.cdn.example.net.", s.Target)
+	}
+}
+
+func TestRewriteRR_PTR_FlagTrue_MidLabelRewritten(t *testing.T) {
+	orig := newPTR("4.3.2.1.in-addr.arpa.", "host.root.com.cdn.example.net.")
+	got := RewriteRR(orig, root, backup, true)
+
+	p := got.(*dns.PTR)
+	if p.Ptr != "host.backup.com.cdn.example.net." {
+		t.Errorf("PTR Ptr: got %q, want host.backup.com.cdn.example.net.", p.Ptr)
+	}
+}
+
+func TestRewriteRR_SOA_FlagTrue_MidLabelRewritten(t *testing.T) {
+	orig := newSOA("root.com.", "ns1.root.com.zone.example.net.", "admin.root.com.zone.example.net.",
+		2024010101, 3600, 900, 604800, 300)
+	got := RewriteRR(orig, root, backup, true)
+
+	s := got.(*dns.SOA)
+	if s.Ns != "ns1.backup.com.zone.example.net." {
+		t.Errorf("SOA MNAME: got %q, want ns1.backup.com.zone.example.net.", s.Ns)
+	}
+	if s.Mbox != "admin.backup.com.zone.example.net." {
+		t.Errorf("SOA RNAME: got %q, want admin.backup.com.zone.example.net.", s.Mbox)
+	}
+	if s.Serial != 2024010101 {
+		t.Errorf("SOA serial mutated: got %d", s.Serial)
+	}
+}
+
+// Flag=true must NOT alter A/AAAA/TXT RDATA — those types are excluded from
+// the rewrite switch entirely.
+func TestRewriteRR_A_FlagTrue_RDATAUntouched(t *testing.T) {
+	orig := newA("www.root.com.", "1.2.3.4")
+	got := RewriteRR(orig, root, backup, true)
+
+	a := got.(*dns.A)
+	if a.A.String() != "1.2.3.4" {
+		t.Errorf("A IP rewritten: got %q", a.A.String())
+	}
+}
+
+func TestRewriteRR_TXT_FlagTrue_RDATAUntouched(t *testing.T) {
+	// A TXT string that contains a label-shaped substring matching root MUST
+	// still be preserved verbatim because TXT RDATA is opaque text.
+	orig := newTXT("root.com.", "v=spf1 include:root.com. ~all")
+	got := RewriteRR(orig, root, backup, true)
+
+	txt := got.(*dns.TXT)
+	if txt.Txt[0] != "v=spf1 include:root.com. ~all" {
+		t.Errorf("TXT mutated: got %q", txt.Txt[0])
+	}
+}
+
 func TestRewriteRR_OriginalNotMutated(t *testing.T) {
 	orig := newCNAME("www.root.com.", "canonical.root.com.")
-	_ = RewriteRR(orig, root, backup)
+	_ = RewriteRR(orig, root, backup, false)
 
 	if orig.Header().Name != "www.root.com." {
 		t.Errorf("original CNAME owner mutated: %q", orig.Header().Name)

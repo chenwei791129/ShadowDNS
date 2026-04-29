@@ -63,7 +63,7 @@ func TestBuildState_PointerReuseOnUnchangedZone(t *testing.T) {
 	aliases := config.AliasMap{}
 
 	// First build: prev == nil → full parse, fingerprints recorded.
-	state1, _, err := BuildState(cfg, aliases, nil, VerifyModeHash, nil, nil, nil)
+	state1, _, err := BuildState(cfg, aliases, nil, nil, VerifyModeHash, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("first BuildState: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestBuildState_PointerReuseOnUnchangedZone(t *testing.T) {
 	recordsBefore := len(zone1.Records)
 
 	// Second build: prev = &state1, zone file unchanged → pointer must be reused.
-	state2, _, err := BuildState(cfg, aliases, &state1, VerifyModeHash, nil, nil, nil)
+	state2, _, err := BuildState(cfg, aliases, nil, &state1, VerifyModeHash, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("second BuildState: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestBuildState_StartupFallback(t *testing.T) {
 		{Name: "beta.com", Type: "master", File: file2},
 	})
 
-	state, _, err := BuildState(cfg, config.AliasMap{}, nil, VerifyModeHash, nil, nil, nil)
+	state, _, err := BuildState(cfg, config.AliasMap{}, nil, nil, VerifyModeHash, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildState: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestBuildState_RollbackOnPartialFailure(t *testing.T) {
 	})
 
 	// First build succeeds: establishes a known good prev state.
-	prevState, _, err := BuildState(cfg, config.AliasMap{}, nil, VerifyModeHash, nil, nil, nil)
+	prevState, _, err := BuildState(cfg, config.AliasMap{}, nil, nil, VerifyModeHash, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("initial BuildState: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestBuildState_RollbackOnPartialFailure(t *testing.T) {
 	}
 
 	// Second build must fail because bad.com.zone is now unparseable.
-	_, _, err = BuildState(cfg, config.AliasMap{}, &prevState, VerifyModeHash, nil, nil, nil)
+	_, _, err = BuildState(cfg, config.AliasMap{}, nil, &prevState, VerifyModeHash, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected BuildState to return an error when a zone file is unparseable; got nil")
 	}

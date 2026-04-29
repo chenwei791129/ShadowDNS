@@ -462,7 +462,7 @@ func startReloadTestServer(t *testing.T, dir string) (*server.Server, *view.Coun
 		t.Fatalf("load geoip: %v", err)
 	}
 
-	state, _, err := server.BuildState(cfg, aliases, nil, server.VerifyModeHash, country, asn, logger)
+	state, _, err := server.BuildState(cfg, aliases, nil, nil, server.VerifyModeHash, country, asn, logger)
 	if err != nil {
 		t.Fatalf("build state: %v", err)
 	}

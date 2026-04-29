@@ -7,25 +7,49 @@
 
 # ---- aliases -----------------------------------------------------------
 #
-# Maps each root domain to its list of backup (alias) domains. ShadowDNS
-# serves backup domains by rewriting incoming queries to the root domain
-# without loading separate zone data.
+# Maps each root domain to its backup (alias) domains. ShadowDNS serves
+# backup domains by rewriting incoming queries to the root domain without
+# loading separate zone data.
+#
+# Each value may be either:
+#   - A list of backup-domain strings (legacy form). Equivalent to the
+#     object form with rewrite_rdata_labels: false.
+#   - An object with:
+#       members: <list of backup-domain strings, required, non-empty>
+#       rewrite_rdata_labels: <bool, default false>
+#
+# rewrite_rdata_labels:
+#   When true, RDATA name fields (CNAME target, NS, MX, SRV target, PTR,
+#   SOA MNAME/RNAME) get an additional label-anywhere rewrite: every
+#   contiguous root-label sequence inside the value is replaced with the
+#   backup origin, not just the suffix. Use this when upstream zone files
+#   use templated CNAMEs that point through the root origin as a middle
+#   label (e.g. "host.<root>.cdn.example.net."). When false (default),
+#   only the in-bailiwick suffix is rewritten — matching the conservative
+#   DNS standard behavior.
 #
 # Rules:
-#   - Each key is a root domain; the value is a list of its backup domains.
 #   - A backup domain may only appear once across all roots (duplicates rejected).
 #   - A backup domain cannot equal its root (self-alias is rejected).
-#   - An empty list for a root is valid.
+#   - An empty list / empty members for a root is valid (no aliases registered).
 #   - Missing or empty "aliases:" is valid — the server starts with no aliases.
 
 aliases:
+  # List form (legacy): rewrite_rdata_labels defaults to false.
   example.com:
     - backup-example.com
     - mirror-example.com
+
+  # Object form: explicit per-group flag.
   another-root.org:
-    - backup-another.org
+    members:
+      - backup-another.org
+    rewrite_rdata_labels: true
+
   service.example.net:
-    - shadow-service.net
+    members:
+      - shadow-service.net
+    # rewrite_rdata_labels omitted → defaults to false
 
 # ---- ephemeral_api -----------------------------------------------------
 #

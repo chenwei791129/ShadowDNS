@@ -20,15 +20,19 @@ import (
 // that don't need to interleave other lookups (e.g. ephemeral store) keep
 // working unchanged.
 //
+// rewriteRDATALabels controls whether RDATA name fields are rewritten with
+// the label-anywhere rule (per-alias-group opt-in). It does not affect
+// owner-name rewriting.
+//
 // MUST NOT panic on any input.
-func Resolve(qname string, qtype uint16, backupOrigin string, backupZone *zone.Zone, rootZone *zone.Zone) []dns.RR {
+func Resolve(qname string, qtype uint16, backupOrigin string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
 	if rootZone == nil {
 		return nil
 	}
-	if rrs := ResolveExact(qname, qtype, backupOrigin, backupZone, rootZone); len(rrs) > 0 {
+	if rrs := ResolveExact(qname, qtype, backupOrigin, backupZone, rootZone, rewriteRDATALabels); len(rrs) > 0 {
 		return rrs
 	}
-	if rrs := ResolveWildcard(qname, qtype, backupOrigin, rootZone); len(rrs) > 0 {
+	if rrs := ResolveWildcard(qname, qtype, backupOrigin, rootZone, rewriteRDATALabels); len(rrs) > 0 {
 		return rrs
 	}
 	return nil
@@ -42,7 +46,7 @@ func Resolve(qname string, qtype uint16, backupOrigin string, backupZone *zone.Z
 // and CNAME fallback.
 //
 // MUST NOT panic on any input.
-func ResolveExactNoCNAME(qname string, qtype uint16, backupOrigin string, backupZone *zone.Zone, rootZone *zone.Zone) []dns.RR {
+func ResolveExactNoCNAME(qname string, qtype uint16, backupOrigin string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
 	if rootZone == nil {
 		return nil
 	}
@@ -59,7 +63,7 @@ func ResolveExactNoCNAME(qname string, qtype uint16, backupOrigin string, backup
 		return nil
 	}
 
-	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOrigin)
+	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOrigin, rewriteRDATALabels)
 }
 
 // ResolveCNAMEFallback performs only the RFC 1034 §3.6.2 CNAME-fallback
@@ -69,7 +73,7 @@ func ResolveExactNoCNAME(qname string, qtype uint16, backupOrigin string, backup
 // qtypes) or when no CNAME exists at the qname.
 //
 // MUST NOT panic on any input.
-func ResolveCNAMEFallback(qname string, qtype uint16, backupOrigin string, rootZone *zone.Zone) []dns.RR {
+func ResolveCNAMEFallback(qname string, qtype uint16, backupOrigin string, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
 	if rootZone == nil || qtype == dns.TypeCNAME {
 		return nil
 	}
@@ -80,7 +84,7 @@ func ResolveCNAMEFallback(qname string, qtype uint16, backupOrigin string, rootZ
 		return nil
 	}
 
-	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOrigin)
+	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOrigin, rewriteRDATALabels)
 }
 
 // ResolveExact performs the exact-match portion of backup-zone resolution:
@@ -89,18 +93,18 @@ func ResolveCNAMEFallback(qname string, qtype uint16, backupOrigin string, rootZ
 // Returns nil when no exact match exists.
 //
 // MUST NOT panic on any input.
-func ResolveExact(qname string, qtype uint16, backupOrigin string, backupZone *zone.Zone, rootZone *zone.Zone) []dns.RR {
-	if rrs := ResolveExactNoCNAME(qname, qtype, backupOrigin, backupZone, rootZone); len(rrs) > 0 {
+func ResolveExact(qname string, qtype uint16, backupOrigin string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
+	if rrs := ResolveExactNoCNAME(qname, qtype, backupOrigin, backupZone, rootZone, rewriteRDATALabels); len(rrs) > 0 {
 		return rrs
 	}
-	return ResolveCNAMEFallback(qname, qtype, backupOrigin, rootZone)
+	return ResolveCNAMEFallback(qname, qtype, backupOrigin, rootZone, rewriteRDATALabels)
 }
 
 // ResolveWildcard performs the wildcard-synthesis portion of backup-zone
 // resolution. Returns nil when no wildcard covers the rewritten qname.
 //
 // MUST NOT panic on any input.
-func ResolveWildcard(qname string, qtype uint16, backupOrigin string, rootZone *zone.Zone) []dns.RR {
+func ResolveWildcard(qname string, qtype uint16, backupOrigin string, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
 	if rootZone == nil {
 		return nil
 	}
@@ -129,12 +133,12 @@ func ResolveWildcard(qname string, qtype uint16, backupOrigin string, rootZone *
 		rootRRs[i] = cp
 	}
 
-	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOrigin)
+	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOrigin, rewriteRDATALabels)
 }
 
 // finalizeBackupRRs applies in-zone CNAME following (RFC 1034 §3.6.2) and
 // then rewrites owners from the root namespace to the backup namespace.
-func finalizeBackupRRs(rootRRs []dns.RR, qtype uint16, rootZone *zone.Zone, backupOrigin string) []dns.RR {
+func finalizeBackupRRs(rootRRs []dns.RR, qtype uint16, rootZone *zone.Zone, backupOrigin string, rewriteRDATALabels bool) []dns.RR {
 	if len(rootRRs) > 0 && qtype != dns.TypeCNAME {
 		if _, ok := rootRRs[len(rootRRs)-1].(*dns.CNAME); ok {
 			rootRRs = rootZone.FollowCNAME(nil, rootRRs, qtype)
@@ -142,7 +146,7 @@ func finalizeBackupRRs(rootRRs []dns.RR, qtype uint16, rootZone *zone.Zone, back
 	}
 	result := make([]dns.RR, 0, len(rootRRs))
 	for _, rr := range rootRRs {
-		result = append(result, RewriteRR(rr, rootZone.Origin, backupOrigin))
+		result = append(result, RewriteRR(rr, rootZone.Origin, backupOrigin, rewriteRDATALabels))
 	}
 	return result
 }

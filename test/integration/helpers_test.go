@@ -96,7 +96,7 @@ func buildTestServer(t *testing.T, preServe func(*server.Server)) (*server.Serve
 		t.Fatalf("LoadGeoIP: %v", err)
 	}
 
-	state, _, err := server.BuildState(cfg, aliases, nil, server.VerifyModeHash, country, asn, logger)
+	state, _, err := server.BuildState(cfg, aliases, nil, nil, server.VerifyModeHash, country, asn, logger)
 	if err != nil {
 		_ = country.Close()
 		_ = asn.Close()
@@ -105,16 +105,31 @@ func buildTestServer(t *testing.T, preServe func(*server.Server)) (*server.Serve
 
 	srv := server.NewServer(state, logger)
 
-	// UDPAddr() reads must not race the Serve goroutine writing s.listeners.
-	if err := srv.Bind("127.0.0.1:0"); err != nil {
+	_, srvCleanup := bindAndServe(t, srv, preServe)
+
+	teardown := func() {
+		srvCleanup()
 		_ = country.Close()
 		_ = asn.Close()
+	}
+	return srv, teardown
+}
+
+// bindAndServe binds srv to a loopback OS-assigned port, runs an optional
+// preServe hook before Serve, starts Serve in a goroutine, and returns the
+// UDP address plus a cleanup that cancels Serve and waits for it to exit.
+// Shared by buildTestServer (fixture-driven) and tests that supply their own
+// hand-built ServerState.
+func bindAndServe(t *testing.T, srv *server.Server, preServe func(*server.Server)) (string, func()) {
+	t.Helper()
+	// UDPAddr() reads must not race the Serve goroutine writing s.listeners.
+	if err := srv.Bind("127.0.0.1:0"); err != nil {
 		t.Fatalf("srv.Bind: %v", err)
 	}
-
 	if preServe != nil {
 		preServe(srv)
 	}
+	udpAddr := srv.UDPAddr().String()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -124,14 +139,10 @@ func buildTestServer(t *testing.T, preServe func(*server.Server)) (*server.Serve
 			t.Logf("server exited: %v", err)
 		}
 	}()
-
-	teardown := func() {
+	return udpAddr, func() {
 		cancel()
 		<-done
-		_ = country.Close()
-		_ = asn.Close()
 	}
-	return srv, teardown
 }
 
 // udpAddr returns the string representation of the server's UDP listener.

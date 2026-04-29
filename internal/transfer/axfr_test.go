@@ -330,7 +330,7 @@ func TestHandleAliasAXFR_RewritesRecords(t *testing.T) {
 
 	mux := dns.NewServeMux()
 	mux.HandleFunc(backupOrigin, func(w dns.ResponseWriter, req *dns.Msg) {
-		HandleAliasAXFR(w, req, backupOrigin, rootZone, backupZone, zap.NewNop())
+		HandleAliasAXFR(w, req, backupOrigin, rootZone, backupZone, false, zap.NewNop())
 	})
 
 	addr, cleanup := startAXFRServer(t, mux)
@@ -429,7 +429,7 @@ func TestHandleAliasAXFR_NilBackupZone_AllRootRecords(t *testing.T) {
 
 	mux := dns.NewServeMux()
 	mux.HandleFunc(backupOrigin, func(w dns.ResponseWriter, req *dns.Msg) {
-		HandleAliasAXFR(w, req, backupOrigin, rootZone, nil, zap.NewNop()) // nil backup zone
+		HandleAliasAXFR(w, req, backupOrigin, rootZone, nil, false, zap.NewNop()) // nil backup zone
 	})
 
 	addr, cleanup := startAXFRServer(t, mux)
@@ -458,7 +458,7 @@ func TestHandleAliasAXFR_UDP_Refused(t *testing.T) {
 
 	mux := dns.NewServeMux()
 	mux.HandleFunc(backupOrigin, func(w dns.ResponseWriter, req *dns.Msg) {
-		HandleAliasAXFR(w, req, backupOrigin, rootZone, nil, zap.NewNop())
+		HandleAliasAXFR(w, req, backupOrigin, rootZone, nil, false, zap.NewNop())
 	})
 
 	addr, cleanup := startAXFRServer(t, mux)

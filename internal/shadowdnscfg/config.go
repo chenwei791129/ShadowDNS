@@ -20,6 +20,7 @@ import (
 // Config is the parsed unified ShadowDNS configuration.
 type Config struct {
 	Aliases      config.AliasMap
+	AliasFlags   config.AliasFlags
 	EphemeralAPI *EphemeralAPIConfig
 }
 
@@ -36,14 +37,65 @@ type EphemeralAPIConfig struct {
 }
 
 type rawConfig struct {
-	Aliases      map[string][]string `yaml:"aliases"`
-	EphemeralAPI *rawEphemeralAPI    `yaml:"ephemeral_api"`
+	Aliases      map[string]rawAliasGroup `yaml:"aliases"`
+	EphemeralAPI *rawEphemeralAPI         `yaml:"ephemeral_api"`
 }
 
 type rawEphemeralAPI struct {
 	Listen string   `yaml:"listen"`
 	Allow  []string `yaml:"allow"`
 	Token  string   `yaml:"token"`
+}
+
+// rawAliasGroup is the per-key YAML shape for the aliases map. It accepts
+// either a sequence of backup-domain strings (legacy form, equivalent to
+// rewrite_rdata_labels=false) or a mapping with explicit members and
+// rewrite_rdata_labels fields. Strict decoding rejects unknown fields and
+// missing members in the mapping form.
+type rawAliasGroup struct {
+	Members            []string `yaml:"members"`
+	RewriteRDATALabels bool     `yaml:"rewrite_rdata_labels"`
+}
+
+// UnmarshalYAML accepts both the sequence form and the mapping form for
+// each alias entry. Any other YAML node type (e.g. a bare string) yields a
+// type-mismatch error so legacy "backup: root" configs fail loudly.
+func (g *rawAliasGroup) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.SequenceNode:
+		var members []string
+		if err := value.Decode(&members); err != nil {
+			return err
+		}
+		g.Members = members
+		g.RewriteRDATALabels = false
+		return nil
+	case yaml.MappingNode:
+		// yaml.Node.Decode does not honor the parent decoder's KnownFields
+		// setting, so we walk the mapping content directly to reject
+		// unknown keys before decoding into g.
+		allowed := map[string]bool{"members": true, "rewrite_rdata_labels": true}
+		for i := 0; i+1 < len(value.Content); i += 2 {
+			keyNode := value.Content[i]
+			if !allowed[keyNode.Value] {
+				return fmt.Errorf("line %d: unknown alias field %q (expected one of: members, rewrite_rdata_labels)", keyNode.Line, keyNode.Value)
+			}
+		}
+		// Avoid recursing into this UnmarshalYAML by decoding into a
+		// distinct named type that shares the same field tags.
+		type aliasGroupAlias rawAliasGroup
+		var obj aliasGroupAlias
+		if err := value.Decode(&obj); err != nil {
+			return err
+		}
+		if len(obj.Members) == 0 {
+			return fmt.Errorf("line %d: aliases entry in object form requires non-empty 'members' list", value.Line)
+		}
+		*g = rawAliasGroup(obj)
+		return nil
+	default:
+		return fmt.Errorf("line %d: aliases entry must be a sequence of backup domains or an object with 'members' and 'rewrite_rdata_labels'", value.Line)
+	}
 }
 
 // Load parses and validates the unified ShadowDNS YAML config file at path.
@@ -76,24 +128,22 @@ func Load(path string, logger *zap.Logger) (*Config, error) {
 		logger.Sugar().Infow("config has no aliases section; starting with empty alias map", "path", path)
 	}
 
-	// Invert YAML-shaped root→[backups] to backup→root. The same-string
-	// cross-root duplicate must be caught here because map assignment silently
-	// overwrites; BuildAliasMap catches the case-insensitive duplicates.
-	flat := make(map[string]string)
-	for root, backups := range raw.Aliases {
-		for _, backup := range backups {
-			if existing, dup := flat[backup]; dup && existing != root {
-				return nil, fmt.Errorf("aliases: backup domain %q is claimed by two roots: %q and %q", backup, existing, root)
-			}
-			flat[backup] = root
+	// Translate the per-root rawAliasGroup map into the canonical
+	// config.AliasGroup map BuildAliasMap expects.
+	groups := make(map[string]config.AliasGroup, len(raw.Aliases))
+	for root, g := range raw.Aliases {
+		groups[root] = config.AliasGroup{
+			Members:            g.Members,
+			RewriteRDATALabels: g.RewriteRDATALabels,
 		}
 	}
 
-	aliasMap, err := config.BuildAliasMap(flat)
+	aliasMap, aliasFlags, err := config.BuildAliasMap(groups)
 	if err != nil {
 		return nil, fmt.Errorf("aliases: %w", err)
 	}
 	cfg.Aliases = aliasMap
+	cfg.AliasFlags = aliasFlags
 
 	if raw.EphemeralAPI != nil {
 		apiCfg, err := buildEphemeralAPI(raw.EphemeralAPI)

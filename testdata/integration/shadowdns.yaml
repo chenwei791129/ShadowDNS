@@ -1,3 +1,13 @@
+# Integration-test fixture. The aliases block exercises both supported
+# shapes: the legacy list form (defaults rewrite_rdata_labels to false)
+# and the object form (explicit rewrite_rdata_labels for templated CNAMEs).
 aliases:
+  # List form: rewrite_rdata_labels defaults to false.
   example.com:
     - backup.example
+  # Object form sample (commented; left here for documentation only — no
+  # corresponding zone fixtures are loaded for this root):
+  # templated-root.example:
+  #   members:
+  #     - templated-alias.example
+  #   rewrite_rdata_labels: true

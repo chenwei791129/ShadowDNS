@@ -247,6 +247,9 @@ func (s *Server) handleBackupQuery(
 
 	backupZone := st.BackupZones[viewName][match.MatchedZone] // may be nil
 
+	// Per-alias-group RDATA-rewrite flag (false when not declared).
+	rewriteRDATALabels := st.AliasFlags[match.MatchedZone]
+
 	// Precompute the backup SOA once; used for both the apex short-circuit and
 	// the authority section of negative replies.
 	backupSOA := alias.BackupSOA(rootZone.SOA, rootZone.Origin, match.MatchedZone)
@@ -259,7 +262,7 @@ func (s *Server) handleBackupQuery(
 
 	// Exact match (backup override + root exact), without CNAME fallback —
 	// so zone records win over the ephemeral overlay below.
-	if records := alias.ResolveExactNoCNAME(qname, qtype, match.MatchedZone, backupZone, rootZone); len(records) > 0 {
+	if records := alias.ResolveExactNoCNAME(qname, qtype, match.MatchedZone, backupZone, rootZone, rewriteRDATALabels); len(records) > 0 {
 		replyWithAnswer(w, req, records)
 		return
 	}
@@ -273,12 +276,12 @@ func (s *Server) handleBackupQuery(
 	}
 
 	// CNAME fallback per RFC 1034 §3.6.2.
-	if records := alias.ResolveCNAMEFallback(qname, qtype, match.MatchedZone, rootZone); len(records) > 0 {
+	if records := alias.ResolveCNAMEFallback(qname, qtype, match.MatchedZone, rootZone, rewriteRDATALabels); len(records) > 0 {
 		replyWithAnswer(w, req, records)
 		return
 	}
 
-	if records := alias.ResolveWildcard(qname, qtype, match.MatchedZone, rootZone); len(records) > 0 {
+	if records := alias.ResolveWildcard(qname, qtype, match.MatchedZone, rootZone, rewriteRDATALabels); len(records) > 0 {
 		replyWithAnswer(w, req, records)
 		return
 	}
@@ -449,7 +452,8 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 	if match.IsBackup {
 		rootZone := st.RootZones[viewName][match.RootZone]
 		backupZone := st.BackupZones[viewName][match.MatchedZone] // may be nil
-		transfer.HandleAliasAXFR(w, req, match.MatchedZone, rootZone, backupZone, s.Logger)
+		rewriteRDATALabels := st.AliasFlags[match.MatchedZone]
+		transfer.HandleAliasAXFR(w, req, match.MatchedZone, rootZone, backupZone, rewriteRDATALabels, s.Logger)
 	} else {
 		rootZone := st.RootZones[viewName][match.MatchedZone]
 		transfer.HandleAXFR(w, req, rootZone, s.Logger)
