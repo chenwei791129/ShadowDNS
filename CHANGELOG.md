@@ -13,6 +13,18 @@
 
 * **shadowdns.yaml:** the `aliases` map now accepts two value shapes per root: the existing list-of-strings (legacy form, equivalent to `rewrite_rdata_labels: false`) and a new object form `{members: [...], rewrite_rdata_labels: <bool>}`. Mixing both shapes across different roots is allowed. Object-form entries with unknown fields, missing `members`, or an empty `members` list are rejected at config load.
 
+## [0.13.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.12.4...v0.13.0) (2026-04-29)
+
+
+### Features
+
+* **dns:** preserve query and zone-file case in DNS responses ([2bdf2be](https://github.com/chenwei791129/ShadowDNS/commit/2bdf2beea805300096748c2bc181a17011db2ddb))
+
+
+### Bug Fixes
+
+* **alias:** rewrite root labels in mid-RDATA when opt-in flag is set ([ffe1271](https://github.com/chenwei791129/ShadowDNS/commit/ffe127172565d76cf360a9325e708e5b4d5a5b69))
+
 ## [0.12.4](https://github.com/chenwei791129/ShadowDNS/compare/v0.12.3...v0.12.4) (2026-04-25)
 
 
