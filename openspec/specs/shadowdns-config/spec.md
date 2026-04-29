@@ -10,20 +10,35 @@ TBD - created by archiving change 'ephemeral-txt-api'. Update Purpose after arch
 
 The shadowdns-config loader SHALL parse a single YAML file specified by the `--config` CLI flag. The file is a single YAML document containing the following top-level sections:
 
-- `aliases` (`map[string][]string`, optional): Mapping from each root domain to its list of backup domains. When the key is absent or the map is empty, no aliases are loaded.
+- `aliases` (optional): Mapping from each root domain to either (a) a list of backup domain strings, or (b) an object with `members` (list of backup domain strings) and `rewrite_rdata_labels` (bool, default `false`). When the key is absent or the map is empty, no aliases are loaded. The list form is equivalent to the object form with `rewrite_rdata_labels: false`.
 - `ephemeral_api` (object, optional): Configuration for the ephemeral TXT API server. When the key is absent, the API server is not started.
 
-The loader SHALL use strict decoding: unknown top-level keys or unknown fields inside recognized sections SHALL cause a load error that identifies the offending key. A value under `aliases` whose type is not a list of strings (for example, a bare string such as `backup.com: root.com`) SHALL be rejected by the YAML decoder as a type mismatch.
+The loader SHALL use strict decoding: unknown top-level keys or unknown fields inside recognized sections SHALL cause a load error that identifies the offending key. A value under `aliases` whose YAML node type is neither a sequence of strings nor a mapping with the documented fields (for example, a bare string such as `backup.com: root.com`) SHALL be rejected by the YAML decoder as a type mismatch.
 
 #### Scenario: Valid config with both sections
 
 - **WHEN** the config file contains `aliases: {root.com: [backup.com]}` and `ephemeral_api: {listen: "127.0.0.1:8053", allow: ["10.0.0.5"]}`
-- **THEN** the loader SHALL return a config where the alias map has one entry `{backup.com. -> root.com.}` and `ephemeral_api` is populated
+- **THEN** the loader SHALL return a config where the alias map has one entry `{backup.com. -> root.com.}` with `rewrite_rdata_labels: false` and `ephemeral_api` is populated
 
-#### Scenario: Aliases-only config
+#### Scenario: Aliases-only config (list form)
 
 - **WHEN** the config file contains `aliases: {root.com: [backup.com, mirror.com]}` and no `ephemeral_api` key
-- **THEN** the loader SHALL return a config with the alias map populated with both backup entries and `ephemeral_api` marked as disabled
+- **THEN** the loader SHALL return a config with the alias map populated with both backup entries (each with `rewrite_rdata_labels: false`) and `ephemeral_api` marked as disabled
+
+#### Scenario: Aliases object form with rewrite_rdata_labels enabled
+
+- **WHEN** the config file contains `aliases: {root.com: {members: [backup.com, mirror.com], rewrite_rdata_labels: true}}`
+- **THEN** the loader SHALL return a config where both `backup.com.` and `mirror.com.` map to root `root.com.` with `rewrite_rdata_labels: true`
+
+#### Scenario: Aliases object form omits rewrite_rdata_labels
+
+- **WHEN** the config file contains `aliases: {root.com: {members: [backup.com]}}`
+- **THEN** the loader SHALL return a config where `backup.com.` maps to root `root.com.` with `rewrite_rdata_labels: false`
+
+#### Scenario: List and object forms coexist across different roots
+
+- **WHEN** the config file contains `aliases: {root-a.net: [alias-a.net], root-b.net: {members: [alias-b.net], rewrite_rdata_labels: true}}`
+- **THEN** the loader SHALL return a config where `alias-a.net.` maps to `root-a.net.` with the flag false, and `alias-b.net.` maps to `root-b.net.` with the flag true
 
 #### Scenario: Ephemeral-API-only config
 
@@ -40,6 +55,16 @@ The loader SHALL use strict decoding: unknown top-level keys or unknown fields i
 - **WHEN** the config file contains `aliases: {backup.com: root.com}` (a bare string value under a root key)
 - **THEN** the loader SHALL return a YAML decoding error identifying the type mismatch; the server SHALL NOT start with the partial configuration
 
+#### Scenario: Aliases object form with unknown field is rejected
+
+- **WHEN** the config file contains `aliases: {root.com: {members: [backup.com], unknown_flag: true}}`
+- **THEN** the loader SHALL return an error that names the unknown field `unknown_flag`
+
+#### Scenario: Aliases object form missing members is rejected
+
+- **WHEN** the config file contains `aliases: {root.com: {rewrite_rdata_labels: true}}`
+- **THEN** the loader SHALL return an error indicating that `members` is required when the alias value is an object
+
 #### Scenario: Unknown top-level key fails
 
 - **WHEN** the config file contains a top-level key that is not `aliases` or `ephemeral_api`
@@ -52,33 +77,36 @@ The loader SHALL use strict decoding: unknown top-level keys or unknown fields i
 
 
 <!-- @trace
-source: aliases-root-to-backups-schema
-updated: 2026-04-22
+source: fix-alias-rdata-mid-label-rewrite
+updated: 2026-04-29
 code:
-  - scripts/smoke.sh
-  - testdata/integration/README.md
-  - internal/server/build.go
-  - internal/config/aliases.go
-  - .release-please-manifest.json
-  - scripts/gen-container-testdata.go
-  - docs/benchmark.md
-  - testdata/integration/aliases.yaml
   - CHANGELOG.md
-  - CLAUDE.md
-  - internal/shadowdnscfg/config.go
-  - README.md
-  - testdata/integration/shadowdns.yaml
-  - .spectra.yaml
   - packaging/shadowdns.yaml.example
-  - scripts/test-deb.sh
+  - internal/config/aliases.go
+  - internal/server/server.go
+  - internal/server/handler.go
+  - testdata/integration/shadowdns.yaml
+  - internal/transfer/axfr.go
+  - internal/alias/rewrite.go
+  - internal/alias/override.go
+  - cmd/shadowdns/main.go
+  - internal/shadowdnscfg/config.go
+  - internal/server/build.go
 tests:
-  - test/integration/reload_diff_test.go
-  - cmd/shadowdns/main_ephemeral_test.go
-  - internal/config/aliases_test.go
-  - internal/shadowdnscfg/config_test.go
   - test/integration/axfr_test.go
-  - test/integration/listenon_test.go
+  - internal/alias/override_test.go
+  - internal/server/build_test.go
+  - internal/alias/rewrite_anywhere_test.go
+  - internal/shadowdnscfg/config_test.go
+  - test/integration/alias_rdata_rewrite_test.go
+  - internal/server/server_test.go
+  - internal/config/aliases_test.go
   - test/integration/helpers_test.go
+  - test/integration/reload_diff_test.go
+  - internal/alias/rewrite_test.go
+  - internal/transfer/axfr_test.go
+  - cmd/shadowdns/main_test.go
+  - test/integration/listenon_test.go
 -->
 
 ---
