@@ -134,6 +134,10 @@ type runOptions struct {
 	ReloadVerify server.VerifyMode
 	NoColor      bool
 	Logger       *zap.Logger
+	// ReadyCh is optional; if non-nil, run() closes it once the SIGHUP handler
+	// is installed. Production callers leave it nil; test callers use it as an
+	// explicit happens-before sync point instead of sleeping.
+	ReadyCh chan<- struct{}
 }
 
 // parseVerifyMode converts the string value of --reload-verify to a VerifyMode.
@@ -459,6 +463,14 @@ func run(ctx context.Context, opts runOptions) error {
 	sighupCh := make(chan os.Signal, 1)
 	signal.Notify(sighupCh, syscall.SIGHUP)
 	defer signal.Stop(sighupCh)
+
+	// Signal test callers that the SIGHUP handler is now attached. Closing
+	// this channel here — after signal.Notify but before the dispatch
+	// goroutine starts — gives tests an explicit happens-before sync point
+	// so they can avoid sleeping to wait for startup.
+	if opts.ReadyCh != nil {
+		close(opts.ReadyCh)
+	}
 
 	go func() {
 		for {

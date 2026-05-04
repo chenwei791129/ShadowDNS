@@ -23,6 +23,37 @@ import (
 // Test helpers
 // ---------------------------------------------------------------------------
 
+// gatherMetricFamilyWithRetry polls m.Gather() every 10ms until the metric
+// family `name` appears or `timeout` elapses, fatally failing the test on
+// timeout. This bridges the gap between dns.Exchange returning to the client
+// and the server handler goroutine finishing its metric increment, which
+// have no synchronous happens-before relationship in miekg/dns. Typical
+// timeout is 200ms.
+func gatherMetricFamilyWithRetry(t *testing.T, m *metrics.Metrics, name string, timeout time.Duration) *dto.MetricFamily {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		mfs, err := m.Gather()
+		if err != nil {
+			t.Fatalf("gather: %v", err)
+		}
+		for _, mf := range mfs {
+			if mf.GetName() == name {
+				return mf
+			}
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("metric %q not gathered within %v", name, timeout)
+			return nil // unreachable: t.Fatalf calls runtime.Goexit
+		case <-tick.C:
+		}
+	}
+}
+
 // makeARecord builds a simple A record.
 func makeARecord(name, ip string, ttl uint32) *dns.A {
 	return &dns.A{
@@ -1416,30 +1447,14 @@ func TestServeDNS_Metrics_RecordsRequestAndResponse(t *testing.T) {
 		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
 	}
 
-	// Gather metrics and verify.
-	mfs, err := m.Gather()
-	if err != nil {
-		t.Fatalf("gather: %v", err)
-	}
-	families := make(map[string]*dto.MetricFamily, len(mfs))
-	for _, mf := range mfs {
-		families[mf.GetName()] = mf
-	}
-
 	// Verify requests_total was incremented.
-	reqMF, ok := families["shadowdns_dns_requests_total"]
-	if !ok {
-		t.Fatal("shadowdns_dns_requests_total not found")
-	}
+	reqMF := gatherMetricFamilyWithRetry(t, m, "shadowdns_dns_requests_total", 200*time.Millisecond)
 	if len(reqMF.GetMetric()) == 0 {
 		t.Fatal("no metric entries in shadowdns_dns_requests_total")
 	}
 
 	// Verify responses_total was incremented with NOERROR.
-	respMF, ok := families["shadowdns_dns_responses_total"]
-	if !ok {
-		t.Fatal("shadowdns_dns_responses_total not found")
-	}
+	respMF := gatherMetricFamilyWithRetry(t, m, "shadowdns_dns_responses_total", 200*time.Millisecond)
 	var foundNoError bool
 	for _, metric := range respMF.GetMetric() {
 		for _, lp := range metric.GetLabel() {
@@ -1453,10 +1468,7 @@ func TestServeDNS_Metrics_RecordsRequestAndResponse(t *testing.T) {
 	}
 
 	// Verify duration histogram was observed.
-	durMF, ok := families["shadowdns_dns_request_duration_seconds"]
-	if !ok {
-		t.Fatal("shadowdns_dns_request_duration_seconds not found")
-	}
+	durMF := gatherMetricFamilyWithRetry(t, m, "shadowdns_dns_request_duration_seconds", 200*time.Millisecond)
 	if len(durMF.GetMetric()) == 0 {
 		t.Fatal("no entries in duration histogram")
 	}

@@ -29,6 +29,19 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/view"
 )
 
+// waitReady blocks until ch is closed (signalling that run()'s SIGHUP handler
+// is attached) or 5s elapses — the deadline is an upper bound for genuine
+// hangs, not a typical wait, since run() reaches signal.Notify in well under
+// a second on CI.
+func waitReady(t *testing.T, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("server did not become ready in 5s")
+	}
+}
+
 // newBufferLogger returns a zap logger writing console-formatted text to the
 // given WriteSyncer. Tests assert on log content via strings.Contains.
 func newBufferLogger(sink zapcore.WriteSyncer) *zap.Logger {
@@ -658,18 +671,19 @@ func TestSIGHUP_ReloadIntegration(t *testing.T) {
 	defer cancel()
 
 	logger := zap.NewNop()
+	readyCh := make(chan struct{})
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
 		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    listenAddr,
 		Logger:        logger,
+		ReadyCh:       readyCh,
 	}
 
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, opts) }()
 
-	// Wait for the server to start listening.
-	time.Sleep(200 * time.Millisecond)
+	waitReady(t, readyCh)
 
 	c := &dns.Client{Net: "udp", Timeout: 2 * time.Second}
 	m := new(dns.Msg)
@@ -752,18 +766,21 @@ func TestPidFile_WrittenOnStartup(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := zap.NewNop()
+	readyCh := make(chan struct{})
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
 		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    listenAddr,
 		Logger:        logger,
+		ReadyCh:       readyCh,
 	}
 
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, opts) }()
 
-	// Wait for run() to bind listeners and write the PID file.
-	time.Sleep(200 * time.Millisecond)
+	// run() writes the PID file before installing the SIGHUP handler, so by
+	// the time readyCh closes the file is guaranteed to be on disk.
+	waitReady(t, readyCh)
 
 	// PID file must exist and contain a valid integer PID.
 	pidData, err := os.ReadFile(pidPath)
@@ -805,18 +822,21 @@ func TestPidFile_NotWrittenWhenEmpty(t *testing.T) {
 	defer cancel()
 
 	logger := zap.NewNop()
+	readyCh := make(chan struct{})
 	opts := runOptions{
 		NamedConfPath: filepath.Join(dir, "named.conf"),
 		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 		ListenAddr:    "127.0.0.1:0",
 		Logger:        logger,
+		ReadyCh:       readyCh,
 	}
 
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, opts) }()
 
-	// Wait for run() to start up fully.
-	time.Sleep(200 * time.Millisecond)
+	// readyCh closes after run() has progressed past the PID-file branch, so
+	// "no PID file present" is a stable assertion at this point.
+	waitReady(t, readyCh)
 
 	// PID file must NOT exist since pid-file was not configured.
 	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
