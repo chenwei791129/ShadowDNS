@@ -64,17 +64,19 @@ func TestRun_OverrideBranchUsesListenFlag(t *testing.T) {
 	namedConf := setupListenOnTestDir(t, `{ 10.255.255.255; }`) // unreachable IP
 	ctx, cancel := context.WithCancel(context.Background())
 	logger, observed := newObservedLogger()
+	readyCh := make(chan struct{})
 	opts := runOptions{
 		NamedConfPath: namedConf,
 		ConfigPath:    filepath.Join(filepath.Dir(namedConf), "shadowdns.yaml"),
 		ListenAddr:    "127.0.0.1:0", // has host component → override
 		Logger:        logger,
+		ReadyCh:       readyCh,
 	}
 
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, opts) }()
 
-	time.Sleep(150 * time.Millisecond)
+	waitReady(t, readyCh)
 	cancel()
 
 	select {
@@ -104,17 +106,19 @@ func TestRun_ListenOnBranchBindsListenOnAddresses(t *testing.T) {
 	namedConf := setupListenOnTestDir(t, `{ 127.0.0.1; }`)
 	ctx, cancel := context.WithCancel(context.Background())
 	logger, observed := newObservedLogger()
+	readyCh := make(chan struct{})
 	opts := runOptions{
 		NamedConfPath: namedConf,
 		ConfigPath:    filepath.Join(filepath.Dir(namedConf), "shadowdns.yaml"),
 		ListenAddr:    ":0", // port hint only; listen-on drives host
 		Logger:        logger,
+		ReadyCh:       readyCh,
 	}
 
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, opts) }()
 
-	time.Sleep(150 * time.Millisecond)
+	waitReady(t, readyCh)
 	cancel()
 
 	select {
@@ -143,18 +147,20 @@ func TestRun_ReloadLogsListenAddrChangeHint(t *testing.T) {
 	// Start with listen-on { 127.0.0.1; }.
 	namedConf := setupListenOnTestDir(t, `{ 127.0.0.1; }`)
 	logger, observed := newObservedLogger()
+	readyCh := make(chan struct{})
 	opts := runOptions{
 		NamedConfPath: namedConf,
 		ConfigPath:    filepath.Join(filepath.Dir(namedConf), "shadowdns.yaml"),
 		ListenAddr:    ":0",
 		Logger:        logger,
+		ReadyCh:       readyCh,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, opts) }()
 
-	time.Sleep(150 * time.Millisecond)
+	waitReady(t, readyCh)
 
 	// Rewrite named.conf to change listen-on.
 	dir := filepath.Dir(namedConf)
