@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bufio"
+	"cmp"
 	"fmt"
 	"io"
+	"os"
+	"slices"
 	"sort"
 
 	"github.com/spf13/cobra"
@@ -14,6 +18,14 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/prunebackup"
 	"github.com/chenwei791129/ShadowDNS/internal/shadowdnscfg"
 )
+
+// outBufferSize is the buffered-writer capacity wrapped around stdout. At
+// roughly 80–200 bytes per dry-run line this coalesces several hundred
+// lines per syscall, dropping per-line write traffic from millions of
+// syscalls to thousands at production scale.
+const outBufferSize = 64 * 1024
+
+const msgNoRedundant = "no redundant records found"
 
 // newPruneBackupCmd constructs the `shadowdns prune-backup` subcommand. It
 // reads named.conf + the unified config, diffs every (view, backup) pair
@@ -35,12 +47,26 @@ against its aliased root zone, and either reports (dry-run, default) or
 removes (--apply) records that the running server would never serve from a
 backup zone or whose RRSet is byte-identical to the root zone.
 
+Recommended workflow: run once without --apply to inspect candidates, then
+re-run with --apply. Dry-run performs the full parse for every pair and
+acts as the parse-time pre-check; per-pair apply does not pre-validate
+later pairs before writing earlier ones.
+
 No DNS traffic is exchanged and the running server is not signalled.`,
 		SilenceUsage: true,
+		// os.Exit is confined to this RunE wrapper so unit tests calling
+		// runPruneBackup directly still observe its return value. After a
+		// successful run we sync the logger and exit immediately to skip
+		// the runtime's final GC sweep over now-released structures.
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			logger := logging.New(logging.Options{NoColor: noColor, Level: zapcore.InfoLevel})
-			defer func() { _ = logger.Sync() }()
-			return runPruneBackup(cmd.OutOrStdout(), namedConfPath, configPath, applyWrites, logger)
+			if err := runPruneBackup(cmd.OutOrStdout(), namedConfPath, configPath, applyWrites, logger); err != nil {
+				_ = logger.Sync()
+				return err
+			}
+			_ = logger.Sync()
+			os.Exit(0)
+			return nil // unreachable: os.Exit does not return
 		},
 	}
 
@@ -54,12 +80,25 @@ No DNS traffic is exchanged and the running server is not signalled.`,
 	return cmd
 }
 
-// runPruneBackup executes the prune pipeline. It is extracted from RunE so
-// unit tests can exercise it without cobra argument parsing.
+// runPruneBackup executes the prune pipeline as a per-pair streaming
+// pipeline: each (view, backup origin) pair is planned, its dry-run lines
+// emitted, and (under --apply) its pruned files written before the next
+// pair starts. Intermediate plan structures are released between pairs so
+// peak memory tracks the largest single pair, not the union of all pairs.
+//
+// This function returns error/nil so unit tests can assert on its return
+// value and on the captured output buffer; os.Exit lives only in the
+// cobra RunE wrapper above.
 func runPruneBackup(out io.Writer, namedConfPath, configPath string, applyWrites bool, logger *zap.Logger) error {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
+
+	bw := bufio.NewWriterSize(out, outBufferSize)
+	// Defer is the safety net for every return path (success and error);
+	// successful paths additionally Flush explicitly before returning so a
+	// later refactor that drops the defer cannot silently swallow output.
+	defer func() { _ = bw.Flush() }()
 
 	cfg, err := config.LoadNamedConf(namedConfPath, logger)
 	if err != nil {
@@ -72,7 +111,8 @@ func runPruneBackup(out io.Writer, namedConfPath, configPath string, applyWrites
 
 	aliases := shadowCfg.Aliases
 	if len(aliases) == 0 {
-		_, _ = fmt.Fprintln(out, "no redundant records found")
+		_, _ = fmt.Fprintln(bw, msgNoRedundant)
+		_ = bw.Flush()
 		return nil
 	}
 
@@ -117,7 +157,8 @@ func runPruneBackup(out io.Writer, namedConfPath, configPath string, applyWrites
 		}
 	}
 
-	// Deterministic order for stable dry-run output.
+	// Deterministic outer-loop order; pair P's full output is emitted
+	// before pair P+1 starts, so this also fixes the cross-pair order.
 	sort.Slice(pairs, func(i, j int) bool {
 		if pairs[i].view != pairs[j].view {
 			return pairs[i].view < pairs[j].view
@@ -125,8 +166,7 @@ func runPruneBackup(out io.Writer, namedConfPath, configPath string, applyWrites
 		return pairs[i].backupOrig < pairs[j].backupOrig
 	})
 
-	var allDeletions []prunebackup.Deletion
-	mergedFiles := map[string][]byte{}
+	anyDeletion := false
 	for _, p := range pairs {
 		plan, err := prunebackup.PlanPair(
 			p.backupFile, p.rootFile,
@@ -136,33 +176,38 @@ func runPruneBackup(out io.Writer, namedConfPath, configPath string, applyWrites
 		if err != nil {
 			return err
 		}
-		allDeletions = append(allDeletions, plan.Deletions...)
-		for f, content := range plan.Files {
-			mergedFiles[f] = content
+
+		if len(plan.Deletions) == 0 {
+			continue
+		}
+		anyDeletion = true
+
+		// Pair-local sort: every (file, line) tuple appears in exactly
+		// one pair (each backup zone belongs to one (view, origin)),
+		// so per-pair sort produces the same per-line ordering as a
+		// global sort while keeping memory bounded to one pair.
+		slices.SortFunc(plan.Deletions, func(a, b prunebackup.Deletion) int {
+			if c := cmp.Compare(a.File, b.File); c != 0 {
+				return c
+			}
+			return cmp.Compare(a.StartLine, b.StartLine)
+		})
+
+		for _, d := range plan.Deletions {
+			_, _ = fmt.Fprintf(bw, "%s:%d-%d %s %s %s\n",
+				d.File, d.StartLine, d.EndLine, d.Owner, d.Type, d.Rdata)
+		}
+
+		if applyWrites {
+			if err := prunebackup.ApplyAll(plan.Files, logger); err != nil {
+				return err
+			}
 		}
 	}
 
-	if len(allDeletions) == 0 {
-		_, _ = fmt.Fprintln(out, "no redundant records found")
-		return nil
+	if !anyDeletion {
+		_, _ = fmt.Fprintln(bw, msgNoRedundant)
 	}
-
-	// Stable print order: by file path, then start line.
-	sort.Slice(allDeletions, func(i, j int) bool {
-		a, b := allDeletions[i], allDeletions[j]
-		if a.File != b.File {
-			return a.File < b.File
-		}
-		return a.StartLine < b.StartLine
-	})
-
-	for _, d := range allDeletions {
-		_, _ = fmt.Fprintf(out, "%s:%d-%d %s %s %s\n",
-			d.File, d.StartLine, d.EndLine, d.Owner, d.Type, d.Rdata)
-	}
-
-	if !applyWrites {
-		return nil
-	}
-	return prunebackup.ApplyAll(mergedFiles, logger)
+	_ = bw.Flush()
+	return nil
 }
