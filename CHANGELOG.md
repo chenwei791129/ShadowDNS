@@ -13,6 +13,20 @@
 
 * **shadowdns.yaml:** the `aliases` map now accepts two value shapes per root: the existing list-of-strings (legacy form, equivalent to `rewrite_rdata_labels: false`) and a new object form `{members: [...], rewrite_rdata_labels: <bool>}`. Mixing both shapes across different roots is allowed. Object-form entries with unknown fields, missing `members`, or an empty `members` list are rejected at config load.
 
+## [0.14.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.13.0...v0.14.0) (2026-05-04)
+
+
+### Features
+
+* **prune-backup:** add offline CLI to prune redundant backup records ([#26](https://github.com/chenwei791129/ShadowDNS/issues/26)) ([68b02c5](https://github.com/chenwei791129/ShadowDNS/commit/68b02c545cc8bf3bc20491ac371c5a906ce08244))
+* **prune-backup:** stream pairs to bound peak memory ([7d9c93c](https://github.com/chenwei791129/ShadowDNS/commit/7d9c93c88cc2f02a3abf4dd8b4518d7d7a238201))
+
+
+### Bug Fixes
+
+* **test:** replace flaky time.Sleep sync points with explicit channels ([#28](https://github.com/chenwei791129/ShadowDNS/issues/28)) ([7696dae](https://github.com/chenwei791129/ShadowDNS/commit/7696dae7d1de556e5a83d06fdc13c435e287c373))
+* **zone:** suppress zero-signal logs for expected backup-zone drops ([#29](https://github.com/chenwei791129/ShadowDNS/issues/29)) ([63630e5](https://github.com/chenwei791129/ShadowDNS/commit/63630e5853e6a422ffa657728a3acc14bcc7fecc))
+
 ## [0.13.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.12.4...v0.13.0) (2026-04-29)
 
 
