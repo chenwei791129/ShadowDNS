@@ -262,6 +262,7 @@ to change flag values.`,
 	f.BoolVarP(&showVersion, "version", "v", false, "print version and exit")
 
 	cmd.AddCommand(newReloadCmd())
+	cmd.AddCommand(newPruneBackupCmd())
 	return cmd
 }
 

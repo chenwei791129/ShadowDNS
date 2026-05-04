@@ -182,9 +182,25 @@ ShadowDNS listens on `:53` (UDP and TCP) by default. Use `--listen` to override.
 
 ### Subcommands
 
-| Subcommand                              | Description                                           |
-|-----------------------------------------|-------------------------------------------------------|
-| `shadowdns reload --named-conf <path>`  | Send SIGHUP to the server identified by the pid-file configured in `named.conf`. Accepts only `--named-conf`; server-startup flags are rejected. |
+| Subcommand                                                                             | Description                                           |
+|----------------------------------------------------------------------------------------|-------------------------------------------------------|
+| `shadowdns reload --named-conf <path>`                                                 | Send SIGHUP to the server identified by the pid-file configured in `named.conf`. Accepts only `--named-conf`; server-startup flags are rejected. |
+| `shadowdns prune-backup --named-conf <path> --config <path> [--apply]`                 | Offline diff of backup zone files against their aliased root zones; reports redundant records (dry-run by default) and rewrites them when `--apply` is supplied. Does not open sockets and does not signal the running server. |
+
+`prune-backup` compares each `(view, backup-zone)` pair declared in
+`named.conf` against its root counterpart from the same view. Non-overridable
+record types (everything except `TXT`/`MX`/`SRV`) are always flagged; for
+overridable types, an entire RRSet is flagged only when it matches the root
+RRSet exactly (ignoring TTL and order). `SOA` and the apex `NS` RRSet are
+always retained so the zone file stays RFC 1035 valid. On `--apply`, each
+rewritten file is atomically replaced and the pre-change copy is kept at
+`<path>.bak`. Example dry-run:
+
+```bash
+shadowdns prune-backup \
+    --named-conf /etc/shadowdns/named.conf \
+    --config /etc/shadowdns/shadowdns.yaml
+```
 
 ### shadowdns.yaml schema
 
