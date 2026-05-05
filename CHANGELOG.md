@@ -13,6 +13,18 @@
 
 * **shadowdns.yaml:** the `aliases` map now accepts two value shapes per root: the existing list-of-strings (legacy form, equivalent to `rewrite_rdata_labels: false`) and a new object form `{members: [...], rewrite_rdata_labels: <bool>}`. Mixing both shapes across different roots is allowed. Object-form entries with unknown fields, missing `members`, or an empty `members` list are rejected at config load.
 
+## [0.16.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.15.0...v0.16.0) (2026-05-05)
+
+
+### Features
+
+* prune backup zones without declared root + summarize discard log ([7fb43eb](https://github.com/chenwei791129/ShadowDNS/commit/7fb43eb27df2672fe6e94785e6df3d7b4bdd0b54))
+
+
+### Bug Fixes
+
+* **smoke:** use unified aliases mapping form ([9313cc9](https://github.com/chenwei791129/ShadowDNS/commit/9313cc95be2adba94f7235bf2174ba9dd9faff33))
+
 ## [0.15.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.14.0...v0.15.0) (2026-05-05)
 
 
