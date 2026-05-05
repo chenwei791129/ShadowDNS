@@ -145,6 +145,92 @@ func TestQuery_TXT(t *testing.T) {
 	}
 }
 
+// TestQuery_Apex_CNAME_TXT_Coexist verifies Cloudflare-style coexistence at
+// the zone apex: when example.com. has both a CNAME and other record types
+// (TXT, A) at the apex, exact-match-first resolution applies — TXT and A
+// queries return their static records, while a CNAME query returns the apex
+// CNAME without following the target.
+//
+// Locks the dns-server spec scenario "Static zone record at the same owner as
+// a CNAME wins over CNAME synthesis (Cloudflare-style coexistence)".
+//
+// Loopback queries hit view-other per the package header comment, so
+// assertions use the view-other apex values (198.51.100.x).
+func TestQuery_Apex_CNAME_TXT_Coexist(t *testing.T) {
+	srv, cancel := newTestServer(t)
+	defer cancel()
+	addr := udpAddr(srv)
+
+	t.Run("TXT_returns_SPF", func(t *testing.T) {
+		resp := queryUDP(t, addr, "example.com.", dns.TypeTXT)
+		assertNoError(t, resp)
+		assertAuthoritative(t, resp)
+		if len(resp.Answer) == 0 {
+			t.Fatal("expected at least one TXT record in answer")
+		}
+		spfFound := false
+	loop:
+		for _, rr := range resp.Answer {
+			txt, ok := rr.(*dns.TXT)
+			if !ok {
+				continue
+			}
+			for _, s := range txt.Txt {
+				if s == "v=spf1 ip4:198.51.100.0/24 -all" {
+					spfFound = true
+					break loop
+				}
+			}
+		}
+		if !spfFound {
+			t.Errorf("expected exact SPF TXT %q at apex; got: %v",
+				"v=spf1 ip4:198.51.100.0/24 -all", resp.Answer)
+		}
+		for _, rr := range resp.Answer {
+			if _, ok := rr.(*dns.CNAME); ok {
+				t.Errorf("apex TXT response must not contain CNAME RR; got: %v", resp.Answer)
+			}
+		}
+	})
+
+	t.Run("CNAME_returns_apex_CNAME", func(t *testing.T) {
+		resp := queryUDP(t, addr, "example.com.", dns.TypeCNAME)
+		assertNoError(t, resp)
+		assertAuthoritative(t, resp)
+		assertAnswerCount(t, resp, 1)
+		assertHasCNAME(t, resp, "example.com.", "www.example.com.")
+	})
+
+	t.Run("A_returns_apex_A_no_CNAME", func(t *testing.T) {
+		resp := queryUDP(t, addr, "example.com.", dns.TypeA)
+		assertNoError(t, resp)
+		assertAuthoritative(t, resp)
+		assertHasA(t, resp, "example.com.", "198.51.100.10")
+		for _, rr := range resp.Answer {
+			if _, ok := rr.(*dns.CNAME); ok {
+				t.Errorf("apex A response must not contain CNAME RR; got: %v", resp.Answer)
+			}
+		}
+	})
+
+	// AAAA at apex coexists with CNAME in this fixture, so exact-match-first
+	// applies the same way as the A case. This locks the fixture's actual
+	// apex-record-set behaviour. The spec table's "no apex AAAA → CNAME
+	// synthesis fires" row would need a different fixture (no apex AAAA) and
+	// is out of scope for this change.
+	t.Run("AAAA_returns_apex_AAAA_no_CNAME", func(t *testing.T) {
+		resp := queryUDP(t, addr, "example.com.", dns.TypeAAAA)
+		assertNoError(t, resp)
+		assertAuthoritative(t, resp)
+		assertHasAAAA(t, resp, "example.com.", "2001:db8:1::10")
+		for _, rr := range resp.Answer {
+			if _, ok := rr.(*dns.CNAME); ok {
+				t.Errorf("apex AAAA response must not contain CNAME RR; got: %v", resp.Answer)
+			}
+		}
+	})
+}
+
 // TestQuery_A_TCP verifies that the same A query delivered over TCP
 // returns the expected record — exercises the TCP listener end-to-end
 // for non-AXFR traffic (spec dns-server Requirement: serve over UDP and TCP).

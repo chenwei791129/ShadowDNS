@@ -13,6 +13,7 @@ $TTL 300
 @         IN AAAA  2001:db8::10
 @         IN MX    10 mx1.example.com.
 @         IN TXT   "v=spf1 ip4:203.0.113.0/24 -all"
+@         IN CNAME www.example.com.
 
 *         IN A     10.99.99.1
 *.sub     IN CNAME target.example.com.
