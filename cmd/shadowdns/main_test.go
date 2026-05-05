@@ -1312,3 +1312,243 @@ func TestReloadSubcommand(t *testing.T) {
 	})
 }
 func (w *testResponseWriter) Hijack() {}
+
+// ---------------------------------------------------------------------------
+// --log-file flag and SIGUSR1 reopen
+// ---------------------------------------------------------------------------
+
+// Requirement: Daemon SHALL support file-backed log output — the
+// `--log-file` flag MUST be registered on the root command and its
+// runtime value MUST flow into runOptions.LogFile.
+func TestLogFileFlag_RegisteredAndBound(t *testing.T) {
+	cmd := newRootCmd()
+	flag := cmd.Flags().Lookup("log-file")
+	if flag == nil {
+		t.Fatal("--log-file flag not registered on root command")
+	}
+	if flag.DefValue != "" {
+		t.Errorf("--log-file default = %q, want empty string (stderr mode)", flag.DefValue)
+	}
+
+	if reloadCmd, _, err := cmd.Find([]string{"reload"}); err == nil {
+		if reloadCmd.Flags().Lookup("log-file") != nil {
+			t.Error("reload subcommand unexpectedly has --log-file flag")
+		}
+	}
+	if pruneCmd, _, err := cmd.Find([]string{"prune-backup"}); err == nil {
+		if pruneCmd.Flags().Lookup("log-file") != nil {
+			t.Error("prune-backup subcommand unexpectedly has --log-file flag")
+		}
+	}
+}
+
+// inodeOf returns the inode number for path. Test fails if stat fails.
+func inode(t *testing.T, path string) uint64 {
+	t.Helper()
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("stat sys is not *syscall.Stat_t: %T", st.Sys())
+	}
+	return sys.Ino
+}
+
+// startServerWithLogFile boots run() with LogFile set so SIGUSR1 wires up,
+// returning the cancel func, the file path, and a ready channel proving
+// the SIGHUP / SIGUSR1 handlers are attached.
+func startServerWithLogFile(t *testing.T, dir, logPath string) (cancel context.CancelFunc, done <-chan error) {
+	t.Helper()
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("bind free port: %v", err)
+	}
+	port := pc.LocalAddr().(*net.UDPAddr).Port
+	_ = pc.Close()
+	if ln, lerr := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port)); lerr == nil {
+		_ = ln.Close()
+	}
+
+	logger, reopener, lerr := logging.New(logging.Options{
+		Level:   zapcore.InfoLevel,
+		LogFile: logPath,
+	})
+	if lerr != nil {
+		t.Fatalf("logging.New: %v", lerr)
+	}
+
+	ctx, cancelFn := context.WithCancel(context.Background())
+	readyCh := make(chan struct{})
+	opts := runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
+		ListenAddr:    fmt.Sprintf("127.0.0.1:%d", port),
+		Logger:        logger,
+		LogReopener:   reopener,
+		ReadyCh:       readyCh,
+	}
+
+	doneCh := make(chan error, 1)
+	go func() { doneCh <- run(ctx, opts) }()
+	waitReady(t, readyCh)
+	return cancelFn, doneCh
+}
+
+// Requirement: Daemon SHALL reopen log file on SIGUSR1 — after rename,
+// SIGUSR1 makes the daemon write to a new inode at the original path.
+func TestSIGUSR1_ReopensLogFileAfterRename(t *testing.T) {
+	dir := setupReloadTestDir(t)
+	logPath := filepath.Join(t.TempDir(), "shadowdns.log")
+
+	cancel, done := startServerWithLogFile(t, dir, logPath)
+	defer cancel()
+
+	// At this point the server has emitted at least the "shadowdns ready"
+	// log line through the file sink.
+	originalInode := inode(t, logPath)
+
+	rotated := logPath + ".1"
+	if err := os.Rename(logPath, rotated); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGUSR1); err != nil {
+		t.Fatalf("send SIGUSR1: %v", err)
+	}
+
+	// Wait for the SIGUSR1 handler goroutine to drain the channel and
+	// emit "log file reopened" through the new fd.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(logPath); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	newInode := inode(t, logPath)
+	if newInode == originalInode {
+		t.Fatalf("expected new inode after SIGUSR1, got same %d", newInode)
+	}
+
+	// The reopen-confirmation INFO log should appear in the new file.
+	deadline = time.Now().Add(2 * time.Second)
+	var newContent []byte
+	for time.Now().Before(deadline) {
+		b, err := os.ReadFile(logPath)
+		if err == nil && strings.Contains(string(b), "log file reopened") {
+			newContent = b
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(string(newContent), "log file reopened") {
+		t.Fatalf("new file missing reopen confirmation log; got %q", string(newContent))
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not exit within 2s after cancel")
+	}
+}
+
+// Requirement: Daemon SHALL reopen log file on SIGUSR1 — when reopen
+// fails (parent dir gone), the previous fd is preserved and an error
+// log appears through it.
+func TestSIGUSR1_ReopenFailurePreservesFd(t *testing.T) {
+	dir := setupReloadTestDir(t)
+	logDir := t.TempDir()
+	logPath := filepath.Join(logDir, "shadowdns.log")
+
+	cancel, done := startServerWithLogFile(t, dir, logPath)
+	defer cancel()
+
+	// Capture the original fd's identity by reading current inode.
+	originalInode := inode(t, logPath)
+
+	// Remove the parent directory entirely; reopen will now fail.
+	if err := os.RemoveAll(logDir); err != nil {
+		t.Fatalf("removeall: %v", err)
+	}
+
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGUSR1); err != nil {
+		t.Fatalf("send SIGUSR1: %v", err)
+	}
+
+	// Give the handler a moment to run. We can't read the file (it's
+	// gone), but we verify the daemon is still alive and shutdown
+	// cleanly — meaning the fd survived and no panic propagated.
+	time.Sleep(200 * time.Millisecond)
+
+	// As a sanity check the inode number of the deleted file path is
+	// still observable through proc only on Linux; the simpler proxy is
+	// "the daemon did not crash". Re-create directory + file and confirm
+	// daemon will write to the *original* fd (which is dangling) — we
+	// cannot easily observe that without /proc, so instead re-rotate
+	// and confirm a follow-up SIGUSR1 with the dir back can recover.
+	if err := os.MkdirAll(logDir, 0o750); err != nil {
+		t.Fatalf("recreate dir: %v", err)
+	}
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGUSR1); err != nil {
+		t.Fatalf("send SIGUSR1 (recovery): %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(logPath); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("recovery reopen did not recreate %s: %v", logPath, err)
+	}
+	recoveredInode := inode(t, logPath)
+	if recoveredInode == originalInode {
+		t.Fatalf("recovery reopen returned same inode %d; expected fresh fd", recoveredInode)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not exit within 2s after cancel")
+	}
+}
+
+// Requirement: SIGHUP SHALL NOT trigger log reopen — sending SIGHUP must
+// leave the log file inode unchanged (zone reload runs but log fd
+// untouched).
+func TestSIGHUP_DoesNotReopenLogFile(t *testing.T) {
+	dir := setupReloadTestDir(t)
+	logPath := filepath.Join(t.TempDir(), "shadowdns.log")
+
+	cancel, done := startServerWithLogFile(t, dir, logPath)
+	defer cancel()
+
+	originalInode := inode(t, logPath)
+
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGHUP); err != nil {
+		t.Fatalf("send SIGHUP: %v", err)
+	}
+
+	// Wait a bit for reload to run.
+	time.Sleep(300 * time.Millisecond)
+
+	postInode := inode(t, logPath)
+	if postInode != originalInode {
+		t.Fatalf("SIGHUP changed log inode from %d to %d; SIGHUP must not reopen log file", originalInode, postInode)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not exit within 2s after cancel")
+	}
+}

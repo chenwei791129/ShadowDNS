@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -196,10 +197,52 @@ func TestEncoderConfigShape(t *testing.T) {
 	}
 }
 
-// Guard: New returns a non-nil *zap.Logger.
+// Guard: New returns a non-nil *zap.Logger and nil ReopenSink when LogFile
+// is empty (stderr mode — no SIGUSR1 reopener needed).
 func TestNewReturnsZapLogger(t *testing.T) {
-	logger := New(Options{Level: zapcore.InfoLevel})
+	logger, sink, err := New(Options{Level: zapcore.InfoLevel})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	if logger == nil {
-		t.Fatal("New returned nil")
+		t.Fatal("New returned nil logger")
+	}
+	if sink != nil {
+		t.Fatalf("New(stderr mode) returned non-nil sink: %v", sink)
+	}
+}
+
+// Requirement: Daemon SHALL support file-backed log output — non-empty
+// LogFile routes encoded log records to that file and away from stderr.
+func TestNewWithLogFile_RoutesToFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/shadowdns.log"
+	logger, sink, err := New(Options{Level: zapcore.InfoLevel, LogFile: path})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if sink == nil {
+		t.Fatal("expected non-nil ReopenSink for non-empty LogFile")
+	}
+	t.Cleanup(func() { _ = sink.Close() })
+
+	logger.Info("file-routed message")
+	_ = logger.Sync()
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	if !strings.Contains(string(b), "file-routed message") {
+		t.Fatalf("log file does not contain message; got %q", string(b))
+	}
+}
+
+// Requirement: Daemon SHALL fail to start with non-zero exit when LogFile
+// cannot be opened — surface the os.OpenFile error to the caller.
+func TestNewWithLogFile_OpenFailureReturnsError(t *testing.T) {
+	_, _, err := New(Options{Level: zapcore.InfoLevel, LogFile: "/nonexistent-dir-for-test/shadowdns.log"})
+	if err == nil {
+		t.Fatal("New with unopenable LogFile: expected error, got nil")
 	}
 }

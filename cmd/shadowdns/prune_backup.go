@@ -59,7 +59,8 @@ No DNS traffic is exchanged and the running server is not signalled.`,
 		// successful run we sync the logger and exit immediately to skip
 		// the runtime's final GC sweep over now-released structures.
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			logger := logging.New(logging.Options{NoColor: noColor, Level: zapcore.InfoLevel})
+			// One-shot subcommand: stderr-only, no file sink, no reopener.
+			logger, _, _ := logging.New(logging.Options{NoColor: noColor, Level: zapcore.InfoLevel})
 			if err := runPruneBackup(cmd.OutOrStdout(), namedConfPath, configPath, applyWrites, logger); err != nil {
 				_ = logger.Sync()
 				return err

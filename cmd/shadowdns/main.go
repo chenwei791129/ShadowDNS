@@ -134,6 +134,10 @@ type runOptions struct {
 	ReloadVerify server.VerifyMode
 	NoColor      bool
 	Logger       *zap.Logger
+	// LogReopener, when non-nil, is the file-backed sink driving zap; the
+	// serve loop installs SIGUSR1 only when this is set so subcommands
+	// running stderr-only do not inherit a signal handler with no sink.
+	LogReopener *logging.ReopenSink
 	// ReadyCh is optional; if non-nil, run() closes it once the SIGHUP handler
 	// is installed. Production callers leave it nil; test callers use it as an
 	// explicit happens-before sync point instead of sleeping.
@@ -199,6 +203,7 @@ func newRootCmd() *cobra.Command {
 		opts            runOptions
 		reloadVerifyStr string
 		showVersion     bool
+		logFile         string
 	)
 
 	cmd := &cobra.Command{
@@ -230,7 +235,19 @@ to change flag values.`,
 			// to a variable), which is why flag > config precedence holds.
 			opts.NoNotifyExplicit = cmd.Flags().Changed("no-notify")
 
-			opts.Logger = logging.New(logging.Options{NoColor: opts.NoColor, Level: zapcore.InfoLevel})
+			logger, reopener, lerr := logging.New(logging.Options{
+				NoColor: opts.NoColor,
+				Level:   zapcore.InfoLevel,
+				LogFile: logFile,
+			})
+			if lerr != nil {
+				// Surface the open error on stderr regardless of sink
+				// configuration so a misconfigured --log-file is visible.
+				fmt.Fprintf(os.Stderr, "shadowdns: cannot open log file %q: %v\n", logFile, lerr)
+				return lerr
+			}
+			opts.Logger = logger
+			opts.LogReopener = reopener
 			defer func() { _ = opts.Logger.Sync() }()
 
 			// SIGINT and SIGTERM both trigger graceful shutdown.
@@ -263,6 +280,10 @@ to change flag values.`,
 	f.StringVar(&reloadVerifyStr, "reload-verify", "hash",
 		"zone file change detection strategy on SIGHUP reload: hash (default, safe for rsync -avc --inplace), size (mtime+size only, no file read), none (always full rebuild)")
 	f.BoolVar(&opts.NoColor, "no-color", false, "disable colored log output")
+	f.StringVar(&logFile, "log-file", "",
+		"write output to this file (O_APPEND|O_CREATE, mode 0640) instead of stderr; "+
+			"send SIGUSR1 to make the daemon reopen the file (used by logrotate postrotate). "+
+			"Empty string keeps stderr (default).")
 	f.BoolVarP(&showVersion, "version", "v", false, "print version and exit")
 
 	cmd.AddCommand(newReloadCmd())
@@ -463,6 +484,48 @@ func run(ctx context.Context, opts runOptions) error {
 	sighupCh := make(chan os.Signal, 1)
 	signal.Notify(sighupCh, syscall.SIGHUP)
 	defer signal.Stop(sighupCh)
+
+	// Listen for SIGUSR1 to reopen the file-backed log sink. Only wire
+	// this when --log-file produced a reopener — stderr-mode runs have
+	// nothing to reopen, and inheriting an unused handler would mask
+	// future repurposing of SIGUSR1.
+	var sigusr1Ch chan os.Signal
+	if opts.LogReopener != nil {
+		sigusr1Ch = make(chan os.Signal, 1)
+		signal.Notify(sigusr1Ch, syscall.SIGUSR1)
+		defer signal.Stop(sigusr1Ch)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-sigusr1Ch:
+					if rerr := opts.LogReopener.Reopen(); rerr != nil {
+						// Either the new path could not be opened
+						// (previous fd preserved) or the swap completed
+						// but the old fd's Close reported an error
+						// (e.g. ENOSPC flush on NFS). In both cases
+						// subsequent writes go through a working sink,
+						// so this error itself lands.
+						logger.Sugar().Errorw("log file reopen reported error",
+							"path", opts.LogReopener.Path(),
+							"err", rerr,
+						)
+					} else {
+						logger.Sugar().Infow("log file reopened",
+							"path", opts.LogReopener.Path(),
+						)
+					}
+					// Drain a second SIGUSR1 that arrived during the
+					// reopen so we do not immediately reopen again.
+					select {
+					case <-sigusr1Ch:
+					default:
+					}
+				}
+			}
+		}()
+	}
 
 	// Signal test callers that the SIGHUP handler is now attached. Closing
 	// this channel here — after signal.Notify but before the dispatch
