@@ -13,6 +13,14 @@
 
 * **shadowdns.yaml:** the `aliases` map now accepts two value shapes per root: the existing list-of-strings (legacy form, equivalent to `rewrite_rdata_labels: false`) and a new object form `{members: [...], rewrite_rdata_labels: <bool>}`. Mixing both shapes across different roots is allowed. Object-form entries with unknown fields, missing `members`, or an empty `members` list are rejected at config load.
 
+## [0.15.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.14.0...v0.15.0) (2026-05-05)
+
+
+### Features
+
+* **logging:** add file-backed sink with SIGUSR1 reopen ([4fb2bd4](https://github.com/chenwei791129/ShadowDNS/commit/4fb2bd45293ff54e2c95ac3d5b063d818c2d8205))
+* **packaging:** install logrotate config and route daemon log to file ([c832798](https://github.com/chenwei791129/ShadowDNS/commit/c832798ec821c9e5c39f3cf3b362f147eed92642))
+
 ## [0.14.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.13.0...v0.14.0) (2026-05-04)
 
 
