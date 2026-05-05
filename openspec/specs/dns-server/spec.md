@@ -1247,7 +1247,7 @@ This behavior SHALL also apply when the initial CNAME is found via wildcard matc
 
 When qtype is explicitly CNAME, the existing exact-match lookup behavior SHALL continue to apply unchanged — no CNAME following is performed.
 
-When both a CNAME record and other record types coexist at the same name (a configuration error per RFC 1034 §3.6.2, but possible in zone files), the CNAME SHALL take precedence for non-CNAME queries: the server SHALL return the CNAME rather than NODATA.
+When both a CNAME record and other record types coexist at the same name (a configuration that violates RFC 1034 §3.6.2 but is permitted by some authoritative providers including Cloudflare, and is possible in zone files), the dns-server SHALL silently accept the zone — no load-time error, rejection, or warning is emitted. At query time, the dns-server SHALL apply exact-match-first resolution: if the zone contains a record matching the queried `(name, qtype)` exactly (with `qtype != CNAME`), the dns-server SHALL return that exact-match record set and SHALL NOT emit the coexisting CNAME or follow its target. CNAME synthesis SHALL trigger only when no exact-match record exists at the queried name for the queried qtype. This applies uniformly at any owner name including the zone apex.
 
 **Exception — ephemeral TXT overlay**: when `qtype == TXT` AND an ephemeral record store is attached AND the store contains at least one live (unexpired) TXT entry at the queried name, the ephemeral TXT overlay defined in the "Listen for DNS queries on UDP and TCP port 53" Requirement SHALL take precedence over this CNAME synthesis behavior for that specific response. The CNAME SHALL NOT be emitted and the CNAME target SHALL NOT be followed. This exception is intentionally scoped to TXT qtype and live ephemeral entries; all other qtypes and the absence of a live ephemeral entry cause the standard CNAME synthesis behavior to apply unchanged.
 
@@ -1311,42 +1311,29 @@ When both a CNAME record and other record types coexist at the same name (a conf
 - **WHEN** a client queries `_acme-challenge.foo.root.com. TXT` AND the zone contains `_acme-challenge.foo.root.com. CNAME acme-dns.external.net.` AND the ephemeral store holds a live TXT entry for `_acme-challenge.foo.root.com.`
 - **THEN** the response answer section contains only the ephemeral TXT RR(s); the CNAME is not emitted and the CNAME target is not followed
 
+#### Scenario: Static zone record at the same owner as a CNAME wins over CNAME synthesis (Cloudflare-style coexistence)
+
+- **WHEN** the zone apex `root.com.` contains `root.com. CNAME target.root.com.` AND `root.com. TXT "v=spf1 -all"` AND `root.com. A 192.0.2.10` AND `target.root.com. A 192.0.2.99` (a Cloudflare-style coexistence configuration that BIND9 would reject at zone load) AND the zone is loaded successfully without error or warning
+- **THEN** a TXT query at `root.com.` returns only the static TXT record `"v=spf1 -all"` (the apex CNAME is not emitted and `target.root.com.` is not followed) AND a CNAME query at `root.com.` returns only the apex CNAME `root.com. CNAME target.root.com.` AND an A query at `root.com.` returns only the static apex A `root.com. A 192.0.2.10` (the apex CNAME is not followed because the apex has its own A record; CNAME flattening is not performed)
+
+##### Example: Cloudflare-style apex coexistence resolution table
+
+| Query type at apex | Records at apex | Expected answer | Notes |
+| ------------------ | --------------- | --------------- | ----- |
+| TXT | CNAME + TXT + A | the static TXT record(s) | exact-match wins over CNAME synthesis |
+| CNAME | CNAME + TXT + A | the apex CNAME record | explicit CNAME query, no following |
+| A | CNAME + TXT + A | the static apex A record | exact-match wins; CNAME not followed |
+| AAAA | CNAME + TXT + A (no AAAA) | apex CNAME + target's AAAA chain | no exact AAAA → CNAME synthesis triggers |
+
 
 <!-- @trace
-source: ephemeral-txt-overrides-cname
-updated: 2026-04-22
+source: apex-cname-txt-coexist
+updated: 2026-05-05
 code:
-  - internal/config/aliases.go
-  - README.md
-  - scripts/test-deb.sh
-  - internal/shadowdnscfg/config.go
-  - testdata/integration/shadowdns.yaml
-  - CHANGELOG.md
-  - docs/ephemeral-api.md
-  - testdata/integration/master/example.com_view-th.fwd
-  - scripts/gen-container-testdata.go
-  - internal/server/build.go
-  - internal/alias/override.go
-  - .release-please-manifest.json
-  - internal/server/handler.go
-  - packaging/shadowdns.yaml.example
-  - scripts/smoke.sh
-  - docs/benchmark.md
-  - testdata/integration/aliases.yaml
   - testdata/integration/master/example.com_view-other.fwd
-  - testdata/integration/README.md
+  - testdata/integration/master/example.com_view-th.fwd
 tests:
-  - internal/server/handler_ephemeral_test.go
-  - test/integration/cname_following_test.go
-  - internal/shadowdnscfg/config_test.go
-  - internal/alias/override_test.go
-  - test/integration/helpers_test.go
-  - test/integration/axfr_test.go
-  - test/integration/listenon_test.go
-  - internal/config/aliases_test.go
-  - test/integration/ephemeral_overrides_cname_test.go
-  - test/integration/reload_diff_test.go
-  - cmd/shadowdns/main_ephemeral_test.go
+  - test/integration/query_test.go
 -->
 
 ---
