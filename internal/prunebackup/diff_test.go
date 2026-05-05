@@ -187,6 +187,41 @@ func TestClassify_SpecTable(t *testing.T) {
 	}
 }
 
+// TestClassifyWithoutRoot_RootLessMode pins the root-less fast path: when
+// no root zone is available to compare against, only types whose deletion
+// decision cannot depend on root content (SOA, apex NS, and the overridable
+// types TXT/MX/SRV) are retained. CNAME/A/AAAA/PTR/sub-delegation NS still
+// resolve to delete because their decision is type-only ("not in
+// overridable set → never serve from a backup").
+func TestClassifyWithoutRoot_RootLessMode(t *testing.T) {
+	const origin = "backup.example."
+	cases := []struct {
+		name  string
+		owner string
+		rtype uint16
+		want  decision
+	}{
+		{"CNAME is non-overridable so deletes", "host.backup.example.", dns.TypeCNAME, decisionDelete},
+		{"A is non-overridable so deletes", "www.backup.example.", dns.TypeA, decisionDelete},
+		{"AAAA is non-overridable so deletes", "www.backup.example.", dns.TypeAAAA, decisionDelete},
+		{"PTR is non-overridable so deletes", "1.0.0.10.in-addr.backup.example.", dns.TypePTR, decisionDelete},
+		{"TXT is overridable so retains (cannot compare without root)", "host.backup.example.", dns.TypeTXT, decisionRetain},
+		{"MX is overridable so retains (cannot compare without root)", "mail.backup.example.", dns.TypeMX, decisionRetain},
+		{"SRV is overridable so retains (cannot compare without root)", "_sip._tcp.backup.example.", dns.TypeSRV, decisionRetain},
+		{"SOA always retains", "backup.example.", dns.TypeSOA, decisionRetain},
+		{"apex NS retains", "backup.example.", dns.TypeNS, decisionRetain},
+		{"sub-delegation NS deletes", "child.backup.example.", dns.TypeNS, decisionDelete},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := classifyWithoutRoot(c.owner, c.rtype, origin)
+			if got != c.want {
+				t.Errorf("classifyWithoutRoot got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestBuildRRSetIndex_CanonicalizesOwner(t *testing.T) {
 	rrs := []dns.RR{
 		mustRR(t, "WWW.Backup.Example. 300 IN TXT \"token\""),

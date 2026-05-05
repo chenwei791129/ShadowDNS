@@ -53,10 +53,12 @@ const (
 	decisionDelete
 )
 
-// classify applies the prune rules to one (owner, rtype) RRSet. owner and
-// origin MUST already be lookup-folded (lowercased FQDN with trailing dot
-// via dnsutil.LookupKey); callers are expected to normalise before invoking.
-func classify(backupRRSet, rootRRSet []dns.RR, owner string, rtype uint16, origin string) decision {
+// classifyWithoutRoot is the type-only prune decision. SOA and apex NS
+// retain because they are RFC 1035 mandated zone-file infrastructure;
+// overridable types (TXT/MX/SRV) retain because byte-equality against
+// root cannot be evaluated without a root zone. Everything else deletes.
+// owner and origin MUST be lookup-folded.
+func classifyWithoutRoot(owner string, rtype uint16, origin string) decision {
 	if rtype == dns.TypeSOA {
 		return decisionRetain
 	}
@@ -66,7 +68,20 @@ func classify(backupRRSet, rootRRSet []dns.RR, owner string, rtype uint16, origi
 	if !overridableTypes[rtype] {
 		return decisionDelete
 	}
-	if rrsetEqual(backupRRSet, rootRRSet) {
+	return decisionRetain
+}
+
+// classify applies the prune rules to one (owner, rtype) RRSet. owner and
+// origin MUST already be lookup-folded (lowercased FQDN with trailing dot
+// via dnsutil.LookupKey); callers are expected to normalise before invoking.
+func classify(backupRRSet, rootRRSet []dns.RR, owner string, rtype uint16, origin string) decision {
+	if d := classifyWithoutRoot(owner, rtype, origin); d == decisionDelete {
+		return decisionDelete
+	}
+	// d == decisionRetain. For overridable types the byte-equality check
+	// against root may flip retain to delete. SOA and apex NS are not
+	// overridable, so they fall straight through to retain.
+	if overridableTypes[rtype] && rrsetEqual(backupRRSet, rootRRSet) {
 		return decisionDelete
 	}
 	return decisionRetain

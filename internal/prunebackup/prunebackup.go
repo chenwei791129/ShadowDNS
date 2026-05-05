@@ -42,6 +42,15 @@ type Plan struct {
 // baseDir is the named.conf `directory` option used for resolving relative
 // paths at the top-level mainPath entry only; nested $INCLUDE paths resolve
 // against the directory of the file containing them, matching the runtime.
+//
+// rootFile may be empty to signal root-less mode: PlanPair skips loading any
+// root zone and drives every (owner, rtype) RRSet through classifyWithoutRoot.
+// In root-less mode, non-overridable types still plan for deletion, but
+// overridable types (TXT/MX/SRV) are unconditionally retained because
+// byte-equality against root cannot be evaluated. Use this when the caller
+// has no root zone for this view (a topology-driven choice, not a config
+// error). The caller is responsible for emitting the user-facing INFO log
+// announcing root-less mode; PlanPair itself stays log-quiet for root-less.
 func PlanPair(
 	backupFile, rootFile string,
 	viewName, backupOrigin, rootOrigin, baseDir string,
@@ -51,22 +60,29 @@ func PlanPair(
 		logger = zap.NewNop()
 	}
 	canonBackup := dnsutil.LookupKey(backupOrigin)
-	canonRoot := dnsutil.LookupKey(rootOrigin)
 
 	backupFiles, backupMerged, err := loadZoneTree(backupFile, canonBackup, baseDir, 0)
 	if err != nil {
 		return nil, fmt.Errorf("loading backup zone %q: %w", backupFile, err)
 	}
-	_, rootMerged, err := loadZoneTree(rootFile, canonRoot, baseDir, 0)
-	if err != nil {
-		return nil, fmt.Errorf("loading root zone %q: %w", rootFile, err)
-	}
 
-	rootRRs := make([]dns.RR, len(rootMerged))
-	for i, s := range rootMerged {
-		rootRRs[i] = s.RR
+	rootless := rootFile == ""
+	var (
+		canonRoot string
+		rootIdx   rrsetIndex
+	)
+	if !rootless {
+		canonRoot = dnsutil.LookupKey(rootOrigin)
+		_, rootMerged, err := loadZoneTree(rootFile, canonRoot, baseDir, 0)
+		if err != nil {
+			return nil, fmt.Errorf("loading root zone %q: %w", rootFile, err)
+		}
+		rootRRs := make([]dns.RR, len(rootMerged))
+		for i, s := range rootMerged {
+			rootRRs[i] = s.RR
+		}
+		rootIdx = buildRRSetIndex(rootRRs)
 	}
-	rootIdx := buildRRSetIndex(rootRRs)
 
 	type groupKey struct {
 		Owner string
@@ -100,14 +116,20 @@ func PlanPair(
 
 	for _, k := range keys {
 		srrs := groups[k]
-		rrsetBackup := make([]dns.RR, len(srrs))
-		for i, s := range srrs {
-			rrsetBackup[i] = s.RR
-		}
-		rewrittenOwner := alias.RewriteQName(k.Owner, canonBackup, canonRoot)
-		rootRRSet := rootIdx[rrsetKey{Owner: rewrittenOwner, Rtype: k.Rtype}]
 
-		if classify(rrsetBackup, rootRRSet, k.Owner, k.Rtype, canonBackup) != decisionDelete {
+		var d decision
+		if rootless {
+			d = classifyWithoutRoot(k.Owner, k.Rtype, canonBackup)
+		} else {
+			rrsetBackup := make([]dns.RR, len(srrs))
+			for i, s := range srrs {
+				rrsetBackup[i] = s.RR
+			}
+			rewrittenOwner := alias.RewriteQName(k.Owner, canonBackup, canonRoot)
+			rootRRSet := rootIdx[rrsetKey{Owner: rewrittenOwner, Rtype: k.Rtype}]
+			d = classify(rrsetBackup, rootRRSet, k.Owner, k.Rtype, canonBackup)
+		}
+		if d != decisionDelete {
 			continue
 		}
 		for _, s := range srrs {

@@ -117,9 +117,13 @@ mail IN MX 10 mail.root.com.
 	}
 
 	// NS and SOA are dropped (not in allowed set).
-	// Warnings must be logged for each discarded record.
-	if obs.FilterLevelExact(zapcore.WarnLevel).Len() == 0 {
-		t.Error("expected warnings for discarded records, got none")
+	// Per-record entries are now DEBUG-only; INFO is reserved for the
+	// per-zone summary and WARN must not appear at all.
+	if n := obs.FilterLevelExact(zapcore.WarnLevel).Len(); n != 0 {
+		t.Errorf("expected no WARN entries for discarded records, got %d", n)
+	}
+	if obs.FilterMessage(msgDiscardDisallowed).FilterLevelExact(zapcore.DebugLevel).Len() == 0 {
+		t.Error("expected DEBUG entries for discarded records, got none")
 	}
 }
 
@@ -160,7 +164,7 @@ func TestFilterBackupRecords_ApexNSDropIsDebug(t *testing.T) {
 	}
 }
 
-func TestFilterBackupRecords_SubDelegationNSStaysWarn(t *testing.T) {
+func TestFilterBackupRecords_SubDelegationNSIsDebug(t *testing.T) {
 	obs := runBackupClassify(t, `$TTL 3600
 @ IN SOA ns1.backup.com. admin.backup.com. ( 1 300 120 86400 3600 )
 child IN NS ns1.child.backup.com.
@@ -172,38 +176,43 @@ child IN NS ns1.child.backup.com.
 	if len(nsEntries) != 1 {
 		t.Fatalf("sub-delegation NS drop log entries: got %d, want 1", len(nsEntries))
 	}
-	if nsEntries[0].Level != zapcore.WarnLevel {
-		t.Errorf("sub-delegation NS drop log level: got %v, want WarnLevel", nsEntries[0].Level)
+	if nsEntries[0].Level != zapcore.DebugLevel {
+		t.Errorf("sub-delegation NS drop log level: got %v, want DebugLevel", nsEntries[0].Level)
 	}
 }
 
-func TestFilterBackupRecords_NonOverridableStaysWarn(t *testing.T) {
+func TestFilterBackupRecords_NonOverridableIsDebug(t *testing.T) {
 	obs := runBackupClassify(t, `$TTL 3600
 @ IN SOA ns1.backup.com. admin.backup.com. ( 1 300 120 86400 3600 )
 @ IN A 9.9.9.9
 www IN CNAME root.com.
 `)
 
+	if n := obs.FilterLevelExact(zapcore.WarnLevel).Len(); n != 0 {
+		t.Errorf("expected zero WARN entries (per-RR drops are DEBUG), got %d", n)
+	}
 	aEntries := obs.FilterMessage(msgDiscardDisallowed).FilterField(zap.String("type", "A")).All()
 	if len(aEntries) != 1 {
 		t.Fatalf("A drop log entries: got %d, want 1", len(aEntries))
 	}
-	if aEntries[0].Level != zapcore.WarnLevel {
-		t.Errorf("A drop log level: got %v, want WarnLevel", aEntries[0].Level)
+	if aEntries[0].Level != zapcore.DebugLevel {
+		t.Errorf("A drop log level: got %v, want DebugLevel", aEntries[0].Level)
 	}
 	cEntries := obs.FilterMessage(msgDiscardDisallowed).FilterField(zap.String("type", "CNAME")).All()
 	if len(cEntries) != 1 {
 		t.Fatalf("CNAME drop log entries: got %d, want 1", len(cEntries))
 	}
-	if cEntries[0].Level != zapcore.WarnLevel {
-		t.Errorf("CNAME drop log level: got %v, want WarnLevel", cEntries[0].Level)
+	if cEntries[0].Level != zapcore.DebugLevel {
+		t.Errorf("CNAME drop log level: got %v, want DebugLevel", cEntries[0].Level)
 	}
 }
 
-func TestFilterBackupRecords_NoSummaryWhenOnlyRFCMandatedDrops(t *testing.T) {
-	// A backup zone whose only drops are SOA + apex NS (both RFC 1035 mandated
-	// in zone files; both expected to be discarded at runtime) should NOT
-	// produce a summary entry — the summary is reserved for actionable signal.
+func TestFilterBackupRecords_SummaryEmittedForOnlyRFCMandatedDrops(t *testing.T) {
+	// Spec: the per-zone INFO summary fires whenever the zone produced at
+	// least one discarded record. Even a zone whose only drops are SOA +
+	// apex NS (RFC 1035 mandated to be in the zone file but always discarded
+	// from a backup-override) emits exactly one INFO summary. This differs
+	// from the previous spec, where this case suppressed the summary.
 	obs := runBackupClassify(t, `$TTL 3600
 @ IN SOA ns1.backup.com. admin.backup.com. ( 1 300 120 86400 3600 )
 @ IN NS ns1.backup.com.
@@ -211,12 +220,63 @@ func TestFilterBackupRecords_NoSummaryWhenOnlyRFCMandatedDrops(t *testing.T) {
 @ IN TXT "v=spf1 ~all"
 `)
 
-	if n := obs.FilterMessage("backup-override zone: drop summary").Len(); n != 0 {
-		t.Errorf("summary entries with only SOA/apex-NS drops: got %d, want 0", n)
+	summaries := obs.FilterMessage("backup-override zone: drop summary").All()
+	if len(summaries) != 1 {
+		t.Fatalf("summary entries with SOA + apex-NS drops: got %d, want exactly 1", len(summaries))
+	}
+	if summaries[0].Level != zapcore.InfoLevel {
+		t.Errorf("summary level: got %v, want InfoLevel", summaries[0].Level)
+	}
+	dropped, ok := summaries[0].ContextMap()["dropped"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary dropped field missing or wrong type: %#v", summaries[0].ContextMap())
+	}
+	if got := dropped["SOA"]; got != int64(1) {
+		t.Errorf("dropped[SOA]: got %v, want 1", got)
+	}
+	if got := dropped["apex_NS"]; got != int64(2) {
+		t.Errorf("dropped[apex_NS]: got %v, want 2", got)
 	}
 }
 
-func TestFilterBackupRecords_EmitsPerZoneInfoSummary(t *testing.T) {
+func TestFilterBackupRecords_NoSummaryWhenZeroDrops(t *testing.T) {
+	// Spec: when zero records were discarded, the per-zone INFO summary is
+	// omitted. A backup zone containing only TXT/MX/SRV (no apex SOA, no
+	// apex NS, no other types) should remain silent.
+	//
+	// Constructed synthetically (not via ParseFile) because every real
+	// backup zone file must have an SOA per RFC 1035, which would itself
+	// be a drop and prevent the len(dropped) == 0 path from firing. The
+	// zero-drop branch is a logical contract — synthetic Zone is the
+	// only way to exercise it.
+	z := &Zone{Origin: "backup.com."}
+	for _, line := range []string{
+		`host.backup.com. 3600 IN TXT "ok"`,
+		`mail.backup.com. 3600 IN MX 10 mx.backup.com.`,
+		`_sip._tcp.backup.com. 3600 IN SRV 0 5 5060 sip.backup.com.`,
+	} {
+		rr, err := dns.NewRR(line)
+		if err != nil {
+			t.Fatalf("dns.NewRR(%q): %v", line, err)
+		}
+		z.AddRR(rr)
+	}
+
+	logger, obs := newObserverLogger()
+	Classify(z, config.AliasMap{"backup.com.": "root.com."}, logger)
+
+	if n := obs.FilterMessage("backup-override zone: drop summary").Len(); n != 0 {
+		t.Errorf("summary entries with zero drops: got %d, want 0", n)
+	}
+	if n := obs.FilterMessage(msgDiscardDisallowed).Len(); n != 0 {
+		t.Errorf("per-RR drop entries with zero drops: got %d, want 0", n)
+	}
+}
+
+func TestFilterBackupRecords_EmitsHistogramSummary(t *testing.T) {
+	// Spec scenario "Per-zone INFO summary is emitted whenever any drop
+	// occurred": 1 SOA, 4 apex NS, 17 A, 3 sub-delegation NS produces the
+	// histogram {A: 17, NS: 3, SOA: 1, apex_NS: 4} (alphabetic key order).
 	var buf strings.Builder
 	buf.WriteString("$TTL 3600\n")
 	buf.WriteString("@ IN SOA ns1.backup.com. admin.backup.com. ( 1 300 120 86400 3600 )\n")
@@ -245,14 +305,57 @@ func TestFilterBackupRecords_EmitsPerZoneInfoSummary(t *testing.T) {
 	if got, want := fields["zone"], "backup.com."; got != want {
 		t.Errorf("summary zone field: got %v, want %v", got, want)
 	}
-	if got, want := fields["soa_dropped"], int64(1); got != want {
-		t.Errorf("summary soa_dropped: got %v, want %v", got, want)
+
+	dropped, ok := fields["dropped"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary dropped field: got %#v, want map[string]any", fields["dropped"])
 	}
-	if got, want := fields["apex_ns_dropped"], int64(4); got != want {
-		t.Errorf("summary apex_ns_dropped: got %v, want %v", got, want)
+	wantHistogram := map[string]int64{
+		"A":       17,
+		"NS":      3,
+		"SOA":     1,
+		"apex_NS": 4,
 	}
-	if got, want := fields["other_dropped"], int64(20); got != want {
-		t.Errorf("summary other_dropped: got %v, want %v", got, want)
+	for k, want := range wantHistogram {
+		if got, ok := dropped[k].(int64); !ok || got != want {
+			t.Errorf("dropped[%q]: got %v, want %v", k, dropped[k], want)
+		}
+	}
+	// No legacy fields.
+	for _, legacy := range []string{"soa_dropped", "apex_ns_dropped", "other_dropped"} {
+		if _, present := fields[legacy]; present {
+			t.Errorf("legacy field %q must not appear in new summary", legacy)
+		}
+	}
+}
+
+func TestFilterBackupRecords_HistogramSerializationAlphabetic(t *testing.T) {
+	// The summary's `dropped` field must serialize with keys in deterministic
+	// alphabetic ASCII order so log-grep is stable. ASCII alphabetic order
+	// for the canonical case ('A'<'N'<'S'<'a') is: A, NS, SOA, apex_NS.
+	h := dropHistogram{"NS": 3, "A": 17, "SOA": 1, "apex_NS": 4}
+
+	enc := zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
+	bufOut, err := enc.EncodeEntry(
+		zapcore.Entry{Level: zapcore.InfoLevel, Message: "test"},
+		[]zap.Field{zap.Object("dropped", h)},
+	)
+	if err != nil {
+		t.Fatalf("EncodeEntry: %v", err)
+	}
+	out := bufOut.String()
+
+	aIdx := strings.Index(out, `"A":`)
+	nsIdx := strings.Index(out, `"NS":`)
+	soaIdx := strings.Index(out, `"SOA":`)
+	apexIdx := strings.Index(out, `"apex_NS":`)
+	if aIdx < 0 || nsIdx < 0 || soaIdx < 0 || apexIdx < 0 {
+		t.Fatalf("missing histogram keys in serialized form: A=%d NS=%d SOA=%d apex_NS=%d full=%s",
+			aIdx, nsIdx, soaIdx, apexIdx, out)
+	}
+	if aIdx >= nsIdx || nsIdx >= soaIdx || soaIdx >= apexIdx {
+		t.Errorf("histogram keys not in alphabetic order: A=%d NS=%d SOA=%d apex_NS=%d full=%s",
+			aIdx, nsIdx, soaIdx, apexIdx, out)
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestPruneBackupCmd_HelpListsFlags(t *testing.T) {
@@ -613,6 +615,105 @@ view "view-a" {
 	gammaAfter, _ := os.ReadFile(gammaBackup)
 	if string(gammaAfter) != gammaBody {
 		t.Errorf("gamma file mutated after beta parse failure:\nwant: %q\ngot:  %q", gammaBody, gammaAfter)
+	}
+}
+
+// TestRunPruneBackup_RootLessLogIsSelfExplanatory pins the cmd-level INFO
+// emitted when a (view, backup) pair enters root-less mode. The message
+// must (a) name the (view, backup, root) triple and (b) explicitly state
+// that TXT/MX/SRV are retained without root comparison — the spec
+// `prune-backup-cli/spec.md` requires the entry to communicate "the fact
+// that overridable-type records are retained without root comparison" so
+// operators reading logs do not misinterpret root-less mode as either
+// "compare against root" or "delete everything".
+func TestRunPruneBackup_RootLessLogIsSelfExplanatory(t *testing.T) {
+	dir := t.TempDir()
+
+	// named.conf declares the backup zone but NOT its aliased root —
+	// this is exactly the topology that triggers root-less mode.
+	namedConf := filepath.Join(dir, "named.conf")
+	namedBody := `options {
+    directory "` + dir + `";
+};
+
+view "view-th" {
+    match-clients { any; };
+    zone "backup.example" {
+        type master;
+        file "` + dir + `/backup.fwd";
+    };
+};
+`
+	if err := os.WriteFile(namedConf, []byte(namedBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(dir, "shadowdns.yaml")
+	cfgBody := `aliases:
+  example.com:
+    members:
+      - backup.example
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	backupBody := `$TTL 300
+$ORIGIN backup.example.
+@ IN SOA ns1.backup.example. hostmaster.backup.example. 1 300 120 604800 300
+@ IN NS  ns1.backup.example.
+www IN A 192.0.2.10
+mail IN MX 10 shared.example.net.
+`
+	if err := os.WriteFile(filepath.Join(dir, "backup.fwd"), []byte(backupBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	core, obs := observer.New(zapcore.InfoLevel)
+	logger := zap.New(core)
+
+	var out bytes.Buffer
+	if err := runPruneBackup(&out, namedConf, cfgPath, false, logger); err != nil {
+		t.Fatalf("runPruneBackup: %v", err)
+	}
+
+	rootless := obs.Filter(func(e observer.LoggedEntry) bool {
+		return strings.Contains(e.Message, "root-less mode")
+	}).All()
+	if len(rootless) != 1 {
+		t.Fatalf("root-less INFO entries: got %d, want 1; all entries: %v", len(rootless), obs.All())
+	}
+	entry := rootless[0]
+
+	if entry.Level != zapcore.InfoLevel {
+		t.Errorf("level: got %v, want InfoLevel", entry.Level)
+	}
+	for _, want := range []string{"TXT", "MX", "SRV", "retained", "root"} {
+		if !strings.Contains(entry.Message, want) {
+			t.Errorf("message missing %q so operators may misinterpret root-less semantics: %q",
+				want, entry.Message)
+		}
+	}
+
+	fields := entry.ContextMap()
+	if got, want := fields["view"], "view-th"; got != want {
+		t.Errorf("view field: got %v, want %v", got, want)
+	}
+	if got, want := fields["backup"], "backup.example."; got != want {
+		t.Errorf("backup field: got %v, want %v", got, want)
+	}
+	if got, want := fields["root"], "example.com."; got != want {
+		t.Errorf("root field: got %v, want %v", got, want)
+	}
+
+	// The dry-run output must contain the A record deletion (root-less
+	// still plans non-overridable deletions).
+	if !strings.Contains(out.String(), " A ") {
+		t.Errorf("dry-run output missing A deletion in root-less mode: %q", out.String())
+	}
+	// MX must NOT be in the deletion output (overridable, retained).
+	if strings.Contains(out.String(), " MX ") {
+		t.Errorf("dry-run output unexpectedly contains MX deletion in root-less mode: %q", out.String())
 	}
 }
 

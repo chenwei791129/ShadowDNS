@@ -141,11 +141,22 @@ func runPruneBackup(out io.Writer, namedConfPath, configPath string, applyWrites
 			}
 			rootFile, hasRoot := byOrigin[root]
 			if !hasRoot {
-				logger.Sugar().Warnw("skipping backup zone: root zone not declared in same view",
-					"view", v.Name,
-					"backup", backup,
-					"root", root,
+				// Root-less mode: this view does not serve root, so PlanPair
+				// is invoked with empty rootFile. Non-overridable types
+				// still delete; overridable types retain because
+				// byte-equality against root cannot be evaluated.
+				logger.Info("backup zone: root not declared in named.conf, running in root-less mode (TXT/MX/SRV retained without root comparison, other types planned for deletion)",
+					zap.String("view", v.Name),
+					zap.String("backup", backup),
+					zap.String("root", root),
 				)
+				pairs = append(pairs, pair{
+					view:       v.Name,
+					backupOrig: backup,
+					rootOrig:   root,
+					backupFile: backupFile,
+					rootFile:   "",
+				})
 				continue
 			}
 			pairs = append(pairs, pair{
