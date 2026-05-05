@@ -25,6 +25,16 @@ contents:
   - src: ./packaging/shadowdns.service
     dst: /lib/systemd/system/shadowdns.service
 
+  # logrotate configuration: daily rotation of /var/log/shadowdns/*.log,
+  # postrotate sends SIGUSR1 so the running daemon reopens its log fd
+  # onto the freshly created file (see internal/logging/reopen.go).
+  - src: ./packaging/logrotate.shadowdns
+    dst: /etc/logrotate.d/shadowdns
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
   # Example configuration files
   - src: ./packaging/named.conf.example
     dst: /etc/shadowdns/named.conf.example

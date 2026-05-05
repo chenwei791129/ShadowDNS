@@ -1,0 +1,24 @@
+/var/log/shadowdns/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 shadowdns shadowdns
+    sharedscripts
+    postrotate
+        # Ask systemd for the unit's MainPID. The pid-file path in
+        # named.conf is operator-controlled (e.g. /var/run/named/pid) so
+        # packaging cannot assume a fixed location, and pkill on a
+        # process name would also match any operator-spawned binary.
+        # systemctl returns "0" when the unit is inactive and a non-zero
+        # status when systemd is unavailable (e.g. container without an
+        # init); both cases are absorbed by the || true and the [ "$pid" != "0" ]
+        # guard, so rotation always exits 0.
+        pid=$(systemctl show --property MainPID --value shadowdns.service 2>/dev/null) || true
+        if [ -n "$pid" ] && [ "$pid" != "0" ]; then
+            kill -USR1 "$pid" 2>/dev/null || true
+        fi
+    endscript
+}

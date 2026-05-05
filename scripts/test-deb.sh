@@ -86,6 +86,50 @@ echo "  [OK] /usr/bin/shadowdns exists and is executable"
 $CTR exec "$CONTAINER_NAME" test -f /lib/systemd/system/shadowdns.service
 echo "  [OK] /lib/systemd/system/shadowdns.service exists"
 
+# Unit ExecStart MUST carry --log-file so a fresh install writes to file
+# without operator override.
+if $CTR exec "$CONTAINER_NAME" grep -q -- '--log-file /var/log/shadowdns/shadowdns.log' /lib/systemd/system/shadowdns.service; then
+    echo "  [OK] shadowdns.service ExecStart includes --log-file"
+else
+    echo "  [FAIL] shadowdns.service ExecStart missing --log-file"
+    exit 1
+fi
+
+# logrotate config installed and dpkg-owned.
+$CTR exec "$CONTAINER_NAME" test -f /etc/logrotate.d/shadowdns
+echo "  [OK] /etc/logrotate.d/shadowdns exists"
+$CTR exec "$CONTAINER_NAME" sh -c 'dpkg -L shadowdns | grep -qx /etc/logrotate.d/shadowdns'
+echo "  [OK] /etc/logrotate.d/shadowdns owned by dpkg"
+LOGROTATE_MODE=$($CTR exec "$CONTAINER_NAME" stat -c '%a %U:%G' /etc/logrotate.d/shadowdns)
+if [ "$LOGROTATE_MODE" = "644 root:root" ]; then
+    echo "  [OK] /etc/logrotate.d/shadowdns is 0644 root:root"
+else
+    echo "  [FAIL] /etc/logrotate.d/shadowdns is '$LOGROTATE_MODE', expected '644 root:root'"
+    exit 1
+fi
+for kw in 'daily' 'rotate 14' 'compress' 'delaycompress' 'missingok' 'notifempty' \
+          'create 0640 shadowdns shadowdns' 'postrotate' \
+          'systemctl show --property MainPID --value shadowdns.service' \
+          'kill -USR1' 'endscript'; do
+    if ! $CTR exec "$CONTAINER_NAME" grep -q "$kw" /etc/logrotate.d/shadowdns; then
+        echo "  [FAIL] /etc/logrotate.d/shadowdns missing '$kw'"
+        exit 1
+    fi
+done
+echo "  [OK] /etc/logrotate.d/shadowdns contains required directives"
+
+# postrotate MUST tolerate missing pid file (daemon not running here).
+# logrotate is not in the default Ubuntu image; install it (apt update is
+# also done later for dnsutils, doing it here lets us verify postrotate
+# behaviour during the file-layout phase).
+$CTR exec "$CONTAINER_NAME" apt-get update -qq
+$CTR exec "$CONTAINER_NAME" apt-get install -y -qq logrotate
+if ! $CTR exec "$CONTAINER_NAME" logrotate -f /etc/logrotate.d/shadowdns; then
+    echo "  [FAIL] logrotate -f returned non-zero with no daemon running"
+    exit 1
+fi
+echo "  [OK] logrotate -f succeeds without running daemon (postrotate tolerates missing pid file)"
+
 $CTR exec "$CONTAINER_NAME" test -f /etc/shadowdns/named.conf.example
 echo "  [OK] /etc/shadowdns/named.conf.example exists"
 
