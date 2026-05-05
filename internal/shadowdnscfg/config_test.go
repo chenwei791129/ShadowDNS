@@ -26,7 +26,8 @@ func TestLoad_ValidConfigBothSections(t *testing.T) {
 	path := writeConfig(t, `
 aliases:
   root.com:
-    - backup.com
+    members:
+      - backup.com
 ephemeral_api:
   listen: "127.0.0.1:8053"
   allow:
@@ -60,7 +61,9 @@ ephemeral_api:
 func TestLoad_AliasesOnly(t *testing.T) {
 	path := writeConfig(t, `
 aliases:
-  root.com: ["backup.com"]
+  root.com:
+    members:
+      - backup.com
 `)
 	cfg, err := Load(path, nil)
 	if err != nil {
@@ -78,8 +81,9 @@ func TestLoad_AliasesOneToMany(t *testing.T) {
 	path := writeConfig(t, `
 aliases:
   root.com:
-    - backup.com
-    - mirror.com
+    members:
+      - backup.com
+      - mirror.com
 `)
 	cfg, err := Load(path, nil)
 	if err != nil {
@@ -102,8 +106,9 @@ func TestLoad_AliasesDuplicateBackupSameRootAccepted(t *testing.T) {
 	path := writeConfig(t, `
 aliases:
   root.com:
-    - backup.com
-    - backup.com
+    members:
+      - backup.com
+      - backup.com
 `)
 	cfg, err := Load(path, nil)
 	if err != nil {
@@ -117,17 +122,19 @@ aliases:
 	}
 }
 
-func TestLoad_AliasesEmptyListAccepted(t *testing.T) {
+func TestLoad_AliasesSequenceFormRejected(t *testing.T) {
+	// Error message must name `members` so operators know exactly how to fix the YAML.
 	path := writeConfig(t, `
 aliases:
-  root.com: []
+  root.com:
+    - backup.com
 `)
-	cfg, err := Load(path, nil)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+	_, err := Load(path, nil)
+	if err == nil {
+		t.Fatal("expected error for sequence form aliases value")
 	}
-	if len(cfg.Aliases) != 0 {
-		t.Errorf("Aliases len = %d, want 0", len(cfg.Aliases))
+	if !strings.Contains(err.Error(), "members") {
+		t.Errorf("error %q should name the required members field", err.Error())
 	}
 }
 
@@ -139,6 +146,9 @@ aliases:
 	_, err := Load(path, nil)
 	if err == nil {
 		t.Fatal("expected error for legacy backup: root format (bare string instead of list)")
+	}
+	if !strings.Contains(err.Error(), "members") {
+		t.Errorf("error %q should name the required members field", err.Error())
 	}
 }
 
@@ -181,7 +191,9 @@ ephemeral_api:
 func TestLoad_UnknownTopLevelKeyFails(t *testing.T) {
 	path := writeConfig(t, `
 aliases:
-  root.com: ["backup.com"]
+  root.com:
+    members:
+      - backup.com
 unknown_section:
   foo: bar
 `)
@@ -223,8 +235,12 @@ func TestLoad_MissingFileFails(t *testing.T) {
 func TestLoad_AliasesDuplicateBackupFails(t *testing.T) {
 	path := writeConfig(t, `
 aliases:
-  root1.com: ["backup.com"]
-  root2.com: ["BACKUP.com"]
+  root1.com:
+    members:
+      - backup.com
+  root2.com:
+    members:
+      - BACKUP.com
 `)
 	_, err := Load(path, nil)
 	if err == nil {
@@ -238,7 +254,9 @@ aliases:
 func TestLoad_AliasesSelfAliasFails(t *testing.T) {
 	path := writeConfig(t, `
 aliases:
-  example.com: ["example.com"]
+  example.com:
+    members:
+      - example.com
 `)
 	_, err := Load(path, nil)
 	if err == nil {
@@ -435,11 +453,12 @@ aliases:
 	}
 }
 
-func TestLoad_AliasesObjectAndListFormsCoexist(t *testing.T) {
+func TestLoad_AliasesMultipleRootsWithMappingForm(t *testing.T) {
 	path := writeConfig(t, `
 aliases:
   root-a.net:
-    - alias-a.net
+    members:
+      - alias-a.net
   root-b.net:
     members:
       - alias-b.net
@@ -449,11 +468,17 @@ aliases:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	if cfg.Aliases["alias-a.net."] != "root-a.net." {
+		t.Errorf("alias-a.net. -> %q, want root-a.net.", cfg.Aliases["alias-a.net."])
+	}
+	if cfg.Aliases["alias-b.net."] != "root-b.net." {
+		t.Errorf("alias-b.net. -> %q, want root-b.net.", cfg.Aliases["alias-b.net."])
+	}
 	if cfg.AliasFlags["alias-a.net."] {
-		t.Errorf("AliasFlags[alias-a.net.] = true, want false (list form)")
+		t.Errorf("AliasFlags[alias-a.net.] = true, want false (flag omitted)")
 	}
 	if !cfg.AliasFlags["alias-b.net."] {
-		t.Errorf("AliasFlags[alias-b.net.] = false, want true (object form)")
+		t.Errorf("AliasFlags[alias-b.net.] = false, want true (flag explicit)")
 	}
 }
 
@@ -500,6 +525,9 @@ aliases:
 	if err == nil {
 		t.Fatal("expected error for empty members list in object form")
 	}
+	if !strings.Contains(err.Error(), "non-empty") || !strings.Contains(err.Error(), "members") {
+		t.Errorf("error %q should indicate that members must be non-empty", err.Error())
+	}
 }
 
 // ---------- aliases case preservation ----------
@@ -511,8 +539,9 @@ func TestLoad_AliasesMixedCaseBackupPreservesOriginalCase(t *testing.T) {
 	path := writeConfig(t, `
 aliases:
   Root.Com:
-    - Example.Com
-    - MIRROR.com
+    members:
+      - Example.Com
+      - MIRROR.com
 `)
 	cfg, err := Load(path, nil)
 	if err != nil {

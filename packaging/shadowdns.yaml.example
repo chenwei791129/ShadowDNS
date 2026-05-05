@@ -11,12 +11,9 @@
 # backup domains by rewriting incoming queries to the root domain without
 # loading separate zone data.
 #
-# Each value may be either:
-#   - A list of backup-domain strings (legacy form). Equivalent to the
-#     object form with rewrite_rdata_labels: false.
-#   - An object with:
-#       members: <list of backup-domain strings, required, non-empty>
-#       rewrite_rdata_labels: <bool, default false>
+# Each value MUST be an object with:
+#   members: <list of backup-domain strings, required, non-empty>
+#   rewrite_rdata_labels: <bool, optional, default false>
 #
 # rewrite_rdata_labels:
 #   When true, RDATA name fields (CNAME target, NS, MX, SRV target, PTR,
@@ -31,16 +28,17 @@
 # Rules:
 #   - A backup domain may only appear once across all roots (duplicates rejected).
 #   - A backup domain cannot equal its root (self-alias is rejected).
-#   - An empty list / empty members for a root is valid (no aliases registered).
-#   - Missing or empty "aliases:" is valid — the server starts with no aliases.
+#   - A root entry's `members` list MUST be non-empty (empty or missing list rejected).
+#   - To declare no aliases, omit the section or write `aliases: {}`.
 
 aliases:
-  # List form (legacy): rewrite_rdata_labels defaults to false.
+  # Default: rewrite_rdata_labels omitted → defaults to false.
   example.com:
-    - backup-example.com
-    - mirror-example.com
+    members:
+      - backup-example.com
+      - mirror-example.com
 
-  # Object form: explicit per-group flag.
+  # Explicit per-group flag for templated-CNAME (CDN-style) aliases.
   another-root.org:
     members:
       - backup-another.org

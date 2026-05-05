@@ -110,7 +110,8 @@ include "`+filepath.Join(tmpDir, "master.zones")+`";
 	writeCaseFile(t, filepath.Join(tmpDir, "shadowdns.yaml"),
 		`aliases:
   originzone.com:
-    - Example.com
+    members:
+      - Example.com
 `)
 
 	buildIntegrationMMDBs(t, geoIPDir)

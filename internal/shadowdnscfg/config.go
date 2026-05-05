@@ -55,55 +55,45 @@ type rawEphemeralAPI struct {
 	Token  string   `yaml:"token"`
 }
 
-// rawAliasGroup is the per-key YAML shape for the aliases map. It accepts
-// either a sequence of backup-domain strings (legacy form, equivalent to
-// rewrite_rdata_labels=false) or a mapping with explicit members and
-// rewrite_rdata_labels fields. Strict decoding rejects unknown fields and
-// missing members in the mapping form.
+// rawAliasGroup is the per-key YAML shape for the aliases map. Each entry
+// MUST be a mapping with a non-empty `members` list and an optional
+// `rewrite_rdata_labels` bool (default false). Strict decoding rejects any
+// other YAML node type (sequence, bare string) and unknown fields inside
+// the mapping.
 type rawAliasGroup struct {
 	Members            []string `yaml:"members"`
 	RewriteRDATALabels bool     `yaml:"rewrite_rdata_labels"`
 }
 
-// UnmarshalYAML accepts both the sequence form and the mapping form for
-// each alias entry. Any other YAML node type (e.g. a bare string) yields a
-// type-mismatch error so legacy "backup: root" configs fail loudly.
+// UnmarshalYAML accepts only the mapping form for each alias entry. Any
+// other YAML node type (sequence of backup strings, bare string, etc.)
+// yields a type-mismatch error so misshapen configs fail loudly.
 func (g *rawAliasGroup) UnmarshalYAML(value *yaml.Node) error {
-	switch value.Kind {
-	case yaml.SequenceNode:
-		var members []string
-		if err := value.Decode(&members); err != nil {
-			return err
-		}
-		g.Members = members
-		g.RewriteRDATALabels = false
-		return nil
-	case yaml.MappingNode:
-		// yaml.Node.Decode does not honor the parent decoder's KnownFields
-		// setting, so we walk the mapping content directly to reject
-		// unknown keys before decoding into g.
-		allowed := map[string]bool{"members": true, "rewrite_rdata_labels": true}
-		for i := 0; i+1 < len(value.Content); i += 2 {
-			keyNode := value.Content[i]
-			if !allowed[keyNode.Value] {
-				return fmt.Errorf("line %d: unknown alias field %q (expected one of: members, rewrite_rdata_labels)", keyNode.Line, keyNode.Value)
-			}
-		}
-		// Avoid recursing into this UnmarshalYAML by decoding into a
-		// distinct named type that shares the same field tags.
-		type aliasGroupAlias rawAliasGroup
-		var obj aliasGroupAlias
-		if err := value.Decode(&obj); err != nil {
-			return err
-		}
-		if len(obj.Members) == 0 {
-			return fmt.Errorf("line %d: aliases entry in object form requires non-empty 'members' list", value.Line)
-		}
-		*g = rawAliasGroup(obj)
-		return nil
-	default:
-		return fmt.Errorf("line %d: aliases entry must be a sequence of backup domains or an object with 'members' and 'rewrite_rdata_labels'", value.Line)
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: aliases entry must be an object with 'members' (non-empty list of backup domains) and optional 'rewrite_rdata_labels' (bool)", value.Line)
 	}
+	// yaml.Node.Decode does not honor the parent decoder's KnownFields
+	// setting, so we walk the mapping content directly to reject unknown
+	// keys before decoding into g.
+	allowed := map[string]bool{"members": true, "rewrite_rdata_labels": true}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		keyNode := value.Content[i]
+		if !allowed[keyNode.Value] {
+			return fmt.Errorf("line %d: unknown alias field %q (expected one of: members, rewrite_rdata_labels)", keyNode.Line, keyNode.Value)
+		}
+	}
+	// Avoid recursing into this UnmarshalYAML by decoding into a distinct
+	// named type that shares the same field tags.
+	type aliasGroupAlias rawAliasGroup
+	var obj aliasGroupAlias
+	if err := value.Decode(&obj); err != nil {
+		return err
+	}
+	if len(obj.Members) == 0 {
+		return fmt.Errorf("line %d: aliases entry requires non-empty 'members' list", value.Line)
+	}
+	*g = rawAliasGroup(obj)
+	return nil
 }
 
 // Load parses and validates the unified ShadowDNS YAML config file at path.

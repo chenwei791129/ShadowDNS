@@ -82,7 +82,12 @@ view "default" {
 	}
 
 	cfgPath := filepath.Join(dir, "shadowdns.yaml")
-	if err := os.WriteFile(cfgPath, []byte("aliases:\n  example.com:\n    - backup.example\n"), 0o644); err != nil {
+	cfgBody := `aliases:
+  example.com:
+    members:
+      - backup.example
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -231,7 +236,12 @@ view "view-a" {
 	}
 
 	cfgPath := filepath.Join(dir, "shadowdns.yaml")
-	cfgBody := "aliases:\n  example.com:\n    - alpha.example\n    - beta.example\n"
+	cfgBody := `aliases:
+  example.com:
+    members:
+      - alpha.example
+      - beta.example
+`
 	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +325,12 @@ view "default" {
 	}
 
 	cfgPath := filepath.Join(dir, "shadowdns.yaml")
-	if err := os.WriteFile(cfgPath, []byte("aliases:\n  example.com:\n    - backup.example\n"), 0o644); err != nil {
+	cfgBody := `aliases:
+  example.com:
+    members:
+      - backup.example
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -444,7 +459,12 @@ view "view-a" {
 	}
 
 	cfgPath := filepath.Join(dir, "shadowdns.yaml")
-	cfgBody := "aliases:\n  example.com:\n    - alpha.example\n    - beta.example\n"
+	cfgBody := `aliases:
+  example.com:
+    members:
+      - alpha.example
+      - beta.example
+`
 	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +580,13 @@ view "view-a" {
 	}
 
 	cfgPath := filepath.Join(dir, "shadowdns.yaml")
-	cfgBody := "aliases:\n  example.com:\n    - alpha.example\n    - beta.example\n    - gamma.example\n"
+	cfgBody := `aliases:
+  example.com:
+    members:
+      - alpha.example
+      - beta.example
+      - gamma.example
+`
 	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
