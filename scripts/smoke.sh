@@ -52,7 +52,8 @@ cp    "${FIXTURE_SRC}/master.zones"  "${SMOKE_DIR}/master.zones"
 cat > "${SMOKE_DIR}/shadowdns.yaml" <<'YAML'
 aliases:
   example.com:
-    - backup.example
+    members:
+      - backup.example
 YAML
 # Recursively copy the full master/ tree (zone files plus include fragments
 # that may live in subdirectories such as cnames/).
