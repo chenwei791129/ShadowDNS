@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
+
+	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
 )
 
 // Role classifies a zone's purpose within the ShadowDNS system.
@@ -124,8 +126,6 @@ func (z *Zone) LookupWildcard(qname string, qtype uint16) ([]dns.RR, bool) {
 		return nil, false
 	}
 
-	originSuffix := "." + z.Origin
-
 	// Walk up the label tree from qname toward the zone origin.
 	name := qname
 	for {
@@ -140,7 +140,7 @@ func (z *Zone) LookupWildcard(qname string, qtype uint16) ([]dns.RR, bool) {
 		}
 
 		// Guard: stop if we've traversed past the zone origin.
-		if !strings.HasSuffix(parent, originSuffix) {
+		if !dnsutil.IsInZone(parent, z.Origin) {
 			return nil, false
 		}
 
@@ -240,8 +240,6 @@ func (z *Zone) FollowCNAME(dst []dns.RR, initial []dns.RR, qtype uint16) []dns.R
 	}
 	answer = append(answer, initial...)
 
-	originSuffix := "." + z.Origin
-
 	for range MaxCNAMEDepth - len(initial) {
 		last, ok := answer[len(answer)-1].(*dns.CNAME)
 		if !ok {
@@ -249,7 +247,7 @@ func (z *Zone) FollowCNAME(dst []dns.RR, initial []dns.RR, qtype uint16) []dns.R
 		}
 		target := strings.ToLower(last.Target)
 
-		if target != z.Origin && !strings.HasSuffix(target, originSuffix) {
+		if !dnsutil.IsInZone(target, z.Origin) {
 			break
 		}
 

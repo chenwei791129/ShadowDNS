@@ -259,6 +259,29 @@ func TestZone_LookupWildcard_QtypeMismatch_NODATA(t *testing.T) {
 	}
 }
 
+// TestZone_LookupWildcard_BoundaryMismatch: qname's parent ends with origin
+// bytes but lacks the dot boundary, so traversal must reject it.
+func TestZone_LookupWildcard_BoundaryMismatch(t *testing.T) {
+	z := &Zone{
+		Origin:  "root.com.",
+		Records: make(map[string]*qtypeStore),
+	}
+	z.AddRR(&dns.A{
+		Hdr: dns.RR_Header{Name: "*.root.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+		A:   net.ParseIP("1.2.3.4").To4(),
+	})
+	z.AddRR(makeTestSOA("root.com."))
+
+	// qname parent = "barroot.com." — ends with "root.com." but not ".root.com.".
+	rrs, found := z.LookupWildcard("x.barroot.com.", dns.TypeA)
+	if found {
+		t.Error("expected no wildcard match for out-of-bailiwick qname")
+	}
+	if len(rrs) != 0 {
+		t.Errorf("expected 0 records, got %d", len(rrs))
+	}
+}
+
 // makeTestSOA builds a minimal SOA for zone test fixtures.
 func makeTestSOA(origin string) *dns.SOA {
 	return &dns.SOA{
@@ -508,6 +531,43 @@ func TestFollowCNAME_OutOfBailiwick(t *testing.T) {
 
 	if len(result) != 1 {
 		t.Fatalf("got %d records, want 1 (CNAME only, out-of-bailiwick)", len(result))
+	}
+}
+
+// TestFollowCNAME_TargetEqualsOrigin: a CNAME whose target is the zone origin
+// itself must resolve the apex's records, not break the chain.
+func TestFollowCNAME_TargetEqualsOrigin(t *testing.T) {
+	z := &Zone{Origin: "root.com.", Records: make(map[string]*qtypeStore)}
+	z.AddRR(newTestCNAME("alias.root.com.", "root.com."))
+	z.AddRR(newTestA("root.com.", "9.9.9.9"))
+
+	initial := z.Lookup("alias.root.com.", dns.TypeCNAME)
+	result := z.FollowCNAME(nil, initial, dns.TypeA)
+
+	if len(result) != 2 {
+		t.Fatalf("got %d records, want 2 (CNAME + apex A)", len(result))
+	}
+	a, ok := result[1].(*dns.A)
+	if !ok {
+		t.Fatalf("result[1]: got %T, want *dns.A", result[1])
+	}
+	if a.A.String() != "9.9.9.9" {
+		t.Errorf("A: got %s, want 9.9.9.9", a.A)
+	}
+}
+
+// TestFollowCNAME_TargetBoundaryMismatch: target ends with origin bytes but
+// lacks the dot boundary (e.g. "barroot.com." vs origin "root.com."), so the
+// chain must break instead of attempting lookup.
+func TestFollowCNAME_TargetBoundaryMismatch(t *testing.T) {
+	z := &Zone{Origin: "root.com.", Records: make(map[string]*qtypeStore)}
+	z.AddRR(newTestCNAME("ext.root.com.", "victim.barroot.com."))
+
+	initial := z.Lookup("ext.root.com.", dns.TypeCNAME)
+	result := z.FollowCNAME(nil, initial, dns.TypeA)
+
+	if len(result) != 1 {
+		t.Fatalf("got %d records, want 1 (CNAME only, boundary mismatch)", len(result))
 	}
 }
 
