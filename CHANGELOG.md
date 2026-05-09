@@ -13,6 +13,14 @@
 
 * **shadowdns.yaml:** the `aliases` map now accepts two value shapes per root: the existing list-of-strings (legacy form, equivalent to `rewrite_rdata_labels: false`) and a new object form `{members: [...], rewrite_rdata_labels: <bool>}`. Mixing both shapes across different roots is allowed. Object-form entries with unknown fields, missing `members`, or an empty `members` list are rejected at config load.
 
+## [0.16.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.16.0...v0.16.1) (2026-05-09)
+
+
+### Performance Improvements
+
+* **dnsutil:** eliminate string concat in IsInZone hot path ([8d2440b](https://github.com/chenwei791129/ShadowDNS/commit/8d2440b96bbcc04553ba2b82be97f7a822c37f1e))
+* **zone:** eliminate "."+origin concat in LookupWildcard/FollowCNAME ([9201c6e](https://github.com/chenwei791129/ShadowDNS/commit/9201c6e7aef8d9c52d7ab401feead6e4e803ce08))
+
 ## [0.16.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.15.0...v0.16.0) (2026-05-05)
 
 
