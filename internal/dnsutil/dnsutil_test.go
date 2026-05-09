@@ -63,13 +63,17 @@ func TestIsInZone(t *testing.T) {
 		want bool
 	}{
 		{name: "exact match", n: "example.com.", zone: "example.com.", want: true},
+		{name: "exact match deep label", n: "sub.example.com.", zone: "sub.example.com.", want: true},
 		{name: "subdomain", n: "www.example.com.", zone: "example.com.", want: true},
 		{name: "deep subdomain", n: "a.b.example.com.", zone: "example.com.", want: true},
-		{name: "different zone", n: "example.net.", zone: "example.com.", want: false},
 		{name: "partial suffix no dot", n: "badexample.com.", zone: "example.com.", want: false},
-		{name: "empty name", n: "", zone: "example.com.", want: false},
-		{name: "name is zone apex", n: "sub.example.com.", zone: "sub.example.com.", want: true},
+		{name: "boundary mismatch oo vs foo", n: "oo.com.", zone: "foo.com.", want: false},
+		{name: "boundary mismatch barfoo vs foo", n: "barfoo.com.", zone: "foo.com.", want: false},
 		{name: "parent zone not in child", n: "com.", zone: "example.com.", want: false},
+		{name: "name shorter than zone", n: "o.com.", zone: "foo.com.", want: false},
+		{name: "empty name", n: "", zone: "example.com.", want: false},
+		{name: "empty zone with trailing dot name", n: "foo.com.", zone: "", want: true},
+		{name: "different zone", n: "example.net.", zone: "example.com.", want: false},
 	}
 
 	for _, tc := range tests {
@@ -78,6 +82,35 @@ func TestIsInZone(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("IsInZone(%q, %q) = %v; want %v", tc.n, tc.zone, got, tc.want)
 			}
+		})
+	}
+}
+
+// benchIsInZoneSink defeats dead-code elimination of pure IsInZone calls.
+var benchIsInZoneSink bool
+
+// BenchmarkIsInZone covers the four hot-path branches used by alias.Detect:
+// equal, subdomain match, byte-suffix match with bad boundary, and unrelated.
+func BenchmarkIsInZone(b *testing.B) {
+	cases := []struct {
+		name string
+		n    string
+		zone string
+	}{
+		{name: "Equal", n: "example.com.", zone: "example.com."},
+		{name: "Subdomain", n: "www.example.com.", zone: "example.com."},
+		{name: "BoundaryMismatch", n: "badexample.com.", zone: "example.com."},
+		{name: "Unrelated", n: "other.test.", zone: "example.com."},
+	}
+
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			var sink bool
+			for range b.N {
+				sink = IsInZone(tc.n, tc.zone)
+			}
+			benchIsInZoneSink = sink
 		})
 	}
 }

@@ -44,8 +44,15 @@ func LookupKey(name string) string {
 // IsInZone returns true iff name equals zone or is a subdomain of zone.
 // Both arguments MUST already be lowercase-folded via LookupKey for correct
 // case-insensitive matching.
+//
+// Boundary check avoids allocating "."+zone on every call; kept alloc-free
+// and inline-friendly for the alias.Detect hot loop.
 func IsInZone(name, zone string) bool {
-	return name == zone || strings.HasSuffix(name, "."+zone)
+	if name == zone {
+		return true
+	}
+	offset := len(name) - len(zone)
+	return offset > 0 && name[offset-1] == '.' && name[offset:] == zone
 }
 
 // IsUDP returns true when the writer's local address is a UDP socket.
