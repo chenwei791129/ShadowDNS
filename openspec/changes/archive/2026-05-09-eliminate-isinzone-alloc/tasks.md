@@ -56,5 +56,5 @@
 ## 9. 請使用者驗證並決定 commit
 
 - [x] 請使用者檢視 `compare-baseline-vs-eliminate-isinzone-alloc.md` 結果，並決定是否 commit
-- [ ] 若使用者同意 commit：用 `git add internal/dnsutil/dnsutil.go internal/dnsutil/dnsutil_test.go` 加上 `openspec/changes/eliminate-isinzone-alloc/` 目錄，commit message 用 `perf(dnsutil): eliminate string concat in IsInZone hot path` 並附 benchmark before/after 表格 + dnspyre 結果摘要
-- [ ] 若使用者不同意 commit：保留 working tree 改動但不 commit；告知 user 如何 discard（`git restore` 與 `rm -rf openspec/changes/eliminate-isinzone-alloc`）
+- [x] 若使用者同意 commit：用 `git add internal/dnsutil/dnsutil.go internal/dnsutil/dnsutil_test.go` 加上 `openspec/changes/eliminate-isinzone-alloc/` 目錄，commit message 用 `perf(dnsutil): eliminate string concat in IsInZone hot path` 並附 benchmark before/after 表格 + dnspyre 結果摘要
+- [x] 若使用者不同意 commit：保留 working tree 改動但不 commit；告知 user 如何 discard（`git restore` 與 `rm -rf openspec/changes/eliminate-isinzone-alloc`）
