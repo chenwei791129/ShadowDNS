@@ -55,5 +55,5 @@
 ## 8. 請使用者驗證並決定 commit
 
 - [x] 請使用者檢視 `compare-isinzone-vs-eliminate-zone-origin-concat.md` 結果，並決定是否 commit
-- [ ] 若使用者同意 commit：用 `git add internal/zone/zone.go internal/zone/zone_test.go` 加上 `openspec/changes/eliminate-zone-origin-concat/` 目錄，commit message 用 `perf(zone): eliminate "."+origin concat in LookupWildcard/FollowCNAME` 並附 dnspyre + pprof 結果摘要
+- [x] 若使用者同意 commit：用 `git add internal/zone/zone.go internal/zone/zone_test.go` 加上 `openspec/changes/eliminate-zone-origin-concat/` 目錄，commit message 用 `perf(zone): eliminate "."+origin concat in LookupWildcard/FollowCNAME` 並附 dnspyre + pprof 結果摘要
 - [ ] 若使用者不同意 commit：保留 working tree 改動但不 commit；告知 user 如何 discard（`git restore` 與 `rm -rf openspec/changes/eliminate-zone-origin-concat`）
