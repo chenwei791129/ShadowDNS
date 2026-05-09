@@ -3,7 +3,7 @@ package view
 import (
 	"net/netip"
 
-	"github.com/oschwald/maxminddb-golang"
+	maxminddb "github.com/oschwald/maxminddb-golang/v2"
 )
 
 // ASNDB wraps a MaxMind ASN mmdb reader (GeoIP2 or GeoLite2 edition; the
@@ -31,21 +31,17 @@ func (a *ASNDB) Lookup(ip netip.Addr) (uint32, bool) {
 		return 0, false
 	}
 
-	var rec struct {
-		ASN uint `maxminddb:"autonomous_system_number"`
-	}
-
-	netIP := ip.AsSlice()
-	if err := a.db.Lookup(netIP, &rec); err != nil {
+	var asn uint32
+	if err := a.db.Lookup(ip).DecodePath(&asn, "autonomous_system_number"); err != nil {
 		// Lookup errors indicate bad data or unsupported IP version;
 		// treat as no-match (not error) per audit discipline.
 		return 0, false
 	}
 
-	if rec.ASN == 0 {
+	if asn == 0 {
 		return 0, false
 	}
-	return uint32(rec.ASN), true
+	return asn, true
 }
 
 // Metadata returns the mmdb file metadata. Returns a zero-value Metadata

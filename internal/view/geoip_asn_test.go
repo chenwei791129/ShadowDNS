@@ -85,3 +85,23 @@ func TestASNDB_Metadata_NilReceiver(t *testing.T) {
 		t.Errorf("expected BuildEpoch 0 for nil receiver, got %d", meta.BuildEpoch)
 	}
 }
+
+func BenchmarkASNDB_Lookup(b *testing.B) {
+	path := buildASNMMDB(b)
+
+	db, err := OpenASNDB(path)
+	if err != nil {
+		b.Fatalf("OpenASNDB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ip := netip.MustParseAddr("203.0.113.1")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		asn, ok := db.Lookup(ip)
+		if !ok || asn == 0 {
+			b.Fatalf("unexpected miss: ok=%v asn=%d", ok, asn)
+		}
+	}
+}

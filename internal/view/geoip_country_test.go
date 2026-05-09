@@ -85,3 +85,23 @@ func TestCountryDB_Metadata_NilReceiver(t *testing.T) {
 		t.Errorf("expected BuildEpoch 0 for nil receiver, got %d", meta.BuildEpoch)
 	}
 }
+
+func BenchmarkCountryDB_Lookup(b *testing.B) {
+	path := buildCountryMMDB(b)
+
+	db, err := OpenCountryDB(path)
+	if err != nil {
+		b.Fatalf("OpenCountryDB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ip := netip.MustParseAddr("192.0.2.1")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		code, ok := db.Lookup(ip)
+		if !ok || code == "" {
+			b.Fatalf("unexpected miss: ok=%v code=%q", ok, code)
+		}
+	}
+}

@@ -3,7 +3,7 @@ package view
 import (
 	"net/netip"
 
-	"github.com/oschwald/maxminddb-golang"
+	maxminddb "github.com/oschwald/maxminddb-golang/v2"
 )
 
 // CountryDB wraps a MaxMind Country mmdb reader (GeoIP2 or GeoLite2 edition;
@@ -31,24 +31,17 @@ func (c *CountryDB) Lookup(ip netip.Addr) (string, bool) {
 		return "", false
 	}
 
-	var rec struct {
-		Country struct {
-			ISOCode string `maxminddb:"iso_code"`
-		} `maxminddb:"country"`
-	}
-
-	// maxminddb-golang expects a net.IP; convert via the standard library.
-	netIP := ip.AsSlice()
-	if err := c.db.Lookup(netIP, &rec); err != nil {
+	var iso string
+	if err := c.db.Lookup(ip).DecodePath(&iso, "country", "iso_code"); err != nil {
 		// Lookup errors indicate bad data or unsupported IP version;
 		// treat as no-match (not error) per audit discipline.
 		return "", false
 	}
 
-	if rec.Country.ISOCode == "" {
+	if iso == "" {
 		return "", false
 	}
-	return rec.Country.ISOCode, true
+	return iso, true
 }
 
 // Metadata returns the mmdb file metadata. Returns a zero-value Metadata

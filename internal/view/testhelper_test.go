@@ -15,7 +15,7 @@ import (
 //
 //	192.0.2.1/32 → country "TH"
 //	198.51.100.1/32 → country "JP"
-func buildCountryMMDB(t *testing.T) string {
+func buildCountryMMDB(t testing.TB) string {
 	t.Helper()
 
 	writer, err := mmdbwriter.New(mmdbwriter.Options{
@@ -62,7 +62,7 @@ func buildCountryMMDB(t *testing.T) string {
 //
 //	203.0.113.1/32 → ASN 64500
 //	203.0.113.2/32 → ASN 64501
-func buildASNMMDB(t *testing.T) string {
+func buildASNMMDB(t testing.TB) string {
 	t.Helper()
 
 	writer, err := mmdbwriter.New(mmdbwriter.Options{
