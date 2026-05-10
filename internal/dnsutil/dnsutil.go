@@ -38,7 +38,30 @@ func LookupKey(name string) string {
 	if name == "" {
 		return ""
 	}
+	if isAlreadyLookupKey(name) {
+		return name
+	}
 	return strings.ToLower(strings.TrimSuffix(name, ".")) + "."
+}
+
+// isAlreadyLookupKey reports whether s is already in lookup-fold form.
+// Production zone data hits this branch nearly 100% of the time; a non-ASCII
+// byte or uppercase letter forces the allocation path in LookupKey.
+func isAlreadyLookupKey(s string) bool {
+	n := len(s)
+	if n == 0 || s[n-1] != '.' {
+		return false
+	}
+	for i := 0; i < n-1; i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			return false
+		}
+		if c >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // IsInZone returns true iff name equals zone or is a subdomain of zone.

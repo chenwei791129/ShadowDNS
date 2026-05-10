@@ -1,6 +1,9 @@
 package dnsutil
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCanonicalize(t *testing.T) {
 	tests := []struct {
@@ -84,6 +87,52 @@ func TestIsInZone(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLookupKey_FastPath(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty", in: "", want: ""},
+		{name: "root dot only", in: ".", want: "."},
+		{name: "lookup form", in: "example.com.", want: "example.com."},
+		{name: "no trailing dot", in: "example.com", want: "example.com."},
+		{name: "mixed case with dot", in: "Example.COM.", want: "example.com."},
+		{name: "non-ASCII", in: "εxample.com.", want: "εxample.com."},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := LookupKey(tc.in)
+			if got != tc.want {
+				t.Errorf("LookupKey(%q) = %q; want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+var benchLookupKeySink string
+
+func BenchmarkLookupKey_FastPath(b *testing.B) {
+	in := "www.example.com."
+	b.ReportAllocs()
+	var sink string
+	for range b.N {
+		sink = LookupKey(in)
+	}
+	benchLookupKeySink = sink
+}
+
+func BenchmarkLookupKey_SlowPath(b *testing.B) {
+	in := "WWW." + strings.Repeat("Example.", 1) + "com."
+	b.ReportAllocs()
+	var sink string
+	for range b.N {
+		sink = LookupKey(in)
+	}
+	benchLookupKeySink = sink
 }
 
 // benchIsInZoneSink defeats dead-code elimination of pure IsInZone calls.

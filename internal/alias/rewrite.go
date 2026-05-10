@@ -3,6 +3,7 @@ package alias
 import (
 	"strings"
 
+	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
 	"github.com/miekg/dns"
 )
 
@@ -51,9 +52,8 @@ func RewriteName(n, root, backup string) string {
 	if lower == root {
 		return backup
 	}
-	suffix := "." + root
-	if strings.HasSuffix(lower, suffix) {
-		prefix := n[:len(n)-len(suffix)]
+	if dnsutil.IsInZone(lower, root) {
+		prefix := n[:len(n)-len(root)-1]
 		return prefix + "." + backup
 	}
 	return n

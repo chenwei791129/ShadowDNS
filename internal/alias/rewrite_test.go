@@ -161,6 +161,59 @@ func TestRewriteName(t *testing.T) {
 	}
 }
 
+func TestRewriteName_BoundaryCases(t *testing.T) {
+	const root = "alias.com."
+	const backup = "real.com."
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty", in: "", want: ""},
+		{name: "subdomain rewritten", in: "WWW.alias.com.", want: "WWW.real.com."},
+		{name: "apex rewritten", in: "alias.com.", want: "real.com."},
+		{name: "unrelated preserved", in: "other.com.", want: "other.com."},
+		{name: "boundary missing dot", in: "XXalias.com.", want: "XXalias.com."},
+		{name: "single label boundary hit", in: "a.alias.com.", want: "a.real.com."},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RewriteName(tc.in, root, backup)
+			if got != tc.want {
+				t.Errorf("RewriteName(%q) = %q; want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+var benchRewriteNameSink string
+
+func BenchmarkRewriteName_SuffixMatch(b *testing.B) {
+	const root = "alias.com."
+	const backup = "real.com."
+	in := "www.alias.com."
+	b.ReportAllocs()
+	var sink string
+	for range b.N {
+		sink = RewriteName(in, root, backup)
+	}
+	benchRewriteNameSink = sink
+}
+
+// BenchmarkRewriteName_NoMatch records the no-match baseline.
+func BenchmarkRewriteName_NoMatch(b *testing.B) {
+	const root = "alias.com."
+	const backup = "real.com."
+	in := "other.example.com."
+	b.ReportAllocs()
+	var sink string
+	for range b.N {
+		sink = RewriteName(in, root, backup)
+	}
+	benchRewriteNameSink = sink
+}
+
 // ---- RewriteRR (5.4) ----
 
 func newA(owner string, ip string) *dns.A {
