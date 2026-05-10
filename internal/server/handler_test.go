@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -44,6 +46,104 @@ func (r *recordingWriter) Close() error        { return nil }
 func (r *recordingWriter) TsigStatus() error   { return errors.New("not signed") }
 func (r *recordingWriter) TsigTimersOnly(bool) {}
 func (r *recordingWriter) Hijack()             {}
+
+// addrFromRemoteWriter is a minimal dns.ResponseWriter stub used by
+// TestAddrFromRemote that returns a configurable RemoteAddr (or nil).
+type addrFromRemoteWriter struct {
+	remote net.Addr
+}
+
+func (w *addrFromRemoteWriter) LocalAddr() net.Addr       { return nil }
+func (w *addrFromRemoteWriter) RemoteAddr() net.Addr      { return w.remote }
+func (w *addrFromRemoteWriter) WriteMsg(*dns.Msg) error   { return nil }
+func (w *addrFromRemoteWriter) Write([]byte) (int, error) { return 0, nil }
+func (w *addrFromRemoteWriter) Close() error              { return nil }
+func (w *addrFromRemoteWriter) TsigStatus() error         { return errors.New("not signed") }
+func (w *addrFromRemoteWriter) TsigTimersOnly(bool)       {}
+func (w *addrFromRemoteWriter) Hijack()                   {}
+
+// stubNetAddr is a non-UDP/TCP net.Addr used to exercise the default arm
+// fallback in addrFromRemote.
+type stubNetAddr struct{ s string }
+
+func (a stubNetAddr) Network() string { return "stub" }
+func (a stubNetAddr) String() string  { return a.s }
+
+func TestAddrFromRemote(t *testing.T) {
+	tests := []struct {
+		name     string
+		remote   net.Addr
+		wantAddr netip.Addr
+		wantErr  string // substring; empty means no error
+		wantIs4  bool   // only checked when wantErr == ""
+	}{
+		{
+			name:     "UDP 4-byte v4",
+			remote:   &net.UDPAddr{IP: net.IPv4(1, 2, 3, 4).To4(), Port: 53},
+			wantAddr: netip.MustParseAddr("1.2.3.4"),
+			wantIs4:  true,
+		},
+		{
+			name:     "UDP 16-byte v4-in-v6 canonicalized via Unmap",
+			remote:   &net.UDPAddr{IP: net.IPv4(1, 2, 3, 4), Port: 53}, // net.IPv4 returns 16-byte form
+			wantAddr: netip.MustParseAddr("1.2.3.4"),
+			wantIs4:  true,
+		},
+		{
+			name:     "TCP 4-byte v4",
+			remote:   &net.TCPAddr{IP: net.IPv4(5, 6, 7, 8).To4(), Port: 53},
+			wantAddr: netip.MustParseAddr("5.6.7.8"),
+			wantIs4:  true,
+		},
+		{
+			name:     "UDP pure IPv6 stays IPv6 after Unmap",
+			remote:   &net.UDPAddr{IP: net.ParseIP("2001:db8::1"), Port: 53},
+			wantAddr: netip.MustParseAddr("2001:db8::1"),
+			wantIs4:  false,
+		},
+		{
+			name:    "nil remote addr",
+			remote:  nil,
+			wantErr: "nil remote addr",
+		},
+		{
+			name:    "UDP with nil IP triggers AddrFromSlice ok=false",
+			remote:  &net.UDPAddr{IP: nil, Port: 53},
+			wantErr: "invalid UDP IP slice length 0",
+		},
+		{
+			name:     "default arm fallback via stub net.Addr",
+			remote:   stubNetAddr{s: "9.10.11.12:5000"},
+			wantAddr: netip.MustParseAddr("9.10.11.12"),
+			wantIs4:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := &addrFromRemoteWriter{remote: tc.remote}
+			got, err := addrFromRemote(w)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil (addr=%v)", tc.wantErr, got)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.wantAddr {
+				t.Fatalf("addr mismatch: got %v want %v", got, tc.wantAddr)
+			}
+			if got.Is4() != tc.wantIs4 {
+				t.Fatalf("Is4 mismatch: got %v want %v (addr=%v)", got.Is4(), tc.wantIs4, got)
+			}
+		})
+	}
+}
 
 // buildTXTQuery builds a TXT query for qname with an optional EDNS0 OPT record.
 // bufferSize=0 omits the OPT record (legacy 512-byte client).

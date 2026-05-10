@@ -523,20 +523,42 @@ func cappedSOA(soa *dns.SOA) *dns.SOA {
 }
 
 // addrFromRemote extracts the client netip.Addr from the ResponseWriter.
+//
+// Type-switching on the concrete *net.UDPAddr / *net.TCPAddr returned by
+// miekg/dns skips addr.String() + SplitHostPort + ParseAddr (~3 short-lived
+// allocs per query). Unmap() canonicalizes 16-byte v4-mapped slices into
+// 4-byte v4 form, keeping byte-equivalence with the legacy path so view
+// matchers (== / Prefix.Contains) behave identically. The default arm
+// preserves the legacy string path for unknown net.Addr implementations
+// (test stubs, future PacketConn variants).
 func addrFromRemote(w dns.ResponseWriter) (netip.Addr, error) {
 	addr := w.RemoteAddr()
 	if addr == nil {
 		return netip.Addr{}, fmt.Errorf("nil remote addr")
 	}
-	host, _, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("parsing remote addr %q: %w", addr.String(), err)
+	fromIP := func(ip net.IP, proto string) (netip.Addr, error) {
+		a, ok := netip.AddrFromSlice(ip)
+		if !ok {
+			return netip.Addr{}, fmt.Errorf("invalid %s IP slice length %d", proto, len(ip))
+		}
+		return a.Unmap(), nil
 	}
-	ip, parseErr := netip.ParseAddr(host)
-	if parseErr != nil {
-		return netip.Addr{}, fmt.Errorf("parsing IP %q: %w", host, parseErr)
+	switch a := addr.(type) {
+	case *net.UDPAddr:
+		return fromIP(a.IP, "UDP")
+	case *net.TCPAddr:
+		return fromIP(a.IP, "TCP")
+	default:
+		host, _, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			return netip.Addr{}, fmt.Errorf("parsing remote addr %q: %w", addr.String(), err)
+		}
+		ip, parseErr := netip.ParseAddr(host)
+		if parseErr != nil {
+			return netip.Addr{}, fmt.Errorf("parsing IP %q: %w", host, parseErr)
+		}
+		return ip, nil
 	}
-	return ip, nil
 }
 
 // replyRcode sends a response with the given RCODE and no payload.
