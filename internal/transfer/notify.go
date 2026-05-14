@@ -3,11 +3,13 @@ package transfer
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
 
+	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
 
@@ -19,11 +21,21 @@ var DefaultBackoff = []time.Duration{
 	4 * time.Second,
 }
 
+// NotifyTarget is one NOTIFY destination derived from a zone's NS records.
+// Host is the NS hostname (FQDN) used for logging and de-duplication; IPs
+// holds the in-zone glue A/AAAA addresses to NOTIFY directly. An empty IPs
+// slice signals "no in-zone glue" — the dispatch layer skips the target
+// rather than falling back to the system resolver.
+type NotifyTarget struct {
+	Host string
+	IPs  []netip.Addr
+}
+
 // NotifyTargets returns the slave targets for a zone: every NS record target,
-// excluding any that equals the SOA MNAME (which identifies the primary master).
-//
-// Targets are returned as bare hostnames; the caller resolves them to IPs.
-func NotifyTargets(z *zone.Zone) []string {
+// excluding any that equals the SOA MNAME (which identifies the primary
+// master). For each target, IPs is populated from in-zone A/AAAA glue
+// records; targets with no in-zone glue carry an empty IPs slice.
+func NotifyTargets(z *zone.Zone) []NotifyTarget {
 	if z == nil {
 		return nil
 	}
@@ -35,7 +47,7 @@ func NotifyTargets(z *zone.Zone) []string {
 	}
 
 	nsRRs := z.Lookup(z.Origin, dns.TypeNS)
-	var targets []string
+	var targets []NotifyTarget
 	for _, rr := range nsRRs {
 		ns, ok := rr.(*dns.NS)
 		if !ok {
@@ -46,9 +58,46 @@ func NotifyTargets(z *zone.Zone) []string {
 			// This NS is the primary master; skip.
 			continue
 		}
-		targets = append(targets, target)
+		targets = append(targets, NotifyTarget{
+			Host: target,
+			IPs:  resolveInZoneGlue(z, target),
+		})
 	}
 	return targets
+}
+
+// resolveInZoneGlue returns every A and AAAA record for host found inside
+// z's own record map, converted to netip.Addr. No cross-zone resolution is
+// performed and no system resolver is consulted.
+func resolveInZoneGlue(z *zone.Zone, host string) []netip.Addr {
+	if z == nil {
+		return nil
+	}
+	owner := dnsutil.LookupKey(host)
+
+	var ips []netip.Addr
+	for _, rr := range z.Lookup(owner, dns.TypeA) {
+		a, ok := rr.(*dns.A)
+		if !ok || a.A == nil {
+			continue
+		}
+		if addr, ok := netip.AddrFromSlice(a.A); ok {
+			// Unmap so an A record stored as 16-byte ::ffff:v4 normalises to
+			// a 4-byte IPv4 Addr; callers can then compare against
+			// netip.MustParseAddr("v4-literal") without surprise.
+			ips = append(ips, addr.Unmap())
+		}
+	}
+	for _, rr := range z.Lookup(owner, dns.TypeAAAA) {
+		aaaa, ok := rr.(*dns.AAAA)
+		if !ok || aaaa.AAAA == nil {
+			continue
+		}
+		if addr, ok := netip.AddrFromSlice(aaaa.AAAA); ok {
+			ips = append(ips, addr)
+		}
+	}
+	return ips
 }
 
 // SendNOTIFY sends a DNS NOTIFY message for `origin` to `targetAddr` (host:port)
@@ -84,9 +133,12 @@ func sendNotifyWithBackoff(ctx context.Context, origin, targetAddr string, backo
 		}
 
 		lastErr = err
+		// `addr` is the network address actually dialled (ip:port). Higher
+		// layers (e.g. dispatchNotifies) attach the NS hostname and source
+		// fields onto the logger via With(), so they appear here too.
 		logger.Sugar().Warnw("NOTIFY failed",
 			"zone", origin,
-			"target", targetAddr,
+			"addr", targetAddr,
 			"attempt", attempt+1,
 			"err", err.Error(),
 		)

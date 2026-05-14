@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -22,11 +23,13 @@ import (
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/logging"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
 	"github.com/chenwei791129/ShadowDNS/internal/view"
+	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
 
 // waitReady blocks until ch is closed (signalling that run()'s SIGHUP handler
@@ -1550,5 +1553,293 @@ func TestSIGHUP_DoesNotReopenLogFile(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("run did not exit within 2s after cancel")
+	}
+}
+
+// --------------------------------------------------------------------------
+// dispatchNotifies tests
+// --------------------------------------------------------------------------
+
+// makeRootZoneWithGlue builds a *zone.Zone whose origin has the given NS
+// records, with optional A/AAAA glue keyed by NS hostname. glueA / glueAAAA
+// values are dotted-quad / IPv6 string literals respectively.
+func makeRootZoneWithGlue(origin, mname string, nsTargets []string,
+	glueA, glueAAAA map[string][]string) *zone.Zone {
+	z := &zone.Zone{Origin: origin}
+	z.AddRR(&dns.SOA{
+		Hdr: dns.RR_Header{
+			Name:   origin,
+			Rrtype: dns.TypeSOA,
+			Class:  dns.ClassINET,
+			Ttl:    3600,
+		},
+		Ns:     mname,
+		Mbox:   "hostmaster." + origin,
+		Serial: 1,
+	})
+	for _, ns := range nsTargets {
+		z.AddRR(&dns.NS{
+			Hdr: dns.RR_Header{
+				Name:   origin,
+				Rrtype: dns.TypeNS,
+				Class:  dns.ClassINET,
+				Ttl:    3600,
+			},
+			Ns: ns,
+		})
+	}
+	for host, ips := range glueA {
+		for _, ip := range ips {
+			z.AddRR(&dns.A{
+				Hdr: dns.RR_Header{
+					Name:   host,
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    3600,
+				},
+				A: net.ParseIP(ip).To4(),
+			})
+		}
+	}
+	for host, ips := range glueAAAA {
+		for _, ip := range ips {
+			z.AddRR(&dns.AAAA{
+				Hdr: dns.RR_Header{
+					Name:   host,
+					Rrtype: dns.TypeAAAA,
+					Class:  dns.ClassINET,
+					Ttl:    3600,
+				},
+				AAAA: net.ParseIP(ip),
+			})
+		}
+	}
+	return z
+}
+
+// notifyStub captures each notifySendFn invocation and signals once `want`
+// calls have been observed. Tests obtain the stub function via fn() and
+// install it onto notifySendFn (use installNotifyStub to restore the
+// original on cleanup).
+type notifyStub struct {
+	mu       sync.Mutex
+	calls    []struct{ origin, addr string }
+	done     chan struct{}
+	doneOnce sync.Once
+	want     int
+	err      error // if non-nil, the stub returns this for every call
+}
+
+func newNotifyStub(want int) *notifyStub {
+	return &notifyStub{done: make(chan struct{}), want: want}
+}
+
+func (s *notifyStub) fn() func(context.Context, string, string, *zap.Logger) error {
+	return func(_ context.Context, origin, addr string, _ *zap.Logger) error {
+		s.mu.Lock()
+		s.calls = append(s.calls, struct{ origin, addr string }{origin, addr})
+		reached := s.want > 0 && len(s.calls) >= s.want
+		s.mu.Unlock()
+		if reached {
+			s.doneOnce.Do(func() { close(s.done) })
+		}
+		return s.err
+	}
+}
+
+func (s *notifyStub) waitForCalls(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	select {
+	case <-s.done:
+	case <-time.After(timeout):
+		s.mu.Lock()
+		got := len(s.calls)
+		s.mu.Unlock()
+		t.Fatalf("timed out waiting for %d notifySendFn calls; got %d", s.want, got)
+	}
+}
+
+func (s *notifyStub) addrs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.calls))
+	for i, c := range s.calls {
+		out[i] = c.addr
+	}
+	return out
+}
+
+func installNotifyStub(t *testing.T, fn func(context.Context, string, string, *zap.Logger) error) {
+	t.Helper()
+	orig := notifySendFn
+	notifySendFn = fn
+	t.Cleanup(func() { notifySendFn = orig })
+}
+
+// observedFields converts the field slice of a single observed log entry
+// into a key→string map for easier assertions in tests.
+func observedFields(entry observer.LoggedEntry) map[string]string {
+	out := make(map[string]string, len(entry.Context))
+	for _, f := range entry.Context {
+		if f.String != "" {
+			out[f.Key] = f.String
+		} else {
+			out[f.Key] = fmt.Sprint(f.Interface)
+		}
+	}
+	return out
+}
+
+// NS target with no in-zone glue causes dispatchNotifies to skip — no
+// goroutine is spawned, no notifySendFn call, and a debug log records
+// source="skipped-no-glue".
+func TestDispatchNotifies_NoGlue_SkippedNoGoroutine(t *testing.T) {
+	var calls atomic.Int32
+	installNotifyStub(t, func(context.Context, string, string, *zap.Logger) error {
+		calls.Add(1)
+		return nil
+	})
+
+	core, obs := observer.New(zapcore.DebugLevel)
+	logger := zap.New(core)
+
+	z := makeRootZoneWithGlue("example.com.", "ns1.example.com.",
+		[]string{"ns.elsewhere.test."}, nil, nil)
+	rootZones := map[string]map[string]*zone.Zone{
+		"default": {"example.com.": z},
+	}
+
+	dispatchNotifies(context.Background(), rootZones, logger)
+
+	// Give any (erroneously) spawned goroutine time to run before asserting
+	// that none did.
+	time.Sleep(50 * time.Millisecond)
+	if got := calls.Load(); got != 0 {
+		t.Errorf("notifySendFn called %d times for no-glue target; want 0", got)
+	}
+
+	skips := obs.FilterMessage("NOTIFY skipped: no in-zone glue").All()
+	if len(skips) != 1 {
+		t.Fatalf("expected 1 skip log, got %d (all entries: %+v)",
+			len(skips), obs.All())
+	}
+	f := observedFields(skips[0])
+	if f["zone"] != "example.com." {
+		t.Errorf("zone field: want example.com., got %q", f["zone"])
+	}
+	if f["target"] != "ns.elsewhere.test." {
+		t.Errorf("target field: want ns.elsewhere.test., got %q", f["target"])
+	}
+	if f["source"] != "skipped-no-glue" {
+		t.Errorf("source field: want skipped-no-glue, got %q", f["source"])
+	}
+}
+
+// NS target with two glue IPs (A + AAAA) produces exactly two
+// notifySendFn invocations, one per IP, each on host:53.
+func TestDispatchNotifies_MultiIPGlue_OneGoroutinePerIP(t *testing.T) {
+	stub := newNotifyStub(2)
+	installNotifyStub(t, stub.fn())
+
+	logger := zap.NewNop()
+	z := makeRootZoneWithGlue("example.com.", "ns1.example.com.",
+		[]string{"ns21.example.com."},
+		map[string][]string{"ns21.example.com.": {"10.0.0.21"}},
+		map[string][]string{"ns21.example.com.": {"2001:db8::21"}})
+	rootZones := map[string]map[string]*zone.Zone{
+		"default": {"example.com.": z},
+	}
+
+	dispatchNotifies(context.Background(), rootZones, logger)
+	stub.waitForCalls(t, 2*time.Second)
+
+	got := stub.addrs()
+	wantSet := map[string]bool{
+		net.JoinHostPort("10.0.0.21", "53"):    true,
+		net.JoinHostPort("2001:db8::21", "53"): true,
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 calls, got %d: %v", len(got), got)
+	}
+	for _, addr := range got {
+		if !wantSet[addr] {
+			t.Errorf("unexpected address: %q (want one of %v)", addr, wantSet)
+		}
+		delete(wantSet, addr)
+	}
+	if len(wantSet) != 0 {
+		t.Errorf("missing expected addresses: %v", wantSet)
+	}
+}
+
+// When notifySendFn errors, the final "NOTIFY failed" warn carries
+// source="glue" so operators can distinguish glue-driven sends from a
+// future also-notify path.
+func TestDispatchNotifies_FailureLogCarriesSourceGlue(t *testing.T) {
+	stub := newNotifyStub(1)
+	stub.err = fmt.Errorf("stubbed transport failure")
+	installNotifyStub(t, stub.fn())
+
+	core, obs := observer.New(zapcore.DebugLevel)
+	logger := zap.New(core)
+	z := makeRootZoneWithGlue("example.com.", "ns1.example.com.",
+		[]string{"ns2.example.com."},
+		map[string][]string{"ns2.example.com.": {"10.0.0.2"}}, nil)
+	rootZones := map[string]map[string]*zone.Zone{
+		"default": {"example.com.": z},
+	}
+
+	dispatchNotifies(context.Background(), rootZones, logger)
+	stub.waitForCalls(t, 2*time.Second)
+
+	// stub.waitForCalls only confirms notifySendFn returned; the goroutine
+	// then synchronously enters the Warnw branch. A short grace window is
+	// enough for the log to land in the observer.
+	time.Sleep(20 * time.Millisecond)
+
+	fails := obs.FilterMessage("NOTIFY failed").All()
+	if len(fails) < 1 {
+		t.Fatalf("expected at least 1 'NOTIFY failed' log, got 0 (all: %+v)", obs.All())
+	}
+	f := observedFields(fails[0])
+	if f["source"] != "glue" {
+		t.Errorf("source: want glue, got %q (fields: %v)", f["source"], f)
+	}
+	if f["ip"] != "10.0.0.2" {
+		t.Errorf("ip: want 10.0.0.2, got %q", f["ip"])
+	}
+}
+
+// Same (zone, NS host, glue IP) tuple loaded under two views is
+// deduplicated — exactly one NOTIFY send sequence.
+func TestDispatchNotifies_CrossViewDedup(t *testing.T) {
+	stub := newNotifyStub(1)
+	installNotifyStub(t, stub.fn())
+
+	logger := zap.NewNop()
+	makeZ := func() *zone.Zone {
+		return makeRootZoneWithGlue("example.com.", "ns1.example.com.",
+			[]string{"ns2.example.com."},
+			map[string][]string{"ns2.example.com.": {"10.0.0.2"}}, nil)
+	}
+	rootZones := map[string]map[string]*zone.Zone{
+		"viewA": {"example.com.": makeZ()},
+		"viewB": {"example.com.": makeZ()},
+	}
+
+	dispatchNotifies(context.Background(), rootZones, logger)
+	stub.waitForCalls(t, 2*time.Second)
+
+	// After done closes, grant a small grace window for any second goroutine
+	// to (incorrectly) fire before asserting count.
+	time.Sleep(50 * time.Millisecond)
+
+	addrs := stub.addrs()
+	if len(addrs) != 1 {
+		t.Fatalf("cross-view dedup failed: want 1 call, got %d: %v", len(addrs), addrs)
+	}
+	want := net.JoinHostPort("10.0.0.2", "53")
+	if addrs[0] != want {
+		t.Errorf("addr: want %q, got %q", want, addrs[0])
 	}
 }

@@ -2,12 +2,13 @@
 // options.notify directive). These tests exec the compiled shadowdns binary
 // so they exercise the real flag-parsing and precedence resolution path.
 //
-// The zones used here intentionally declare an NS record whose target differs
-// from the SOA MNAME, so NotifyTargets returns a non-empty list. With NOTIFY
-// enabled, shadowdns would try to resolve that target and emit a "NOTIFY
-// failed" warning (the NS name is a hostname that does not resolve); the
-// absence of that log line is the observable proof that no goroutine was
-// spawned and no send was attempted.
+// The zones used here intentionally declare an NS record whose target
+// differs from the SOA MNAME, so NotifyTargets returns a non-empty list.
+// The NS target carries in-zone glue (A 203.0.113.2 — TEST-NET-3,
+// non-routable), so with NOTIFY enabled shadowdns dispatches the message
+// to that IP and emits a "NOTIFY failed" warning once the connect/send
+// times out; the absence of that log line is the observable proof that no
+// goroutine was spawned and no send was attempted.
 package integration_test
 
 import (
@@ -377,10 +378,11 @@ func TestIntegration_NoNotifyFlag_SuppressesAllSends(t *testing.T) {
 		t.Errorf("expected source=flag, got: %s", output)
 	}
 
-	// Wait long enough for a would-be NOTIFY attempt to surface: the first
-	// attempt fails synchronously on DNS resolution (unresolvable hostname),
-	// and the wrapper logs "NOTIFY failed" within a few ms. 500ms is well
-	// past that window while keeping the test snappy.
+	// Wait long enough for a would-be NOTIFY attempt to surface: with in-zone
+	// glue pointing to a non-routable TEST-NET-3 address, the first attempt
+	// fails on connect/send timeout and the wrapper logs "NOTIFY failed"
+	// within a few ms. 500ms is well past that window while keeping the
+	// test snappy.
 	time.Sleep(500 * time.Millisecond)
 
 	final := buf.String()
@@ -463,8 +465,10 @@ func TestIntegration_NoNotifyFlag_StickyAcrossSIGHUP(t *testing.T) {
 // TestIntegration_NotifyDefault_SendsNotify is the baseline fixture-validity
 // test: with no --no-notify flag and no `notify` directive in config, the
 // shadowdns startup path MUST attempt to send NOTIFY to each NS target that
-// differs from the SOA MNAME. The fixture's ns2.example.com. is unresolvable,
-// so the attempt surfaces as a "NOTIFY failed" log within ~500ms.
+// differs from the SOA MNAME. The fixture's ns2.example.com. has in-zone
+// glue pointing to a non-routable TEST-NET-3 address (203.0.113.2), so the
+// dispatched NOTIFY times out and surfaces as a "NOTIFY failed" log within
+// ~500ms.
 //
 // This test exists to prove the other tests' "no NOTIFY attempted" assertions
 // are meaningful: if the fixture would never have triggered a NOTIFY under
@@ -485,9 +489,10 @@ func TestIntegration_NotifyDefault_SendsNotify(t *testing.T) {
 		t.Fatalf("expected source=default, got: %s", output)
 	}
 
-	// The first SendNOTIFY attempt fails synchronously on DNS resolution
-	// (ns2.example.com. is unresolvable). waitForLog returns as soon as the
-	// substring appears, or after the timeout; presence is all we need.
+	// The first SendNOTIFY attempt fails because the in-zone glue address
+	// (203.0.113.2) is non-routable; the connect/send times out and the
+	// failure log appears. waitForLog returns as soon as the substring
+	// appears, or after the timeout; presence is all we need.
 	output = waitForLog(t, buf, "NOTIFY failed", 3*time.Second)
 	if !strings.Contains(output, "NOTIFY failed") {
 		t.Errorf("expected NOTIFY attempt under default behavior (proves fixture surfaces NOTIFY), got: %s", output)

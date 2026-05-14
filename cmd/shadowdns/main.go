@@ -9,7 +9,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"runtime"
@@ -564,41 +566,79 @@ func run(ctx context.Context, opts runOptions) error {
 	return srv.Serve(ctx)
 }
 
+// notifySendFn is the dispatch-layer indirection to transfer.SendNOTIFY.
+// Production code never replaces it; tests substitute a fast in-memory stub
+// to assert dispatch decisions (one goroutine per IP, no goroutine for
+// no-glue targets, cross-view dedup) without real UDP exchanges.
+var notifySendFn = transfer.SendNOTIFY
+
 // dispatchNotifies sends NOTIFY messages for every loaded root zone in the
-// background. Each zone × NS-target pair becomes its own goroutine; all are
-// fire-and-forget with results logged.
+// background. Each (zone, NS host, in-zone glue IP) triple becomes its own
+// goroutine; all are fire-and-forget with results logged. NS targets that
+// have no in-zone A/AAAA glue are skipped — no goroutine is spawned and no
+// system resolver is consulted (RFC 1996 §3.3 best-effort semantics).
 func dispatchNotifies(
 	ctx context.Context,
 	rootZones map[string]map[string]*zone.Zone,
 	logger *zap.Logger,
 ) {
-	// De-duplicate (origin, target) pairs across views — the same zone in
-	// multiple views still has the same NS records, no need to NOTIFY twice.
-	type key struct{ origin, target string }
+	// De-duplicate (origin, host, ip) triples across views — the same zone in
+	// multiple views still has the same NS records, no need to NOTIFY twice
+	// to the same IP. netip.Addr is a comparable value type and serves as a
+	// map key directly, avoiding per-entry string conversion.
+	type key struct {
+		origin, host string
+		ip           netip.Addr
+	}
 	seen := make(map[key]bool)
+
+	// source="glue" is invariant for every goroutine spawned by this call;
+	// build the attempt logger once and capture it.
+	glueLogger := logger.With(zap.String("source", "glue"))
 
 	for _, zonesInView := range rootZones {
 		for origin, z := range zonesInView {
 			for _, target := range transfer.NotifyTargets(z) {
-				k := key{origin, target}
-				if seen[k] {
+				if len(target.IPs) == 0 {
+					// Out-of-bailiwick NS or missing glue. Record once at debug
+					// severity per (origin, host) so the operator can see why
+					// no NOTIFY was sent, and spawn no goroutine.
+					logger.Sugar().Debugw("NOTIFY skipped: no in-zone glue",
+						"zone", origin,
+						"target", target.Host,
+						"source", "skipped-no-glue",
+					)
 					continue
 				}
-				seen[k] = true
-				go func(origin, target string) {
-					// Bound each NOTIFY attempt so a hung NS target cannot leak a
-					// goroutine for the lifetime of the server.
-					notifyCtx, cancel := context.WithTimeout(ctx, notifyDeadline)
-					defer cancel()
-					addr := target + ":53"
-					if err := transfer.SendNOTIFY(notifyCtx, origin, addr, logger); err != nil {
-						logger.Sugar().Warnw("NOTIFY failed",
-							"origin", origin,
-							"target", target,
-							"err", err,
-						)
+				for _, ip := range target.IPs {
+					k := key{origin, target.Host, ip}
+					if seen[k] {
+						continue
 					}
-				}(origin, target)
+					seen[k] = true
+					go func(origin, host string, ip netip.Addr) {
+						// Bound each NOTIFY attempt so a hung NS target cannot
+						// leak a goroutine for the lifetime of the server.
+						notifyCtx, cancel := context.WithTimeout(ctx, notifyDeadline)
+						defer cancel()
+						ipStr := ip.String()
+						// Attach target+ip to the logger so both the per-attempt
+						// warns inside sendNotifyWithBackoff and the final warn
+						// below carry the NS hostname and IP without duplicating
+						// keys at every emission site.
+						hostLogger := glueLogger.With(
+							zap.String("target", host),
+							zap.String("ip", ipStr),
+						)
+						addr := net.JoinHostPort(ipStr, "53")
+						if err := notifySendFn(notifyCtx, origin, addr, hostLogger); err != nil {
+							hostLogger.Sugar().Warnw("NOTIFY failed",
+								"zone", origin,
+								"err", err,
+							)
+						}
+					}(origin, target.Host, ip)
+				}
 			}
 		}
 	}

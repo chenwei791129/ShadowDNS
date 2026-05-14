@@ -323,7 +323,17 @@ A successful exit (code 0) confirms that every zone file parses without error an
 
 ### 4. NOTIFY outbound targets
 
-ShadowDNS sends NOTIFY to the NS records of each zone (BIND default behaviour). If your deployment requires `also-notify` targets that are not in NS records, add those hosts to the NS records or wait for a future version that supports `also-notify`.
+ShadowDNS sends NOTIFY to the NS records of each zone (BIND default behaviour).
+
+**Glue-only target resolution.** The destination IP for every NOTIFY is taken **exclusively from in-zone glue records** — the A and AAAA records for the NS target name that live inside the same zone file. ShadowDNS does not consult `/etc/resolv.conf`, does not perform recursive lookups, and does not cross-reference other loaded zones when resolving NS target names. This matches BIND9's NOTIFY behaviour and prevents the system resolver from being invoked on hosts that have no outbound DNS path.
+
+Implications:
+
+- NS targets with multiple in-zone glue addresses (A + AAAA, or several A records) receive one NOTIFY per IP. Each `(zone, NS-hostname, IP)` tuple is dispatched independently and deduplicated across views.
+- NS targets **without** in-zone glue — typically out-of-bailiwick NS records pointing to a hostname owned by a different zone — are **skipped**. No NOTIFY is built, no goroutine is spawned, and no fallback resolution is attempted. A single DEBUG log line is emitted per skipped target: `NOTIFY skipped: no in-zone glue` with field `source="skipped-no-glue"`.
+- Glue-driven NOTIFY logs (per-attempt warnings and final failures) carry field `source="glue"`, letting operators distinguish glue-driven sends from skipped targets in a single grep.
+
+If your deployment requires reaching slaves whose addresses cannot be expressed as in-zone glue (e.g. out-of-bailiwick secondaries), an explicit `also-notify` directive is the right tool — that capability is on the future-work list and is intentionally not implemented via system-resolver fallback, since that path was the root cause of the noisy startup timeouts this change addresses.
 
 **Disabling NOTIFY.** Single-server deployments without secondaries, or test environments where startup noise is unwanted, can disable NOTIFY via either:
 
