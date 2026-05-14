@@ -1,6 +1,6 @@
 ## Context
 
-目前 NOTIFY 的 NS target 解析流程（[internal/transfer/notify.go:26-52](internal/transfer/notify.go#L26-L52) + [cmd/shadowdns/main.go:367-402](cmd/shadowdns/main.go#L367-L402)）：
+目前 NOTIFY 的 NS target 解析流程（[internal/transfer/notify.go:22-52](internal/transfer/notify.go#L22-L52) + [cmd/shadowdns/main.go:567-605](cmd/shadowdns/main.go#L567-L605)）：
 
 1. `NotifyTargets()` 回傳 `[]string`，每筆為 FQDN 主機名
 2. `dispatchNotifies()` 把 `target + ":53"` 直接傳給 `transfer.SendNOTIFY()`
@@ -11,7 +11,7 @@
 
 BIND9 的實作（RFC 1996 §3.3 & named 原始碼 `lib/ns/notify.c`）：優先從自己權威資料的 in-zone glue 取得 IP，沒有 glue 才會嘗試 out-of-zone 解析（而多數 production 設定根本不做 out-of-zone 解析）。
 
-已載入的 zone 資料 `*zone.Zone` 結構中，`z.Records[name]` 已是 `map[string][]dns.RR`，A / AAAA glue 查找是 O(1)。所需資料「全部在手邊」。
+已載入的 zone 資料 `*zone.Zone` 結構中，`z.Records[name]` 是 `map[string]*qtypeStore`（單 qtype 內聯 / 多 qtype promote 雙態），對外查詢統一走 `z.Lookup(owner, qtype)` API，A / AAAA glue 查找是 O(1)。Owner key 依 RFC 4343 強制 lowercase（見 [internal/zone/zone.go:74-103](internal/zone/zone.go#L74-L103)），lookup 端需自行 `strings.ToLower(dns.Fqdn(host))` 折大小寫。所需資料「全部在手邊」。
 
 ## Goals / Non-Goals
 
@@ -89,7 +89,7 @@ func NotifyTargets(z *zone.Zone) []NotifyTarget
 
 ### De-dup key 從 `(origin, target)` 擴為 `(origin, host, ip)`
 
-[cmd/shadowdns/main.go:374-384](cmd/shadowdns/main.go#L374-L384) 目前用 `key{origin, target}` 跨 view de-dup。加入 IP 後 key 要再包含 IP，否則「A zone 的 ns2 解到 10.0.0.1、B zone 的 ns2 也解到 10.0.0.1」這種 cross-zone case 會重複發（罕見但不需要）。
+[cmd/shadowdns/main.go:577-587](cmd/shadowdns/main.go#L577-L587) 目前用 `key{origin, target}` 跨 view de-dup。加入 IP 後 key 要再包含 IP，否則「A zone 的 ns2 解到 10.0.0.1、B zone 的 ns2 也解到 10.0.0.1」這種 cross-zone case 會重複發（罕見但不需要）。
 
 **Rationale:**
 - 語意精確：同一個 (zone, host, ip) 對才是同一筆 NOTIFY
@@ -98,29 +98,57 @@ func NotifyTargets(z *zone.Zone) []NotifyTarget
 
 ### Glue 查找同 zone 優先，不跨 zone
 
-僅從 `z.Records[dns.Fqdn(host)]` 取 A / AAAA。不去別的 zone 尋找（即使內部載入了 `ns1.example.com` zone 的資料，查 `example.test` 的 ns 時也不跨查）。
+僅在收到查詢的同一個 `*zone.Zone` instance 內，呼叫 `z.Lookup(owner, dns.TypeA)` 與 `z.Lookup(owner, dns.TypeAAAA)` 取 RR slice（owner 透過 `dnsutil.LookupKey(host)` 做 FQDN + lowercase 折大小寫）。不去別的 zone 尋找（即使內部載入了 `ns1.example.com.` zone 的資料，查 `example.test.` 的 NS 時也不跨查）。
 
 **Rationale:**
 - 符合 DNS 語意：glue record 的定義就是「與 NS 記錄同 zone 的 A/AAAA」
+- 走 `z.Lookup` 而非直接戳 `z.Records[...]`，可順帶處理單/多 qtype 內聯結構的 `*qtypeStore` 雙態，不需要 helper 自己感知儲存層細節
+- Owner 須 lowercase 折大小寫：zone 索引依 RFC 4343 將 owner key 強制 lowercase，但 RR 本身保留原 case；NS RDATA 帶入時若沒折大小寫會錯過 hit
 - 實作單純、可預測、沒有跨 zone 視野/view 的邊界問題
 - 跨 zone 查找等價於實作內部 resolver，屬於 Non-Goal
 
+**Note:** `*dns.A` 的 `A` 欄位是 `net.IP`、`*dns.AAAA` 的 `AAAA` 欄位也是 `net.IP`；helper 需透過 `netip.AddrFromSlice()`（或 `netip.AddrFrom4` / `netip.AddrFrom16` 對特定長度）轉成 `netip.Addr`。轉換失敗（不應發生但要防）時跳過該 RR。
+
 ### Log 新增 `source` 欄位
 
+本專案 logger 已遷移至 `go.uber.org/zap`（見 commit `0cda89a refactor(logging): migrate from log/slog to go.uber.org/zap`），現有 NOTIFY 失敗 log 形如：
+
 ```go
-logger.Warn("NOTIFY failed",
-    slog.String("zone", origin),
-    slog.String("target", host),
-    slog.String("ip", ipStr),
-    slog.String("source", "glue"),   // 或 "skipped-no-glue"
-    slog.Int("attempt", attempt+1),
-    slog.String("err", err.Error()),
+logger.Sugar().Warnw("NOTIFY failed",
+    "zone", origin,
+    "target", targetAddr,
+    "attempt", attempt+1,
+    "err", err.Error(),
+)
+```
+
+本 change 在所有 NOTIFY 相關 log（per-attempt warn / 最終失敗 warn / no-glue debug）一致新增 `source` 欄位：
+
+```go
+logger.Sugar().Warnw("NOTIFY failed",
+    "zone", origin,
+    "target", host,
+    "ip", ipStr,
+    "source", "glue",            // 或 "skipped-no-glue"
+    "attempt", attempt+1,
+    "err", err.Error(),
+)
+```
+
+No-glue skip log（debug 等級）：
+
+```go
+logger.Sugar().Debugw("NOTIFY skipped: no in-zone glue",
+    "zone", origin,
+    "target", host,
+    "source", "skipped-no-glue",
 )
 ```
 
 **Rationale:**
 - 運維看 log 時能立即分辨「已嘗試送 IP」vs「根本沒送」
 - 與 `notify-toggle` 的 INFO log（`notify enabled: true/false (source: ...)`) 語意對齊——`source` 這個 key 在 NOTIFY 相關 log 表示「決策來源」
+- 沿用既有 zap Sugar `Warnw`/`Debugw` 介面，與 codebase 其它 log 風格一致；不再使用 `log/slog`
 
 ## Risks / Trade-offs
 

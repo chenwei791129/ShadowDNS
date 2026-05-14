@@ -395,6 +395,131 @@ tests:
   - test/integration/notify_test.go
 -->
 
+
+<!-- @trace
+source: notify-glue-resolution
+updated: 2026-05-14
+code:
+  - CLAUDE.md
+  - cmd/shadowdns/pprof.go
+  - cmd/shadowdns/main.go
+  - internal/prunebackup/diff.go
+  - cmd/shadowdns/reload.go
+  - internal/view/geoip_country.go
+  - scripts/smoke.sh
+  - testdata/integration/README.md
+  - packaging/aliases.yaml.example
+  - internal/config/zones.go
+  - internal/server/server.go
+  - internal/shadowdnscfg/config.go
+  - packaging/shadowdns.yaml.example
+  - testdata/integration/aliases.yaml
+  - internal/view/loader.go
+  - internal/prunebackup/rewrite.go
+  - docs/migration.md
+  - internal/alias/rewrite.go
+  - internal/config/options.go
+  - internal/logging/reopen.go
+  - packaging/logrotate.shadowdns
+  - internal/server/handler.go
+  - internal/zone/zone.go
+  - go.mod
+  - internal/transfer/axfr.go
+  - internal/server/fingerprint.go
+  - testdata/integration/master/example.com_view-th.fwd
+  - packaging/shadowdns.service
+  - internal/api/server.go
+  - .github/workflows/release-please.yml
+  - testdata/integration/shadowdns.yaml
+  - .release-please-manifest.json
+  - internal/transfer/notify.go
+  - internal/alias/override.go
+  - internal/zone/parser.go
+  - cmd/shadowdns/prune_backup.go
+  - docs/benchmark.md
+  - internal/server/build.go
+  - Makefile
+  - internal/prunebackup/prunebackup.go
+  - packaging/named.conf.example
+  - docs/ephemeral-api.md
+  - CHANGELOG.md
+  - internal/ephemeral/store.go
+  - internal/prunebackup/apply.go
+  - scripts/test-deb.sh
+  - internal/zone/classify.go
+  - internal/server/listenaddr.go
+  - internal/prunebackup/doc.go
+  - internal/config/aliases.go
+  - internal/prunebackup/include.go
+  - scripts/gen-container-testdata.go
+  - internal/server/listener.go
+  - .spectra.yaml
+  - README.md
+  - testdata/integration/master/example.com_view-other.fwd
+  - nfpm.yaml
+  - go.sum
+  - internal/view/geoip_asn.go
+  - internal/logging/logger.go
+  - internal/prunebackup/lexer.go
+  - internal/dnsutil/dnsutil.go
+tests:
+  - cmd/shadowdns/prune_backup_test.go
+  - internal/alias/rewrite_anywhere_test.go
+  - test/integration/stress_ceiling_test.go
+  - internal/zone/classify_test.go
+  - test/integration/helpers_test.go
+  - test/integration/notify_test.go
+  - internal/server/server_test.go
+  - cmd/shadowdns/main_test.go
+  - internal/api/server_test.go
+  - cmd/shadowdns/listenon_test.go
+  - test/integration/axfr_test.go
+  - internal/prunebackup/diff_test.go
+  - internal/view/testhelper_test.go
+  - internal/zone/zone_test.go
+  - internal/ephemeral/store_test.go
+  - internal/view/geoip_asn_test.go
+  - test/integration/negative_test.go
+  - test/integration/wildcard_test.go
+  - internal/shadowdnscfg/config_test.go
+  - test/integration/compression_budget_test.go
+  - test/integration/reload_diff_test.go
+  - test/integration/case_preservation_test.go
+  - internal/config/zones_test.go
+  - internal/dnsutil/dnsutil_test.go
+  - internal/server/handler_test.go
+  - internal/prunebackup/include_test.go
+  - internal/alias/rewrite_test.go
+  - internal/prunebackup/lexer_test.go
+  - internal/logging/reopen_test.go
+  - cmd/shadowdns/pprof_test.go
+  - test/integration/listenon_test.go
+  - test/integration/ephemeral_overrides_cname_test.go
+  - internal/zone/parser_test.go
+  - test/integration/query_test.go
+  - internal/config/aliases_test.go
+  - internal/server/fingerprint_test.go
+  - internal/server/build_test.go
+  - internal/view/loader_test.go
+  - internal/transfer/notify_test.go
+  - internal/prunebackup/prunebackup_test.go
+  - test/integration/prune_backup_test.go
+  - internal/alias/override_test.go
+  - test/integration/stress_shared_bucket_test.go
+  - internal/config/options_test.go
+  - internal/transfer/axfr_test.go
+  - internal/server/listenaddr_test.go
+  - internal/prunebackup/apply_test.go
+  - test/integration/alias_rdata_rewrite_test.go
+  - test/integration/cname_following_test.go
+  - cmd/shadowdns/main_ephemeral_test.go
+  - internal/logging/logger_test.go
+  - internal/view/geoip_country_test.go
+  - test/integration/cname_synthesis_test.go
+  - internal/server/handler_ephemeral_test.go
+  - internal/prunebackup/rewrite_test.go
+-->
+
 ### Requirement: Deny IXFR by responding with full AXFR
 
 The zone-transfer subsystem SHALL NOT implement incremental transfer. On receiving an IXFR query (QTYPE=251), the server SHALL fall back to a full AXFR response per RFC 1995 (section 4), which is the protocol-defined fallback when the server cannot supply an incremental delta.
@@ -622,59 +747,47 @@ The zone-transfer subsystem SHALL consult the `allow-transfer` ACL declared in `
 ---
 ### Requirement: Send NOTIFY on zone content change
 
-On startup after all zones are loaded, and on every zone reload, the zone-transfer subsystem SHALL send DNS NOTIFY messages to each NS record target of the zone (excluding the zone's own primary, if identifiable via SOA MNAME) **unless NOTIFY is disabled**. NOTIFY SHALL be sent over UDP to port 53; NOTIFY SHALL be retried up to 3 times on failure with exponential backoff (1s, 2s, 4s).
+On startup after all zones are loaded, and on every zone reload, the zone-transfer subsystem SHALL send DNS NOTIFY messages to each NS record target of the zone (excluding the zone's own primary, if identifiable via SOA MNAME). NOTIFY SHALL be sent over UDP to port 53; NOTIFY SHALL be retried up to 3 times on failure with exponential backoff (1s, 2s, 4s).
 
-NOTIFY is disabled when EITHER of the following holds:
+The target IP address for each NOTIFY send SHALL be resolved **exclusively from in-zone glue records** — that is, from the A and AAAA records for the NS target name present in the same `*zone.Zone` instance that declares the NS record. The zone-transfer subsystem SHALL NOT invoke the operating system resolver, SHALL NOT perform recursive DNS queries, and SHALL NOT consult other loaded zones when resolving NS target names.
 
-1. The CLI flag `-no-notify` is explicitly passed to the `shadowdns` process. This takes effect for the process lifetime and is NOT affected by subsequent SIGHUP reloads.
-2. The CLI flag is not passed AND `named.conf` contains `options { notify no; }`.
+When an NS target has **multiple** in-zone glue IPs (e.g., one A and one AAAA record, or multiple A records), NOTIFY SHALL be sent to each IP independently; each `(zone, NS-hostname, IP)` tuple SHALL be treated as its own NOTIFY send subject to the retry and backoff policy above.
 
-When NOTIFY is disabled, the zone-transfer subsystem SHALL NOT build NOTIFY messages, SHALL NOT spawn NOTIFY goroutines, and SHALL NOT perform any retries for any zone. The default behavior (when neither the flag nor the config directive sets it) SHALL be to send NOTIFY.
+When an NS target has **no** in-zone glue (the target name has no A or AAAA record within the same zone), the zone-transfer subsystem SHALL skip that target: it SHALL NOT build a NOTIFY message, SHALL NOT spawn a send goroutine, and SHALL NOT fall back to any other resolution mechanism. The skip SHALL be recorded in the logs at debug severity with a `source` field whose value is `"skipped-no-glue"`.
 
-#### Scenario: NOTIFY sent to each NS target
+Every NOTIFY log record (whether for an attempt, retry, or final failure) SHALL include a `source` field whose value is `"glue"` when the destination IP originated from an in-zone glue record.
 
-- **WHEN** a zone has NS records `ns1.example.com.` and `ns2.example.com.`, neither equals the SOA MNAME, and NOTIFY is enabled
-- **THEN** NOTIFY is sent to the resolved IP of each NS target
+Cross-view deduplication of NOTIFY sends SHALL be keyed by the tuple `(zone-origin, NS-hostname, IP)`. A given tuple SHALL result in at most one NOTIFY send sequence (including retries) per startup or reload event, even when the same zone appears in multiple views.
+
+#### Scenario: NOTIFY sent to each in-zone glue IP of an NS target
+
+- **WHEN** a zone `example.com.` has NS record `ns2.example.com.` with in-zone A record `ns2.example.com. A 10.0.0.2` and `ns2.example.com.` does not equal the SOA MNAME
+- **THEN** NOTIFY is sent to `10.0.0.2:53` without invoking the operating system resolver
+
+#### Scenario: NOTIFY sent to every glue IP when multiple exist
+
+- **WHEN** a zone has NS record `ns21.example.com.` with in-zone records `ns21.example.com. A 10.0.0.21` and `ns21.example.com. AAAA 2001:db8::21`
+- **THEN** one NOTIFY send sequence targets `10.0.0.21:53` and a separate NOTIFY send sequence targets `[2001:db8::21]:53`
+
+#### Scenario: NS target without in-zone glue is skipped
+
+- **WHEN** a zone `example.com.` has NS record `ns.other.tld.` and no A or AAAA record for `ns.other.tld.` exists within the `example.com.` zone data
+- **THEN** no NOTIFY message is built, no goroutine is spawned, and no operating system resolution is attempted for that target; a log record at debug severity is emitted with field `source="skipped-no-glue"` identifying the zone and NS hostname
 
 #### Scenario: NOTIFY retry on failure
 
-- **WHEN** the first NOTIFY send returns no response within 5 seconds and NOTIFY is enabled
-- **THEN** the server retries after 1 second, then 2 seconds, then 4 seconds; after three failed attempts it logs an error and gives up
+- **WHEN** the first NOTIFY send to a resolved glue IP returns no response within 5 seconds
+- **THEN** the server retries after 1 second, then 2 seconds, then 4 seconds; after three failed attempts it logs an error with field `source="glue"` and gives up
 
 #### Scenario: NOTIFY not sent to SOA MNAME
 
-- **WHEN** the zone has NS records including a target that equals the SOA MNAME and NOTIFY is enabled
-- **THEN** NOTIFY is not sent to that target (since it refers to the primary master itself)
+- **WHEN** the zone has NS records including a target that equals the SOA MNAME
+- **THEN** NOTIFY is not sent to that target, regardless of whether in-zone glue for the MNAME exists
 
-#### Scenario: NOTIFY disabled by CLI flag suppresses all sends
+#### Scenario: Cross-view deduplication by zone-host-IP tuple
 
-- **WHEN** the `shadowdns` process is started with `-no-notify` and zones are loaded at startup
-- **THEN** no NOTIFY message is sent for any zone, no NOTIFY goroutine is spawned, and no retry is attempted
-
-#### Scenario: NOTIFY disabled by config suppresses all sends
-
-- **WHEN** `named.conf` contains `options { notify no; };`, the `-no-notify` CLI flag is NOT passed, and zones are loaded at startup
-- **THEN** no NOTIFY message is sent for any zone, no NOTIFY goroutine is spawned, and no retry is attempted
-
-#### Scenario: NOTIFY enabled by default when neither flag nor config sets it
-
-- **WHEN** the `shadowdns` process is started without `-no-notify` and `named.conf` contains no `notify` directive in its `options` block
-- **THEN** NOTIFY is sent to each applicable NS target as defined by the other scenarios above
-
-#### Scenario: CLI flag overrides config
-
-- **WHEN** the `shadowdns` process is started with `-no-notify` and `named.conf` contains `options { notify yes; };`
-- **THEN** no NOTIFY message is sent for any zone
-
-#### Scenario: CLI flag effect persists across SIGHUP reload
-
-- **WHEN** the `shadowdns` process is started with `-no-notify`, zones are initially loaded, the operator later edits `named.conf` to `options { notify yes; };` and sends SIGHUP to the process
-- **THEN** after the reload completes, no NOTIFY message is sent for any zone
-
-#### Scenario: Config change takes effect on SIGHUP reload
-
-- **WHEN** the `shadowdns` process was started without `-no-notify`, initially ran with `options { notify yes; };`, the operator later edits `named.conf` to `options { notify no; };` and sends SIGHUP to the process
-- **THEN** after the reload completes, no NOTIFY message is sent for any zone
+- **WHEN** the same zone `example.com.` is loaded in two views and its NS record `ns2.example.com.` resolves via in-zone glue to the same IP `10.0.0.2` in both views
+- **THEN** exactly one NOTIFY send sequence targeting `10.0.0.2:53` is executed for that zone during startup
 
 ---
 ### Requirement: Deny IXFR by responding with full AXFR
