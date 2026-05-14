@@ -283,22 +283,84 @@ tests:
 
 ### Requirement: Send NOTIFY on zone content change
 
-On startup after all zones are loaded, and on every zone reload, the zone-transfer subsystem SHALL send DNS NOTIFY messages to each NS record target of the zone (excluding the zone's own primary, if identifiable via SOA MNAME). NOTIFY SHALL be sent over UDP to port 53; NOTIFY SHALL be retried up to 3 times on failure with exponential backoff (1s, 2s, 4s).
+On startup after all zones are loaded, and on every zone reload, the zone-transfer subsystem SHALL send DNS NOTIFY messages to each NS record target of the zone (excluding the zone's own primary, if identifiable via SOA MNAME) **unless NOTIFY is disabled**. NOTIFY SHALL be sent over UDP to port 53; NOTIFY SHALL be retried up to 3 times on failure with exponential backoff (1s, 2s, 4s).
 
-#### Scenario: NOTIFY sent to each NS target
+NOTIFY is disabled when EITHER of the following holds:
 
-- **WHEN** a zone has NS records `ns1.example.com.` and `ns2.example.com.` and neither equals the SOA MNAME
-- **THEN** NOTIFY is sent to the resolved IP of each NS target
+1. The CLI flag `--no-notify` is explicitly passed to the `shadowdns` process. This takes effect for the process lifetime and SHALL NOT be affected by subsequent SIGHUP reloads.
+2. The CLI flag is not passed AND `named.conf` contains `options { notify no; }`.
+
+When NOTIFY is disabled, the zone-transfer subsystem SHALL NOT build NOTIFY messages, SHALL NOT spawn NOTIFY goroutines, and SHALL NOT perform any retries for any zone. The default behavior (when neither the flag nor the config directive sets it) SHALL be to send NOTIFY.
+
+When NOTIFY is enabled, the target IP address for each NOTIFY send SHALL be resolved **exclusively from in-zone glue records** — that is, from the A and AAAA records for the NS target name present in the same `*zone.Zone` instance that declares the NS record. The zone-transfer subsystem SHALL NOT invoke the operating system resolver, SHALL NOT perform recursive DNS queries, and SHALL NOT consult other loaded zones when resolving NS target names.
+
+When an NS target has **multiple** in-zone glue IPs (e.g., one A and one AAAA record, or multiple A records), NOTIFY SHALL be sent to each IP independently; each `(zone, NS-hostname, IP)` tuple SHALL be treated as its own NOTIFY send subject to the retry and backoff policy above.
+
+When an NS target has **no** in-zone glue (the target name has no A or AAAA record within the same zone), the zone-transfer subsystem SHALL skip that target: it SHALL NOT build a NOTIFY message, SHALL NOT spawn a send goroutine, and SHALL NOT fall back to any other resolution mechanism. The skip SHALL be recorded in the logs at debug severity with a `source` field whose value is `"skipped-no-glue"`.
+
+Every NOTIFY log record (whether for an attempt, retry, or final failure) SHALL include a `source` field whose value is `"glue"` when the destination IP originated from an in-zone glue record.
+
+Cross-view deduplication of NOTIFY sends SHALL be keyed by the tuple `(zone-origin, NS-hostname, IP)`. A given tuple SHALL result in at most one NOTIFY send sequence (including retries) per startup or reload event, even when the same zone appears in multiple views.
+
+#### Scenario: NOTIFY sent to each in-zone glue IP of an NS target
+
+- **WHEN** a zone `example.com.` has NS record `ns2.example.com.` with in-zone A record `ns2.example.com. A 10.0.0.2` and `ns2.example.com.` does not equal the SOA MNAME and NOTIFY is enabled
+- **THEN** NOTIFY is sent to `10.0.0.2:53` without invoking the operating system resolver
+
+#### Scenario: NOTIFY sent to every glue IP when multiple exist
+
+- **WHEN** a zone has NS record `ns21.example.com.` with in-zone records `ns21.example.com. A 10.0.0.21` and `ns21.example.com. AAAA 2001:db8::21` and NOTIFY is enabled
+- **THEN** one NOTIFY send sequence targets `10.0.0.21:53` and a separate NOTIFY send sequence targets `[2001:db8::21]:53`
+
+#### Scenario: NS target without in-zone glue is skipped
+
+- **WHEN** a zone `example.com.` has NS record `ns.other.test.` and no A or AAAA record for `ns.other.test.` exists within the `example.com.` zone data and NOTIFY is enabled
+- **THEN** no NOTIFY message is built, no goroutine is spawned, and no operating system resolution is attempted for that target; a log record at debug severity is emitted with field `source="skipped-no-glue"` identifying the zone and NS hostname
 
 #### Scenario: NOTIFY retry on failure
 
-- **WHEN** the first NOTIFY send returns no response within 5 seconds
-- **THEN** the server retries after 1 second, then 2 seconds, then 4 seconds; after three failed attempts it logs an error and gives up
+- **WHEN** the first NOTIFY send to a resolved glue IP returns no response within 5 seconds
+- **THEN** the server retries after 1 second, then 2 seconds, then 4 seconds; after three failed attempts it logs an error with field `source="glue"` and gives up
 
 #### Scenario: NOTIFY not sent to SOA MNAME
 
 - **WHEN** the zone has NS records including a target that equals the SOA MNAME
-- **THEN** NOTIFY is not sent to that target (since it refers to the primary master itself)
+- **THEN** NOTIFY is not sent to that target, regardless of whether in-zone glue for the MNAME exists
+
+#### Scenario: Cross-view deduplication by zone-host-IP tuple
+
+- **WHEN** the same zone `example.com.` is loaded in two views and its NS record `ns2.example.com.` resolves via in-zone glue to the same IP `10.0.0.2` in both views
+- **THEN** exactly one NOTIFY send sequence targeting `10.0.0.2:53` is executed for that zone during startup
+
+#### Scenario: NOTIFY disabled by CLI flag suppresses all sends
+
+- **WHEN** `shadowdns` is started with `--no-notify` and zones are loaded successfully
+- **THEN** no NOTIFY messages are sent and no NOTIFY goroutines are spawned for any zone
+
+#### Scenario: NOTIFY disabled by config suppresses all sends
+
+- **WHEN** `--no-notify` is NOT passed and `named.conf` contains `options { notify no; };` and zones are loaded successfully
+- **THEN** no NOTIFY messages are sent and no NOTIFY goroutines are spawned for any zone
+
+#### Scenario: NOTIFY enabled by default when neither flag nor config sets it
+
+- **WHEN** `--no-notify` is NOT passed and `named.conf` contains no `notify` directive (or `notify yes;`) and zones are loaded successfully
+- **THEN** NOTIFY is sent to each in-zone glue IP of every non-MNAME NS target per the rules above
+
+#### Scenario: CLI flag overrides config
+
+- **WHEN** `shadowdns` is started with `--no-notify` and `named.conf` contains `options { notify yes; };`
+- **THEN** no NOTIFY messages are sent (CLI flag wins over config)
+
+#### Scenario: CLI flag effect persists across SIGHUP reload
+
+- **WHEN** `shadowdns` is started with `--no-notify` and later receives SIGHUP triggering a zone reload
+- **THEN** NOTIFY remains suppressed after the reload regardless of the post-reload `notify` directive value in `named.conf`
+
+#### Scenario: Config change takes effect on SIGHUP reload
+
+- **WHEN** `--no-notify` is NOT passed and `named.conf` previously contained `options { notify no; };` is edited to `options { notify yes; };` and SIGHUP is delivered
+- **THEN** after the reload completes, the next NOTIFY-triggering event sends NOTIFY per the enabled-default rules
 
 
 <!-- @trace
@@ -694,117 +756,3 @@ tests:
   - internal/alias/soa_test.go
   - internal/transfer/notify_test.go
 -->
-
-### Requirement: Serve AXFR over TCP for loaded zones
-
-The zone-transfer subsystem SHALL answer AXFR queries (QTYPE=252, QCLASS=IN) received over TCP by streaming the zone's records in the order: SOA first, then all other records, then the same SOA again, per RFC 5936. AXFR queries received over UDP SHALL be refused.
-
-#### Scenario: AXFR request returns full zone stream
-
-- **WHEN** a permitted client sends `AXFR example.com. IN` over TCP
-- **THEN** the server streams a response starting with the zone SOA, followed by all zone records, and ending with the zone SOA again
-
-#### Scenario: AXFR over UDP is refused
-
-- **WHEN** a client sends an AXFR query over UDP
-- **THEN** the server returns `RCODE=REFUSED`
-
----
-### Requirement: Stream alias-zone AXFR with rewritten records
-
-When a client requests AXFR for a backup zone, the zone-transfer subsystem SHALL produce the stream by reading records from the corresponding root zone and applying the same owner-name and in-bailiwick rewrite rules that the alias-resolver uses for standard queries. TXT/MX/SRV overrides from the backup zone SHALL replace inherited records for their respective (owner, type) pairs in the stream.
-
-#### Scenario: Backup-zone AXFR emits rewritten records
-
-- **WHEN** a slave requests `AXFR backup.com. IN` and `backup.com` is aliased to `root.com`
-- **THEN** the stream contains records with owner names under `backup.com.` and any in-bailiwick RDATA values rewritten from `.root.com` to `.backup.com`
-
-#### Scenario: Backup-zone AXFR includes TXT override
-
-- **WHEN** `backup.com` has an override `backup.com. TXT "google-site-verification=..."`
-- **THEN** the AXFR stream contains the override TXT record AND does not contain the corresponding root zone TXT record rewritten
-
----
-### Requirement: Enforce allow-transfer ACL
-
-The zone-transfer subsystem SHALL consult the `allow-transfer` ACL declared in `named.conf` options (globally) before serving any AXFR. Only source IP addresses explicitly present in the ACL SHALL be served; all others SHALL receive `RCODE=REFUSED`.
-
-#### Scenario: Permitted IP receives AXFR
-
-- **WHEN** the ACL contains `192.0.2.10;` and a client with that source IP sends AXFR
-- **THEN** the server streams the zone transfer
-
-#### Scenario: Non-permitted IP is refused
-
-- **WHEN** a client with a source IP not in the ACL sends AXFR
-- **THEN** the server returns `RCODE=REFUSED` AND does not stream any records
-
-#### Scenario: Empty allow-transfer denies all
-
-- **WHEN** the ACL is empty or not declared
-- **THEN** every AXFR request returns `RCODE=REFUSED`
-
----
-### Requirement: Send NOTIFY on zone content change
-
-On startup after all zones are loaded, and on every zone reload, the zone-transfer subsystem SHALL send DNS NOTIFY messages to each NS record target of the zone (excluding the zone's own primary, if identifiable via SOA MNAME). NOTIFY SHALL be sent over UDP to port 53; NOTIFY SHALL be retried up to 3 times on failure with exponential backoff (1s, 2s, 4s).
-
-The target IP address for each NOTIFY send SHALL be resolved **exclusively from in-zone glue records** — that is, from the A and AAAA records for the NS target name present in the same `*zone.Zone` instance that declares the NS record. The zone-transfer subsystem SHALL NOT invoke the operating system resolver, SHALL NOT perform recursive DNS queries, and SHALL NOT consult other loaded zones when resolving NS target names.
-
-When an NS target has **multiple** in-zone glue IPs (e.g., one A and one AAAA record, or multiple A records), NOTIFY SHALL be sent to each IP independently; each `(zone, NS-hostname, IP)` tuple SHALL be treated as its own NOTIFY send subject to the retry and backoff policy above.
-
-When an NS target has **no** in-zone glue (the target name has no A or AAAA record within the same zone), the zone-transfer subsystem SHALL skip that target: it SHALL NOT build a NOTIFY message, SHALL NOT spawn a send goroutine, and SHALL NOT fall back to any other resolution mechanism. The skip SHALL be recorded in the logs at debug severity with a `source` field whose value is `"skipped-no-glue"`.
-
-Every NOTIFY log record (whether for an attempt, retry, or final failure) SHALL include a `source` field whose value is `"glue"` when the destination IP originated from an in-zone glue record.
-
-Cross-view deduplication of NOTIFY sends SHALL be keyed by the tuple `(zone-origin, NS-hostname, IP)`. A given tuple SHALL result in at most one NOTIFY send sequence (including retries) per startup or reload event, even when the same zone appears in multiple views.
-
-#### Scenario: NOTIFY sent to each in-zone glue IP of an NS target
-
-- **WHEN** a zone `example.com.` has NS record `ns2.example.com.` with in-zone A record `ns2.example.com. A 10.0.0.2` and `ns2.example.com.` does not equal the SOA MNAME
-- **THEN** NOTIFY is sent to `10.0.0.2:53` without invoking the operating system resolver
-
-#### Scenario: NOTIFY sent to every glue IP when multiple exist
-
-- **WHEN** a zone has NS record `ns21.example.com.` with in-zone records `ns21.example.com. A 10.0.0.21` and `ns21.example.com. AAAA 2001:db8::21`
-- **THEN** one NOTIFY send sequence targets `10.0.0.21:53` and a separate NOTIFY send sequence targets `[2001:db8::21]:53`
-
-#### Scenario: NS target without in-zone glue is skipped
-
-- **WHEN** a zone `example.com.` has NS record `ns.other.tld.` and no A or AAAA record for `ns.other.tld.` exists within the `example.com.` zone data
-- **THEN** no NOTIFY message is built, no goroutine is spawned, and no operating system resolution is attempted for that target; a log record at debug severity is emitted with field `source="skipped-no-glue"` identifying the zone and NS hostname
-
-#### Scenario: NOTIFY retry on failure
-
-- **WHEN** the first NOTIFY send to a resolved glue IP returns no response within 5 seconds
-- **THEN** the server retries after 1 second, then 2 seconds, then 4 seconds; after three failed attempts it logs an error with field `source="glue"` and gives up
-
-#### Scenario: NOTIFY not sent to SOA MNAME
-
-- **WHEN** the zone has NS records including a target that equals the SOA MNAME
-- **THEN** NOTIFY is not sent to that target, regardless of whether in-zone glue for the MNAME exists
-
-#### Scenario: Cross-view deduplication by zone-host-IP tuple
-
-- **WHEN** the same zone `example.com.` is loaded in two views and its NS record `ns2.example.com.` resolves via in-zone glue to the same IP `10.0.0.2` in both views
-- **THEN** exactly one NOTIFY send sequence targeting `10.0.0.2:53` is executed for that zone during startup
-
----
-### Requirement: Deny IXFR by responding with full AXFR
-
-The zone-transfer subsystem SHALL NOT implement incremental transfer. On receiving an IXFR query (QTYPE=251), the server SHALL fall back to a full AXFR response per RFC 1995 (section 4), which is the protocol-defined fallback when the server cannot supply an incremental delta.
-
-#### Scenario: IXFR query falls back to AXFR
-
-- **WHEN** a slave sends `IXFR example.com. IN` with a SOA serial
-- **THEN** the server responds with the same stream format as AXFR (SOA, records, SOA)
-
----
-### Requirement: Refuse unknown or unsupported transfer types
-
-The zone-transfer subsystem SHALL return `RCODE=REFUSED` for any zone-transfer-class query (AXFR or IXFR) that targets a zone not loaded by the server.
-
-#### Scenario: AXFR for unknown zone is refused
-
-- **WHEN** a permitted client requests `AXFR unknown.example. IN` and no zone `unknown.example.` is loaded
-- **THEN** the server returns `RCODE=REFUSED`
