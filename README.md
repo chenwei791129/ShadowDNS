@@ -115,7 +115,7 @@ Response sent to client
 | IXFR                          | Yes           | No           |
 | DNSSEC                        | Yes           | No           |
 | IPv6 listener                 | Yes           | Planned      |
-| DNS Cookies (RFC 7873)        | No            | Planned      |
+| DNS Cookies (RFC 7873)        | Yes           | Planned      |
 | Response Rate Limiting (RRL)  | No            | Planned      |
 | EDNS Client Subnet (ECS)      | No            | Planned      |
 | Query logging (BIND format)   | Yes           | Yes          |
