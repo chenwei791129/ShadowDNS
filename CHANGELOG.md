@@ -13,6 +13,14 @@
 
 * **shadowdns.yaml:** the `aliases` map now accepts two value shapes per root: the existing list-of-strings (legacy form, equivalent to `rewrite_rdata_labels: false`) and a new object form `{members: [...], rewrite_rdata_labels: <bool>}`. Mixing both shapes across different roots is allowed. Object-form entries with unknown fields, missing `members`, or an empty `members` list are rejected at config load.
 
+## [0.17.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.16.1...v0.17.0) (2026-06-07)
+
+
+### Features
+
+* **notify:** resolve NOTIFY targets from in-zone glue records ([f11f712](https://github.com/chenwei791129/ShadowDNS/commit/f11f7121c64842dc3729ee47e788450b35c55130))
+* **querylog:** add BIND9-compatible query logging from named.conf logging{} ([dd33fee](https://github.com/chenwei791129/ShadowDNS/commit/dd33feef84fb2157418a2e7b37a839091bc8e8cd))
+
 ## [0.16.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.16.0...v0.16.1) (2026-05-09)
 
 
