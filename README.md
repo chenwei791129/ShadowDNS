@@ -81,7 +81,6 @@ Response sent to client
 
 ### Planned
 
-- DNSSEC — signing, NSEC/NSEC3, DS records
 - IPv6 listener
 - DNS Cookies (RFC 7873) — server-side cookie validation to mitigate source IP spoofing
 - Response Rate Limiting (RRL) — throttle excessive responses to mitigate DNS amplification attacks
@@ -91,6 +90,7 @@ Response sent to client
 
 ### Not supported
 
+- DNSSEC — not planned; signing conflicts with zone aliasing (RRSIG owner names cannot survive on-the-fly rewriting) and ephemeral records (TTL-0 records injected at runtime cannot be pre-signed)
 - IXFR (incremental zone transfer) — not planned; slaves receive a full AXFR on each NOTIFY, which is the protocol-defined fallback per RFC 1995
 - Dynamic Update (RFC 2136) — not planned; all record changes go through zone file edits and reload
 - Recursion — ShadowDNS is authoritative-only; `recursion no` is always in effect
@@ -113,7 +113,7 @@ Response sent to client
 | Hot reload (SIGHUP)           | Yes           | Yes          |
 | Prometheus metrics            | No            | Yes          |
 | IXFR                          | Yes           | No           |
-| DNSSEC                        | Yes           | Planned      |
+| DNSSEC                        | Yes           | No           |
 | IPv6 listener                 | Yes           | Planned      |
 | DNS Cookies (RFC 7873)        | No            | Planned      |
 | Response Rate Limiting (RRL)  | No            | Planned      |
