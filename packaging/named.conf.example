@@ -69,6 +69,36 @@ options {
 };
 
 // ---------------------------------------------------------------------------
+// Query logging (optional)
+//
+// ShadowDNS understands the BIND9 logging{} block for the "queries" category
+// and writes per-query log lines in BIND's exact format, so existing log
+// parsers keep working unchanged.
+//
+// Notes:
+//   - Only a file channel wired to "category queries" is honored; other
+//     categories and channel types are ignored.
+//   - BIND's built-in rotation parameters (versions/size) are NOT implemented;
+//     if present they are ignored with a startup warning. Use logrotate with
+//     a postrotate hook that sends SIGUSR1 to reopen the file instead.
+//   - Settings take effect at startup only; SIGHUP reload does not re-apply
+//     logging{} changes.
+//   - Keep the log path under /var/log/shadowdns/ when running under the
+//     bundled systemd unit (ProtectSystem=strict only whitelists that
+//     directory), or extend ReadWritePaths= via a systemd override.
+// ---------------------------------------------------------------------------
+logging {
+    channel queries_log {
+        file "/var/log/shadowdns/queries.log";
+        severity info;
+        print-time yes;
+        print-category yes;
+        print-severity yes;
+    };
+    category queries { queries_log; };
+};
+
+// ---------------------------------------------------------------------------
 // Zone views
 //
 // Views are evaluated in order from top to bottom.  The first view whose

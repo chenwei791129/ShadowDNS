@@ -221,8 +221,10 @@ include "extra.zones";
 	}
 }
 
-// Test 2.2-5: logging { ... }; block at top level is silently ignored.
-func TestLoadNamedConf_LoggingBlockIgnored(t *testing.T) {
+// Test 2.2-5: logging { ... }; block at top level is parsed (not silently ignored).
+// The block in this fixture uses a syslog channel with no category queries, so
+// query logging is disabled (Config.QueryLog == nil). Views are unaffected.
+func TestLoadNamedConf_LoggingBlockParsed(t *testing.T) {
 	dir := t.TempDir()
 
 	namedConf := `options {
@@ -253,6 +255,58 @@ view "view-a" {
 	}
 	if len(cfg.Views) != 1 {
 		t.Fatalf("expected 1 view, got %d", len(cfg.Views))
+	}
+	// No category queries in this fixture, so query logging must be disabled.
+	if cfg.QueryLog != nil {
+		t.Errorf("expected QueryLog to be nil (no category queries), got %+v", cfg.QueryLog)
+	}
+}
+
+// TestLoadNamedConf_LoggingBlockEnablesQueryLog verifies that a logging block
+// with a file channel and category queries produces a non-nil QueryLog.
+func TestLoadNamedConf_LoggingBlockEnablesQueryLog(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+logging {
+	channel queries_log {
+		file "/var/log/shadowdns/queries.log" versions 3 size 5000m;
+		severity debug;
+		print-severity yes;
+		print-time yes;
+		print-category yes;
+	};
+	category queries { queries_log; };
+};
+
+view "view-a" {
+	match-clients { any; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Views) != 1 {
+		t.Fatalf("expected 1 view, got %d", len(cfg.Views))
+	}
+	if cfg.QueryLog == nil {
+		t.Fatal("expected QueryLog to be non-nil, got nil")
+	}
+	if cfg.QueryLog.FilePath != "/var/log/shadowdns/queries.log" {
+		t.Errorf("QueryLog.FilePath: got %q, want %q", cfg.QueryLog.FilePath, "/var/log/shadowdns/queries.log")
+	}
+	if !cfg.QueryLog.RotationIgnored {
+		t.Error("QueryLog.RotationIgnored: got false, want true")
 	}
 }
 

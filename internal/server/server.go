@@ -14,6 +14,7 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/ephemeral"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
+	"github.com/chenwei791129/ShadowDNS/internal/querylog"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
 	"github.com/chenwei791129/ShadowDNS/internal/view"
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
@@ -120,6 +121,13 @@ type Server struct {
 	// handler calls Clear explicitly after a successful swap. When nil, no
 	// ephemeral TXT lookups are performed.
 	EphemeralStore *ephemeral.Store
+
+	// QueryLog enables BIND9-compatible per-query logging when non-nil.
+	// A nil value disables all query logging (safe for tests and when no
+	// logging{} block is configured). The hot path guards every entry-build
+	// and Log call behind a single nil check so disabled logging adds no
+	// overhead.
+	QueryLog *querylog.Logger
 
 	// listeners holds one entry per successfully bound address. Each entry
 	// owns a UDP *dns.Server and a TCP *dns.Server sharing the same address.

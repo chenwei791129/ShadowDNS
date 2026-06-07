@@ -11,6 +11,7 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/alias"
 	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
+	"github.com/chenwei791129/ShadowDNS/internal/querylog"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
@@ -140,6 +141,15 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	viewLabel = viewName
 	if mw != nil {
 		mw.SetView(viewName)
+	}
+
+	// Emission point (Task 3.1): emit query log immediately after view
+	// resolution succeeds and before zone matching. Queries that are later
+	// REFUSED because qname is outside all zones are still logged here,
+	// matching BIND9 semantics. The entire entry-build is guarded by a
+	// single nil check so that disabled logging adds no overhead.
+	if s.QueryLog != nil {
+		s.QueryLog.Log(buildQueryEntry(w, req, qnameOrig, viewName))
 	}
 
 	// Determine zone using longest-suffix match + alias map.
@@ -472,6 +482,15 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 		return
 	}
 
+	// Emission point (Task 3.2): emit query log after view resolution succeeds.
+	// The ACL check runs above and returns before reaching this point, so
+	// ACL-refused requests are never logged — consistent with BIND9 semantics
+	// (the existing ACL-before-view ordering is preserved; we do not reorder).
+	if s.QueryLog != nil {
+		q := req.Question[0]
+		s.QueryLog.Log(buildQueryEntry(w, req, q.Name, viewName))
+	}
+
 	origins := st.ZoneOrigins[viewName]
 	match := alias.Detect(qname, origins, st.Aliases)
 	if match.MatchedZone == "" {
@@ -639,4 +658,77 @@ func addrFamily(ip netip.Addr) string {
 		return "ipv4"
 	}
 	return "ipv6"
+}
+
+// addrPortFromNetAddr extracts a canonical (unmapped) AddrPort from the
+// concrete *net.TCPAddr / *net.UDPAddr types returned by miekg/dns without
+// any per-query heap allocation, mirroring the rationale of addrFromRemote.
+// Unmap() canonicalizes v4-mapped IPv6 slices to plain IPv4, matching BIND9
+// output (which prints plain IPv4). isTCP reports the transport implied by
+// the concrete type; ok is false for unknown net.Addr implementations.
+func addrPortFromNetAddr(addr net.Addr) (ap netip.AddrPort, isTCP, ok bool) {
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		ip, ok := netip.AddrFromSlice(a.IP)
+		return netip.AddrPortFrom(ip.Unmap(), uint16(a.Port)), true, ok
+	case *net.UDPAddr:
+		ip, ok := netip.AddrFromSlice(a.IP)
+		return netip.AddrPortFrom(ip.Unmap(), uint16(a.Port)), false, ok
+	}
+	return netip.AddrPort{}, false, false
+}
+
+// buildQueryEntry constructs a querylog.Entry from the current request and
+// resolved view name. Called only when s.QueryLog != nil (guarded by caller).
+func buildQueryEntry(w dns.ResponseWriter, req *dns.Msg, qnameOrig, viewName string) querylog.Entry {
+	// Transport is decided solely by the remote address type.
+	clientAddr, isTCP, ok := addrPortFromNetAddr(w.RemoteAddr())
+	if !ok {
+		// Fallback for unknown net.Addr implementations (test stubs, future
+		// PacketConn variants); may allocate, port unavailable.
+		if ip, err := addrFromRemote(w); err == nil {
+			clientAddr = netip.AddrPortFrom(ip, 0)
+		}
+	}
+
+	// Local address: only the IP is logged (BIND9 prints no port).
+	var localAddr netip.Addr
+	if lap, _, ok := addrPortFromNetAddr(w.LocalAddr()); ok {
+		localAddr = lap.Addr()
+	}
+
+	// Extract EDNS0 fields. req.IsEdns0() returns nil when no OPT record is present.
+	var ednsPresent bool
+	var ednsVersion uint8
+	var doBit bool
+	var cookiePresent bool
+
+	if opt := req.IsEdns0(); opt != nil {
+		ednsPresent = true
+		ednsVersion = opt.Version()
+		doBit = opt.Do()
+		for _, o := range opt.Option {
+			if _, ok := o.(*dns.EDNS0_COOKIE); ok {
+				cookiePresent = true
+				break
+			}
+		}
+	}
+
+	q := req.Question[0]
+	return querylog.Entry{
+		ClientAddr:    clientAddr,
+		Qname:         qnameOrig,
+		Qclass:        q.Qclass,
+		Qtype:         q.Qtype,
+		ViewName:      viewName,
+		RD:            req.RecursionDesired,
+		DO:            doBit,
+		CD:            req.CheckingDisabled,
+		TCP:           isTCP,
+		EDNSPresent:   ednsPresent,
+		EDNSVersion:   ednsVersion,
+		CookiePresent: cookiePresent,
+		LocalAddr:     localAddr,
+	}
 }

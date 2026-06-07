@@ -40,9 +40,17 @@ type View struct {
 
 // Config is the result of loading a named.conf and its included files.
 type Config struct {
-	Path    string       // the named.conf path
-	Options OptionsBlock // parsed options block
-	Views   []View       // in declaration order across all included files
+	Path     string          // the named.conf path
+	Options  OptionsBlock    // parsed options block
+	Views    []View          // in declaration order across all included files
+	QueryLog *QueryLogConfig // nil when query logging is disabled
+
+	// QueryLogDisabledReason is a human-readable string explaining why query
+	// logging is disabled. It is non-empty only when a logging{} block was
+	// present in the named.conf but resulted in a disabled state (i.e.
+	// QueryLog == nil because of a specific disable condition). When QueryLog
+	// is nil and QueryLogDisabledReason is empty, no logging{} block was found.
+	QueryLogDisabledReason string
 }
 
 // ---------------------------------------------------------------------------
@@ -154,10 +162,27 @@ func loadFile(path string, cfg *Config, logger *zap.Logger) error {
 			cfg.Views = append(cfg.Views, v)
 
 		case "logging":
-			// logging { ... }; — skip silently.
-			if err := lx.skipBalancedBraceBlock(path); err != nil {
-				return err
+			// logging { ... }; — parse and extract query log configuration.
+			// Re-derive the byte offset of the "logging" keyword start.
+			logOffset := lx.pos - len("logging")
+			qlCfg, endOff, disabledReason, lErr := ParseLogging(data, logOffset, path, cfg.Options, logger)
+			if lErr != nil {
+				return lErr
 			}
+			if cfg.Path == path {
+				// Only apply logging config from the root named.conf.
+				cfg.QueryLog = qlCfg
+				// Propagate the disabled reason so that --dry-run can report WHY
+				// query logging is disabled even when no QueryLog config is set.
+				cfg.QueryLogDisabledReason = disabledReason
+			}
+			// logging{} in included files is parsed (for syntax checking and
+			// lexer advancement) but its config AND disabled reason are
+			// intentionally discarded — only the root named.conf is honored.
+			// Advance the outer lexer past the logging block using the offset
+			// returned by ParseLogging (same pattern as ParseOptions).
+			lx.pos = endOff
+			lx.line = countLines(data, 0, endOff)
 
 		default:
 			// Check reject list (task 2.6).

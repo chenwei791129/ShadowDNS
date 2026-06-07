@@ -27,6 +27,7 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/ephemeral"
 	"github.com/chenwei791129/ShadowDNS/internal/logging"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
+	"github.com/chenwei791129/ShadowDNS/internal/querylog"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
 	"github.com/chenwei791129/ShadowDNS/internal/shadowdnscfg"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
@@ -148,6 +149,27 @@ type runOptions struct {
 
 // parseVerifyMode converts the string value of --reload-verify to a VerifyMode.
 // Returns an error if the value is not one of "hash", "size", or "none".
+// queryLogSummary renders the query_log field of the dry-run summary: the
+// enabled state with the resolved path and effective print option values, or
+// the disable reason covering all five disable conditions (task 4.4).
+func queryLogSummary(cfg *config.Config) string {
+	switch {
+	case cfg.QueryLog != nil:
+		return fmt.Sprintf("enabled path=%s print-time=%s print-category=%v print-severity=%v",
+			cfg.QueryLog.FilePath,
+			cfg.QueryLog.PrintTime,
+			cfg.QueryLog.PrintCategory,
+			cfg.QueryLog.PrintSeverity,
+		)
+	case cfg.QueryLogDisabledReason != "":
+		// logging{} block was present but explicitly disabled by configuration.
+		return "disabled reason=" + cfg.QueryLogDisabledReason
+	default:
+		// No logging{} block at all.
+		return "disabled reason=no logging{} block in named.conf"
+	}
+}
+
 func parseVerifyMode(s string) (server.VerifyMode, error) {
 	switch s {
 	case "hash":
@@ -356,6 +378,36 @@ func run(ctx context.Context, opts runOptions) error {
 		return fmt.Errorf("building server state: %w", err)
 	}
 
+	// Open the query log sink when configured. This is done before the dry-run
+	// check so that (a) a bad path is caught early even in dry-run, and (b) the
+	// rotation warning (task 4.3) is always emitted.
+	//
+	// On success, qlLogger is injected into the server and qlReopener is added
+	// to the SIGUSR1 handler alongside LogReopener. On failure the error names
+	// the path so operators can act without reading source code.
+	var qlLogger *querylog.Logger
+	var qlReopener *logging.ReopenSink
+	if cfg.QueryLog != nil {
+		// Warn once (task 4.3) — must appear before both the dry-run exit and
+		// the normal startup path, so it is always emitted exactly once.
+		if cfg.QueryLog.RotationIgnored {
+			logger.Sugar().Warnw(
+				"query log: BIND rotation parameters (versions/size) are ignored — "+
+					"use an external log rotation tool (e.g. logrotate + SIGUSR1) instead",
+				"path", cfg.QueryLog.FilePath,
+			)
+		}
+
+		qlLogger, qlReopener, err = querylog.New(cfg.QueryLog.FilePath, querylog.Config{
+			PrintTime:     cfg.QueryLog.PrintTime,
+			PrintCategory: cfg.QueryLog.PrintCategory,
+			PrintSeverity: cfg.QueryLog.PrintSeverity,
+		})
+		if err != nil {
+			return fmt.Errorf("opening query log %q: %w", cfg.QueryLog.FilePath, err)
+		}
+	}
+
 	// --dry-run: load and validate the unified config (aliases + ephemeral_api),
 	// build zone state, log a summary, then exit without starting listeners or
 	// the API server. Validation errors from shadowdnscfg.Load above already
@@ -365,7 +417,16 @@ func run(ctx context.Context, opts runOptions) error {
 			"views", len(cfg.Views),
 			"zones", state.ZoneCount(),
 			"ephemeral_api", shadowCfg.EphemeralAPI != nil,
+			"query_log", queryLogSummary(cfg),
 		)
+		// The query log sink was opened above (to fail loudly on a bad path
+		// even in dry-run); close it before exiting so dry-run leaks no fd
+		// when run() is invoked in-process (tests, future callers).
+		if qlReopener != nil {
+			if cerr := qlReopener.Close(); cerr != nil {
+				logger.Sugar().Warnw("closing query log after dry-run", "err", cerr)
+			}
+		}
 		return nil
 	}
 
@@ -378,6 +439,8 @@ func run(ctx context.Context, opts runOptions) error {
 
 	srv := server.NewServer(state, logger)
 	srv.EphemeralStore = ephemeralStore
+	// Inject the query log (nil when not configured — server handles nil gracefully).
+	srv.QueryLog = qlLogger
 
 	// Ephemeral TXT HTTP API (optional — only started when the ephemeral_api
 	// section is present in the unified config).
@@ -487,12 +550,27 @@ func run(ctx context.Context, opts runOptions) error {
 	signal.Notify(sighupCh, syscall.SIGHUP)
 	defer signal.Stop(sighupCh)
 
-	// Listen for SIGUSR1 to reopen the file-backed log sink. Only wire
-	// this when --log-file produced a reopener — stderr-mode runs have
-	// nothing to reopen, and inheriting an unused handler would mask
-	// future repurposing of SIGUSR1.
-	var sigusr1Ch chan os.Signal
+	// Listen for SIGUSR1 to reopen file-backed log sinks. Install the handler
+	// when either the main log sink or the query log sink is file-backed.
+	// Stderr-only runs with no query log have nothing to reopen and do not
+	// inherit an unused handler.
+	//
+	// Both sinks are reopened independently: a failure on one side keeps its
+	// old fd open and logs an error, but does not prevent the other side from
+	// reopening (task 4.2).
+	type sinkReopener struct {
+		sink  *logging.ReopenSink
+		label string
+	}
+	var reopeners []sinkReopener
 	if opts.LogReopener != nil {
+		reopeners = append(reopeners, sinkReopener{opts.LogReopener, "log file"})
+	}
+	if qlReopener != nil {
+		reopeners = append(reopeners, sinkReopener{qlReopener, "query log file"})
+	}
+	var sigusr1Ch chan os.Signal
+	if len(reopeners) > 0 {
 		sigusr1Ch = make(chan os.Signal, 1)
 		signal.Notify(sigusr1Ch, syscall.SIGUSR1)
 		defer signal.Stop(sigusr1Ch)
@@ -502,22 +580,25 @@ func run(ctx context.Context, opts runOptions) error {
 				case <-ctx.Done():
 					return
 				case <-sigusr1Ch:
-					if rerr := opts.LogReopener.Reopen(); rerr != nil {
-						// Either the new path could not be opened
-						// (previous fd preserved) or the swap completed
-						// but the old fd's Close reported an error
-						// (e.g. ENOSPC flush on NFS). In both cases
-						// subsequent writes go through a working sink,
-						// so this error itself lands.
-						logger.Sugar().Errorw("log file reopen reported error",
-							"path", opts.LogReopener.Path(),
-							"err", rerr,
-						)
-					} else {
-						logger.Sugar().Infow("log file reopened",
-							"path", opts.LogReopener.Path(),
-						)
+					for _, r := range reopeners {
+						if rerr := r.sink.Reopen(); rerr != nil {
+							// Either the new path could not be opened
+							// (previous fd preserved) or the swap completed
+							// but the old fd's Close reported an error
+							// (e.g. ENOSPC flush on NFS). In both cases
+							// subsequent writes go through a working sink,
+							// so this error itself lands.
+							logger.Sugar().Errorw(r.label+" reopen reported error",
+								"path", r.sink.Path(),
+								"err", rerr,
+							)
+						} else {
+							logger.Sugar().Infow(r.label+" reopened",
+								"path", r.sink.Path(),
+							)
+						}
 					}
+
 					// Drain a second SIGUSR1 that arrived during the
 					// reopen so we do not immediately reopen again.
 					select {

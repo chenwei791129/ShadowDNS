@@ -77,6 +77,7 @@ Response sent to client
 - `allow-transfer` ACL enforcement
 - Split-horizon responses (different answers per view for the same query)
 - SOA inheritance for backup zones (serial tracks the root zone; slaves detect changes correctly)
+- BIND9-compatible query logging — parses the standard `logging{}` block (`channel` with `file`/`severity`/`print-*` plus `category queries`) and appends one line per view-matched query in BIND's exact queries-category format, so existing downstream log parsers keep working unchanged. Rotation is handled by logrotate + SIGUSR1 (BIND's built-in `versions`/`size` parameters are ignored with a startup warning); the file reopens alongside `--log-file` on SIGUSR1. Settings take effect at startup only — SIGHUP reload does not re-apply `logging{}` changes
 
 ### Planned
 
@@ -85,7 +86,6 @@ Response sent to client
 - DNS Cookies (RFC 7873) — server-side cookie validation to mitigate source IP spoofing
 - Response Rate Limiting (RRL) — throttle excessive responses to mitigate DNS amplification attacks
 - EDNS Client Subnet (ECS, RFC 7871) — improved GeoIP accuracy when queries arrive via resolvers
-- Access logging — structured log file for query/response auditing
 - Health check endpoint — HTTP `/healthz` for load balancer probes
 - CNAME Flattening — resolve CNAME targets at query time and return A/AAAA directly, allowing CNAME to coexist with other record types at the zone apex
 
@@ -118,7 +118,7 @@ Response sent to client
 | DNS Cookies (RFC 7873)        | No            | Planned      |
 | Response Rate Limiting (RRL)  | No            | Planned      |
 | EDNS Client Subnet (ECS)      | No            | Planned      |
-| Access logging                | Yes           | Planned      |
+| Query logging (BIND format)   | Yes           | Yes          |
 | Health check endpoint         | No            | Planned      |
 | CNAME Flattening              | No            | Planned      |
 | Dynamic Update                | Yes           | No           |
