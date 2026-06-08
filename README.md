@@ -86,7 +86,6 @@ Response sent to client
 - IPv6 listener
 - Response Rate Limiting (RRL) — throttle excessive responses to mitigate DNS amplification attacks
 - EDNS Client Subnet (ECS, RFC 7871) — improved GeoIP accuracy when queries arrive via resolvers
-- Health check endpoint — HTTP `/healthz` for load balancer probes
 - CNAME Flattening — resolve CNAME targets at query time and return A/AAAA directly, allowing CNAME to coexist with other record types at the zone apex
 
 ### Not supported
@@ -120,7 +119,6 @@ Response sent to client
 | Response Rate Limiting (RRL)  | No            | Planned      |
 | EDNS Client Subnet (ECS)      | No            | Planned      |
 | Query logging (BIND format)   | Yes           | Yes          |
-| Health check endpoint         | No            | Planned      |
 | CNAME Flattening              | No            | Planned      |
 | Dynamic Update                | Yes           | No           |
 | Recursion                     | Configurable  | Always off   |
