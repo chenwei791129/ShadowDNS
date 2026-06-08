@@ -116,7 +116,7 @@ Response sent to client
 | DNSSEC                             | Yes           | No         |
 | IPv6 listener                      | Yes           | Planned    |
 | DNS Cookies (RFC 7873)             | Yes           | Yes        |
-| Response Rate Limiting (RRL)       | No            | Planned    |
+| Response Rate Limiting (RRL)       | Yes           | Planned    |
 | EDNS Client Subnet (ECS, RFC 7871) | No            | Planned    |
 | Query logging (BIND format)        | Yes           | Yes        |
 | CNAME Flattening                   | No            | Planned    |
