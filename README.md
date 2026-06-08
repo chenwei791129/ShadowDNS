@@ -99,29 +99,29 @@ Response sent to client
 
 ### Feature comparison
 
-| Feature                        | BIND (master) | ShadowDNS    |
-|-------------------------------|---------------|--------------|
-| RFC 1035 zone file parsing    | Yes           | Yes          |
-| Split-horizon views           | Yes           | Yes          |
-| GeoIP country match           | Yes           | Yes          |
-| GeoIP ASN match               | Yes           | Yes          |
-| IP / CIDR match               | Yes           | Yes          |
-| AXFR                          | Yes           | Yes          |
-| NOTIFY                        | Yes           | Yes          |
-| Wildcard records (RFC 4592)   | Yes           | Yes          |
-| Zone aliasing (backup domain) | No            | Yes          |
-| Hot reload (SIGHUP)           | Yes           | Yes          |
-| Prometheus metrics            | No            | Yes          |
-| IXFR                          | Yes           | No           |
-| DNSSEC                        | Yes           | No           |
-| IPv6 listener                 | Yes           | Planned      |
-| DNS Cookies (RFC 7873)        | Yes           | Yes          |
-| Response Rate Limiting (RRL)  | No            | Planned      |
-| EDNS Client Subnet (ECS)      | No            | Planned      |
-| Query logging (BIND format)   | Yes           | Yes          |
-| CNAME Flattening              | No            | Planned      |
-| Dynamic Update                | Yes           | No           |
-| Recursion                     | Configurable  | Always off   |
+| Feature                            | BIND (master) | ShadowDNS  |
+|------------------------------------|---------------|------------|
+| RFC 1035 zone file parsing         | Yes           | Yes        |
+| Split-horizon views                | Yes           | Yes        |
+| GeoIP country match                | Yes           | Yes        |
+| GeoIP ASN match                    | Yes           | Yes        |
+| IP / CIDR match                    | Yes           | Yes        |
+| AXFR                               | Yes           | Yes        |
+| NOTIFY                             | Yes           | Yes        |
+| Wildcard records (RFC 4592)        | Yes           | Yes        |
+| Zone aliasing (backup domain)      | No            | Yes        |
+| Hot reload (SIGHUP)                | Yes           | Yes        |
+| Prometheus metrics                 | No            | Yes        |
+| IXFR                               | Yes           | No         |
+| DNSSEC                             | Yes           | No         |
+| IPv6 listener                      | Yes           | Planned    |
+| DNS Cookies (RFC 7873)             | Yes           | Yes        |
+| Response Rate Limiting (RRL)       | No            | Planned    |
+| EDNS Client Subnet (ECS, RFC 7871) | No            | Planned    |
+| Query logging (BIND format)        | Yes           | Yes        |
+| CNAME Flattening                   | No            | Planned    |
+| Dynamic Update                     | Yes           | No         |
+| Recursion                          | Configurable  | Always off |
 
 ## Quick start
 
