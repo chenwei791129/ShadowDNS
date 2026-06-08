@@ -83,10 +83,10 @@ Response sent to client
 
 ### Planned
 
-- IPv6 listener
-- Response Rate Limiting (RRL) — throttle excessive responses to mitigate DNS amplification attacks
+- IPv6 listener — serve DNS queries over IPv6 transport (operational guidance: RFC 3901 / BCP 91)
+- Response Rate Limiting (RRL) — throttle excessive responses to mitigate DNS amplification attacks (no RFC; operational technique by Vixie & Schryver, as implemented in BIND/NSD/Knot)
 - EDNS Client Subnet (ECS, RFC 7871) — improved GeoIP accuracy when queries arrive via resolvers
-- CNAME Flattening — resolve CNAME targets at query time and return A/AAAA directly, allowing CNAME to coexist with other record types at the zone apex
+- CNAME Flattening — resolve CNAME targets at query time and return A/AAAA directly, allowing CNAME to coexist with other record types at the zone apex (no RFC; vendor feature, related to the expired ANAME draft draft-ietf-dnsop-aname)
 
 ### Not supported
 
