@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
+	github.com/dchest/siphash v1.2.3
 	github.com/mattn/go-isatty v0.0.21
 	github.com/maxmind/mmdbwriter v1.2.0
 	github.com/miekg/dns v1.1.72

@@ -4,6 +4,7 @@
 package server
 
 import (
+	"crypto/rand"
 	"runtime"
 	"runtime/debug"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
+	"github.com/chenwei791129/ShadowDNS/internal/cookie"
 	"github.com/chenwei791129/ShadowDNS/internal/ephemeral"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/querylog"
@@ -137,6 +139,13 @@ type Server struct {
 	// gcHook, when non-nil, is called instead of runtime.GC()+debug.FreeOSMemory()
 	// after a successful SwapState. Used in tests to observe GC invocations.
 	gcHook func()
+
+	// cookieGen computes RFC 9018 server cookies (RFC 7873 answer-only
+	// mode). It is keyed once at startup from crypto/rand and deliberately
+	// lives outside ServerState so a SIGHUP reload never rotates the
+	// secret — cookies issued before a reload stay valid. The secret is
+	// held in memory only and changes on every process restart.
+	cookieGen *cookie.Generator
 }
 
 // listenerPair bundles the UDP and TCP dns.Server instances for a single
@@ -155,8 +164,14 @@ func NewServer(state ServerState, logger *zap.Logger) *Server {
 		logger = zap.NewNop()
 	}
 	state.sanitize()
+	// crypto/rand.Read never returns an error on Go 1.24+ (the runtime
+	// aborts the process on catastrophic entropy failure), so secret
+	// generation needs no error-handling path.
+	var secret [cookie.SecretLen]byte
+	_, _ = rand.Read(secret[:])
 	s := &Server{
-		Logger: logger,
+		Logger:    logger,
+		cookieGen: cookie.New(secret),
 	}
 	s.state.Store(&state)
 	return s

@@ -190,7 +190,7 @@ func TestReplyWithAnswer_UsesNameCompression(t *testing.T) {
 	req := buildTXTQuery(owner, 4096)
 
 	w := &recordingWriter{}
-	replyWithAnswer(w, req, answer)
+	replyWithAnswer(w, req, parseQueryOpt(req), answer)
 
 	if len(w.Packed) == 0 {
 		t.Fatal("recordingWriter captured no bytes")
@@ -228,7 +228,7 @@ func TestReplyWithAnswer_UDPRespectsEDNS0Budget(t *testing.T) {
 	req := buildTXTQuery(owner, 4096)
 
 	w := &recordingWriter{}
-	replyWithAnswer(w, req, answer)
+	replyWithAnswer(w, req, parseQueryOpt(req), answer)
 
 	if got := len(w.Packed); got > 4096 {
 		t.Errorf("packed wire size %d bytes exceeds EDNS0 budget 4096", got)
@@ -268,7 +268,7 @@ func TestReplyWithAnswer_UDPNoEDNSFallsBackTo512(t *testing.T) {
 	req := buildTXTQuery(owner, 0)           // no EDNS → 512 budget
 
 	w := &recordingWriter{}
-	replyWithAnswer(w, req, answer)
+	replyWithAnswer(w, req, parseQueryOpt(req), answer)
 
 	if got := len(w.Packed); got > 512 {
 		t.Errorf("packed wire size %d bytes exceeds 512-byte fallback budget", got)

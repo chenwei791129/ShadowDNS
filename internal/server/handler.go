@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/netip"
@@ -9,12 +10,103 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/chenwei791129/ShadowDNS/internal/alias"
+	"github.com/chenwei791129/ShadowDNS/internal/cookie"
 	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/querylog"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
+
+// queryOpt is the result of the single per-query EDNS0 OPT parse. It feeds
+// response assembly, UDP payload sizing, and query-log extraction so the
+// hot path never iterates opt.Option more than once (design: single-parse).
+type queryOpt struct {
+	present bool
+	version uint8
+	udpSize uint16
+	do      bool
+	// opt points at the request's OPT record; attachOPT reuses it for the
+	// response (the request is owned by this handler goroutine and is not
+	// read after response assembly), avoiding a per-response allocation.
+	opt *dns.OPT
+	// cookie points at the first COOKIE option in the OPT record (RFC 7873
+	// §5.2 first-wins); nil when absent. The Cookie field is hex-encoded by
+	// miekg/dns, so its raw byte length is len(Cookie)/2.
+	cookie *dns.EDNS0_COOKIE
+	// respCookie is the hex-encoded full COOKIE option payload (client
+	// cookie echo + fresh RFC 9018 server cookie) to emit in the response.
+	// Empty when the query carried no valid COOKIE option.
+	respCookie string
+}
+
+// parseQueryOpt extracts the EDNS0 OPT record fields from req in one pass.
+// It only touches req.Extra (never req.Question), so it is safe to call
+// before the question-count check.
+func parseQueryOpt(req *dns.Msg) queryOpt {
+	opt := req.IsEdns0()
+	if opt == nil {
+		return queryOpt{}
+	}
+	qo := queryOpt{
+		present: true,
+		version: opt.Version(),
+		udpSize: opt.UDPSize(),
+		do:      opt.Do(),
+		opt:     opt,
+	}
+	for _, o := range opt.Option {
+		if c, ok := o.(*dns.EDNS0_COOKIE); ok {
+			qo.cookie = c
+			break
+		}
+	}
+	return qo
+}
+
+// ednsUDPSize is the UDP payload size the server advertises in every OPT
+// record it sends. 1232 follows DNS Flag Day 2020 and matches the BIND 9.18
+// edns-udp-size default, avoiding IPv6 fragmentation. The OPT Udp field
+// carries the sender's own receive capability, so the client's advertised
+// size is deliberately not echoed.
+const ednsUDPSize = 1232
+
+// attachOPT appends the response OPT record (version 0, UDP payload size
+// 1232) when the query carried an OPT record, per RFC 6891. It is the single
+// assembly point for response EDNS content; extended rcodes (e.g. BADVERS)
+// rely on this OPT being present because miekg/dns Pack fails with
+// ErrExtendedRcode for Rcode > 15 without one.
+func attachOPT(m *dns.Msg, qo queryOpt) {
+	if !qo.present {
+		return
+	}
+	opt := qo.opt
+	if opt == nil {
+		// Cold path (panic recovery re-detects EDNS without the parse
+		// result): build a fresh OPT record.
+		opt = &dns.OPT{Hdr: dns.RR_Header{Name: ".", Rrtype: dns.TypeOPT}}
+	} else {
+		// Hot path: reuse the request's OPT record for the response.
+		// Dropping the client's options also discards the COOKIE option
+		// it sent — the response cookie is appended below from
+		// qo.respCookie. Hdr.Name is reset defensively: IsEdns0 matches
+		// on Rrtype only, so a client may have sent a non-root owner.
+		opt.Option = opt.Option[:0]
+		opt.Hdr.Name = "."
+	}
+	// Hdr.Ttl = 0 clears the client's version, DO bit, and any extended-
+	// rcode bits; Pack sets the response extended rcode itself via
+	// SetExtendedRcode.
+	opt.Hdr.Ttl = 0
+	opt.SetUDPSize(ednsUDPSize)
+	if qo.respCookie != "" {
+		opt.Option = append(opt.Option, &dns.EDNS0_COOKIE{
+			Code:   dns.EDNS0COOKIE,
+			Cookie: qo.respCookie,
+		})
+	}
+	m.Extra = append(m.Extra, opt)
+}
 
 // ServeDNS implements dns.Handler. It is the entry point for every DNS query.
 func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
@@ -55,9 +147,17 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			m.SetReply(req)
 			m.RecursionAvailable = false
 			m.Rcode = dns.RcodeServerFailure
+			// Cold path: the queryOpt parse result is not trusted after a
+			// panic, so re-detect EDNS in place (the one allowed exception
+			// to the single-parse rule).
+			attachOPT(m, queryOpt{present: req.IsEdns0() != nil})
 			_ = w.WriteMsg(m)
 		}
 	}()
+
+	// Single per-query OPT parse — must run before the opcode and
+	// question-count checks so early-exit error responses can echo OPT too.
+	qo := parseQueryOpt(req)
 
 	// Unsupported opcodes → NOTIMP.
 	if req.Opcode != dns.OpcodeQuery {
@@ -65,7 +165,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			"opcode", req.Opcode,
 			"remote", w.RemoteAddr().String(),
 		)
-		replyRcode(w, req, dns.RcodeNotImplemented)
+		replyRcode(w, req, qo, dns.RcodeNotImplemented)
 		return
 	}
 
@@ -75,8 +175,55 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			"questions", len(req.Question),
 			"remote", w.RemoteAddr().String(),
 		)
-		replyRcode(w, req, dns.RcodeFormatError)
+		replyRcode(w, req, qo, dns.RcodeFormatError)
 		return
+	}
+
+	// Unsupported EDNS version → BADVERS (RFC 6891 §6.1.3). Takes precedence
+	// over all COOKIE processing; the extended rcode is carried by the OPT
+	// record that replyRcode attaches (Pack would silently fail without it).
+	if qo.present && qo.version > 0 {
+		replyRcode(w, req, qo, dns.RcodeBadVers)
+		return
+	}
+
+	// COOKIE option processing (RFC 7873 answer-only mode). The length check
+	// uses the raw byte count — miekg/dns stores the option as a hex string,
+	// so len(Cookie) is twice the raw length. Checking the hex length first
+	// avoids decoding malformed payloads, and only the 8-byte client cookie
+	// is ever decoded (the rest of a full cookie is a stale server cookie
+	// that is never validated). A fresh server cookie is computed for every
+	// cookied query; attachOPT emits it at whichever assembly point answers
+	// the query.
+	if qo.cookie != nil {
+		hexCookie := qo.cookie.Cookie
+		var cc [cookie.ClientCookieLen]byte
+		if len(hexCookie)%2 != 0 || !cookie.ValidQueryLen(len(hexCookie)/2) {
+			// Malformed COOKIE → FORMERR with OPT echo but no COOKIE
+			// option (RFC 7873 §5.2.2).
+			replyRcode(w, req, qo, dns.RcodeFormatError)
+			return
+		}
+		if _, err := hex.Decode(cc[:], []byte(hexCookie[:cookie.ClientCookieLen*2])); err != nil {
+			// Non-hex payload cannot come off the wire (miekg/dns produced
+			// the hex encoding); treat in-process garbage as malformed too.
+			replyRcode(w, req, qo, dns.RcodeFormatError)
+			return
+		}
+		ip, ipErr := addrFromRemote(w)
+		if ipErr != nil {
+			// Same failure as view resolution handles below: without a
+			// client IP there is nothing to serve — REFUSED, not a
+			// silently cookie-less answer.
+			s.Logger.Sugar().Warnw("cannot parse client IP for cookie; replying REFUSED",
+				"remote", w.RemoteAddr().String(),
+				"err", ipErr,
+			)
+			replyRcode(w, req, qo, dns.RcodeRefused)
+			return
+		}
+		full := s.cookieGen.Generate(cc, ip, time.Now().Unix())
+		qo.respCookie = hex.EncodeToString(full[:])
 	}
 
 	q := req.Question[0]
@@ -97,7 +244,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			"qname", qname,
 			"remote", w.RemoteAddr().String(),
 		)
-		replyRcode(w, req, dns.RcodeRefused)
+		replyRcode(w, req, qo, dns.RcodeRefused)
 		return
 	}
 
@@ -110,7 +257,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Note: transfers are counted under view="refused" in metrics because
 	// clientIP and viewName are resolved inside handleTransfer, not here.
 	if qtype == dns.TypeAXFR || qtype == dns.TypeIXFR {
-		s.handleTransfer(w, req, qname, st)
+		s.handleTransfer(w, req, qname, qo, st)
 		return
 	}
 
@@ -122,7 +269,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			"remote", w.RemoteAddr().String(),
 			"err", err,
 		)
-		replyRcode(w, req, dns.RcodeRefused)
+		replyRcode(w, req, qo, dns.RcodeRefused)
 		return
 	}
 
@@ -133,7 +280,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			"client", clientIP.String(),
 			"qname", qname,
 		)
-		replyRcode(w, req, dns.RcodeRefused)
+		replyRcode(w, req, qo, dns.RcodeRefused)
 		return
 	}
 
@@ -149,7 +296,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// matching BIND9 semantics. The entire entry-build is guarded by a
 	// single nil check so that disabled logging adds no overhead.
 	if s.QueryLog != nil {
-		s.QueryLog.Log(buildQueryEntry(w, req, qnameOrig, viewName))
+		s.QueryLog.Log(buildQueryEntry(w, req, qnameOrig, viewName, qo))
 	}
 
 	// Determine zone using longest-suffix match + alias map.
@@ -160,14 +307,14 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			"view", viewName,
 			"qname", qname,
 		)
-		replyRcode(w, req, dns.RcodeRefused)
+		replyRcode(w, req, qo, dns.RcodeRefused)
 		return
 	}
 
 	if match.IsBackup {
-		s.handleBackupQuery(w, req, viewName, qname, qnameOrig, qtype, match, st)
+		s.handleBackupQuery(w, req, viewName, qname, qnameOrig, qtype, qo, match, st)
 	} else {
-		s.handleRootQuery(w, req, viewName, qname, qnameOrig, qtype, match, st)
+		s.handleRootQuery(w, req, viewName, qname, qnameOrig, qtype, qo, match, st)
 	}
 }
 
@@ -182,6 +329,7 @@ func (s *Server) handleRootQuery(
 	req *dns.Msg,
 	viewName, qname, qnameOrig string,
 	qtype uint16,
+	qo queryOpt,
 	match alias.Match,
 	st *ServerState,
 ) {
@@ -191,23 +339,23 @@ func (s *Server) handleRootQuery(
 			"view", viewName,
 			"zone", match.MatchedZone,
 		)
-		replyRcode(w, req, dns.RcodeServerFailure)
+		replyRcode(w, req, qo, dns.RcodeServerFailure)
 		return
 	}
 
 	// SOA at apex short-circuit.
 	if qtype == dns.TypeSOA && qname == rootZone.Origin {
 		if rootZone.SOA != nil {
-			replyWithAnswer(w, req, []dns.RR{rootZone.SOA})
+			replyWithAnswer(w, req, qo, []dns.RR{rootZone.SOA})
 		} else {
-			s.negativeReply(w, req, rootZone, nil, match, qname, rootZone.SOA)
+			s.negativeReply(w, req, qo, rootZone, nil, match, qname, rootZone.SOA)
 		}
 		return
 	}
 
 	records := rootZone.Lookup(qname, qtype)
 	if len(records) > 0 {
-		replyWithAnswer(w, req, records)
+		replyWithAnswer(w, req, qo, records)
 		return
 	}
 
@@ -218,14 +366,14 @@ func (s *Server) handleRootQuery(
 	// lookupEphemeralTXT is a no-op for other qtypes and an empty store.
 	// See docs/ephemeral-api.md §"Ephemeral TXT 覆蓋 exact CNAME".
 	if answer := s.lookupEphemeralTXT(qname, qnameOrig, qtype); answer != nil {
-		replyWithAnswer(w, req, answer)
+		replyWithAnswer(w, req, qo, answer)
 		return
 	}
 
 	// CNAME fallback per RFC 1034 §3.6.2.
 	if qtype != dns.TypeCNAME {
 		if cnames := rootZone.Lookup(qname, dns.TypeCNAME); len(cnames) > 0 {
-			replyWithAnswer(w, req, rootZone.FollowCNAME(nil, cnames, qtype))
+			replyWithAnswer(w, req, qo, rootZone.FollowCNAME(nil, cnames, qtype))
 			return
 		}
 	}
@@ -234,17 +382,17 @@ func (s *Server) handleRootQuery(
 	// response preserves the client-supplied case.
 	wRRs, wFound := rootZone.LookupWildcard(qname, qtype)
 	if wFound && len(wRRs) > 0 {
-		replyWithAnswer(w, req, rewriteWildcardOwner(wRRs, qnameOrig))
+		replyWithAnswer(w, req, qo, rewriteWildcardOwner(wRRs, qnameOrig))
 		return
 	}
 	if qtype != dns.TypeCNAME {
 		if wCNAMEs, _ := rootZone.LookupWildcard(qname, dns.TypeCNAME); len(wCNAMEs) > 0 {
-			replyWithAnswer(w, req, rootZone.FollowCNAME(nil, rewriteWildcardOwner(wCNAMEs, qnameOrig), qtype))
+			replyWithAnswer(w, req, qo, rootZone.FollowCNAME(nil, rewriteWildcardOwner(wCNAMEs, qnameOrig), qtype))
 			return
 		}
 	}
 
-	s.negativeReply(w, req, rootZone, nil, match, qname, rootZone.SOA)
+	s.negativeReply(w, req, qo, rootZone, nil, match, qname, rootZone.SOA)
 }
 
 // handleBackupQuery answers a query from a backup (alias) zone.
@@ -260,6 +408,7 @@ func (s *Server) handleBackupQuery(
 	req *dns.Msg,
 	viewName, qname, qnameOrig string,
 	qtype uint16,
+	qo queryOpt,
 	match alias.Match,
 	st *ServerState,
 ) {
@@ -270,7 +419,7 @@ func (s *Server) handleBackupQuery(
 			"backup", match.MatchedZone,
 			"root", match.RootZone,
 		)
-		replyRcode(w, req, dns.RcodeServerFailure)
+		replyRcode(w, req, qo, dns.RcodeServerFailure)
 		return
 	}
 
@@ -294,14 +443,14 @@ func (s *Server) handleBackupQuery(
 
 	// SOA at backup apex.
 	if qtype == dns.TypeSOA && qname == match.MatchedZone {
-		replyWithAnswer(w, req, []dns.RR{backupSOA})
+		replyWithAnswer(w, req, qo, []dns.RR{backupSOA})
 		return
 	}
 
 	// Exact match (backup override + root exact), without CNAME fallback —
 	// so zone records win over the ephemeral overlay below.
 	if records := alias.ResolveExactNoCNAME(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels); len(records) > 0 {
-		replyWithAnswer(w, req, records)
+		replyWithAnswer(w, req, qo, records)
 		return
 	}
 
@@ -309,22 +458,22 @@ func (s *Server) handleBackupQuery(
 	// handleRootQuery (scoped to TXT qtype); lookup uses the lookup-fold
 	// qname because API callers PUT entries under that name.
 	if answer := s.lookupEphemeralTXT(qname, qnameOrig, qtype); answer != nil {
-		replyWithAnswer(w, req, answer)
+		replyWithAnswer(w, req, qo, answer)
 		return
 	}
 
 	// CNAME fallback per RFC 1034 §3.6.2.
 	if records := alias.ResolveCNAMEFallback(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels); len(records) > 0 {
-		replyWithAnswer(w, req, records)
+		replyWithAnswer(w, req, qo, records)
 		return
 	}
 
 	if records := alias.ResolveWildcard(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels); len(records) > 0 {
-		replyWithAnswer(w, req, records)
+		replyWithAnswer(w, req, qo, records)
 		return
 	}
 
-	s.negativeReply(w, req, rootZone, backupZone, match, qname, backupSOA)
+	s.negativeReply(w, req, qo, rootZone, backupZone, match, qname, backupSOA)
 }
 
 // EphemeralResponseTTL is the TTL (in seconds) written into every ephemeral
@@ -370,7 +519,7 @@ func (s *Server) lookupEphemeralTXT(qname, qnameOrig string, qtype uint16) []dns
 }
 
 // negativeReply sends an NXDOMAIN or NODATA response with the zone SOA in the
-// authority section.
+// authority section and the OPT echo when the query carried one.
 //
 // NXDOMAIN: the name does not exist in the zone at all.
 // NODATA:   the name exists but has no records of the requested type → RCODE=NOERROR.
@@ -380,6 +529,7 @@ func (s *Server) lookupEphemeralTXT(qname, qnameOrig string, qtype uint16) []dns
 func (s *Server) negativeReply(
 	w dns.ResponseWriter,
 	req *dns.Msg,
+	qo queryOpt,
 	rootZone *zone.Zone,
 	backupZone *zone.Zone,
 	match alias.Match,
@@ -419,6 +569,7 @@ func (s *Server) negativeReply(
 		m.Ns = []dns.RR{authSOA}
 	}
 
+	attachOPT(m, qo)
 	_ = w.WriteMsg(m)
 }
 
@@ -448,8 +599,9 @@ func backupZoneHasName(backupZone *zone.Zone, rootZone *zone.Zone, match alias.M
 
 // handleTransfer routes AXFR/IXFR requests through the ACL and then dispatches
 // to the transfer subsystem. qname is the already-lowercased query name from
-// ServeDNS.
-func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string, st *ServerState) {
+// ServeDNS; qo is the per-query OPT parse result threaded through so
+// pre-transfer error responses can echo OPT.
+func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string, qo queryOpt, st *ServerState) {
 	// Extract source IP for ACL check.
 	srcIP, err := addrFromRemote(w)
 	if err != nil {
@@ -457,7 +609,7 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 			"remote", w.RemoteAddr().String(),
 			"err", err,
 		)
-		replyRcode(w, req, dns.RcodeRefused)
+		replyRcode(w, req, qo, dns.RcodeRefused)
 		return
 	}
 
@@ -467,7 +619,7 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 			"src", srcIP.String(),
 			"qname", qname,
 		)
-		replyRcode(w, req, dns.RcodeRefused)
+		replyRcode(w, req, qo, dns.RcodeRefused)
 		return
 	}
 
@@ -478,7 +630,7 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 			"src", srcIP.String(),
 			"qname", qname,
 		)
-		replyRcode(w, req, dns.RcodeRefused)
+		replyRcode(w, req, qo, dns.RcodeRefused)
 		return
 	}
 
@@ -488,7 +640,7 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 	// (the existing ACL-before-view ordering is preserved; we do not reorder).
 	if s.QueryLog != nil {
 		q := req.Question[0]
-		s.QueryLog.Log(buildQueryEntry(w, req, q.Name, viewName))
+		s.QueryLog.Log(buildQueryEntry(w, req, q.Name, viewName, qo))
 	}
 
 	origins := st.ZoneOrigins[viewName]
@@ -498,7 +650,7 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 			"view", viewName,
 			"qname", qname,
 		)
-		replyRcode(w, req, dns.RcodeRefused)
+		replyRcode(w, req, qo, dns.RcodeRefused)
 		return
 	}
 
@@ -576,27 +728,32 @@ func addrFromRemote(w dns.ResponseWriter) (netip.Addr, error) {
 		if parseErr != nil {
 			return netip.Addr{}, fmt.Errorf("parsing IP %q: %w", host, parseErr)
 		}
-		return ip, nil
+		// Unmap for byte-equivalence with the typed arms above — the cookie
+		// hash and view matching both depend on a canonical address form.
+		return ip.Unmap(), nil
 	}
 }
 
-// replyRcode sends a response with the given RCODE and no payload.
-// RA is always false; AA is false for error responses.
-func replyRcode(w dns.ResponseWriter, req *dns.Msg, rcode int) {
+// replyRcode sends a response with the given RCODE and no payload beyond the
+// OPT echo. RA is always false; AA is false for error responses.
+func replyRcode(w dns.ResponseWriter, req *dns.Msg, qo queryOpt, rcode int) {
 	m := new(dns.Msg)
 	m.SetReply(req)
 	m.RecursionAvailable = false
 	m.Authoritative = false
 	m.Rcode = rcode
+	attachOPT(m, qo)
 	_ = w.WriteMsg(m)
 }
 
-// replyWithAnswer sends a successful authoritative response with AA=1, RA=0
-// and minimal Authority/Additional sections. Name compression (RFC 1035
-// §4.1.4) is always enabled. On UDP the wire size is strictly bounded by
-// udpMaxSize(req) via truncateForUDP, which drops trailing Answer RRs and
-// sets TC=1 when the response would overflow.
-func replyWithAnswer(w dns.ResponseWriter, req *dns.Msg, answer []dns.RR) {
+// replyWithAnswer sends a successful authoritative response with AA=1, RA=0,
+// the OPT echo when the query carried one, and a minimal Authority section.
+// Name compression (RFC 1035 §4.1.4) is always enabled. On UDP the wire size
+// is strictly bounded by udpMaxSize(qo) via truncateForUDP, which drops
+// trailing Answer RRs and sets TC=1 when the response would overflow; the
+// OPT record is attached before truncation so it counts toward the budget
+// and is never dropped (RFC 6891).
+func replyWithAnswer(w dns.ResponseWriter, req *dns.Msg, qo queryOpt, answer []dns.RR) {
 	m := new(dns.Msg)
 	m.SetReply(req)
 	m.RecursionAvailable = false
@@ -605,9 +762,10 @@ func replyWithAnswer(w dns.ResponseWriter, req *dns.Msg, answer []dns.RR) {
 	m.Answer = answer
 	// Must be set before any Pack() so truncateForUDP measures compressed size.
 	m.Compress = true
+	attachOPT(m, qo)
 
 	if dnsutil.IsUDP(w) {
-		truncateForUDP(m, udpMaxSize(req))
+		truncateForUDP(m, udpMaxSize(qo))
 	}
 
 	_ = w.WriteMsg(m)
@@ -639,11 +797,11 @@ func truncateForUDP(m *dns.Msg, budget int) {
 }
 
 // udpMaxSize returns the maximum UDP payload size for the response.
-// If the request carries an EDNS0 OPT record, that record's Udp field is used;
+// If the request carried an EDNS0 OPT record, its advertised size is used;
 // otherwise the minimum (512 bytes) is returned.
-func udpMaxSize(req *dns.Msg) int {
-	if opt := req.IsEdns0(); opt != nil && opt.UDPSize() > dns.MinMsgSize {
-		return int(opt.UDPSize())
+func udpMaxSize(qo queryOpt) int {
+	if qo.present && qo.udpSize > dns.MinMsgSize {
+		return int(qo.udpSize)
 	}
 	return dns.MinMsgSize
 }
@@ -678,9 +836,10 @@ func addrPortFromNetAddr(addr net.Addr) (ap netip.AddrPort, isTCP, ok bool) {
 	return netip.AddrPort{}, false, false
 }
 
-// buildQueryEntry constructs a querylog.Entry from the current request and
-// resolved view name. Called only when s.QueryLog != nil (guarded by caller).
-func buildQueryEntry(w dns.ResponseWriter, req *dns.Msg, qnameOrig, viewName string) querylog.Entry {
+// buildQueryEntry constructs a querylog.Entry from the current request, the
+// resolved view name, and the per-query OPT parse result. Called only when
+// s.QueryLog != nil (guarded by caller).
+func buildQueryEntry(w dns.ResponseWriter, req *dns.Msg, qnameOrig, viewName string, qo queryOpt) querylog.Entry {
 	// Transport is decided solely by the remote address type.
 	clientAddr, isTCP, ok := addrPortFromNetAddr(w.RemoteAddr())
 	if !ok {
@@ -697,24 +856,6 @@ func buildQueryEntry(w dns.ResponseWriter, req *dns.Msg, qnameOrig, viewName str
 		localAddr = lap.Addr()
 	}
 
-	// Extract EDNS0 fields. req.IsEdns0() returns nil when no OPT record is present.
-	var ednsPresent bool
-	var ednsVersion uint8
-	var doBit bool
-	var cookiePresent bool
-
-	if opt := req.IsEdns0(); opt != nil {
-		ednsPresent = true
-		ednsVersion = opt.Version()
-		doBit = opt.Do()
-		for _, o := range opt.Option {
-			if _, ok := o.(*dns.EDNS0_COOKIE); ok {
-				cookiePresent = true
-				break
-			}
-		}
-	}
-
 	q := req.Question[0]
 	return querylog.Entry{
 		ClientAddr:    clientAddr,
@@ -723,12 +864,12 @@ func buildQueryEntry(w dns.ResponseWriter, req *dns.Msg, qnameOrig, viewName str
 		Qtype:         q.Qtype,
 		ViewName:      viewName,
 		RD:            req.RecursionDesired,
-		DO:            doBit,
+		DO:            qo.do,
 		CD:            req.CheckingDisabled,
 		TCP:           isTCP,
-		EDNSPresent:   ednsPresent,
-		EDNSVersion:   ednsVersion,
-		CookiePresent: cookiePresent,
+		EDNSPresent:   qo.present,
+		EDNSVersion:   qo.version,
+		CookiePresent: qo.cookie != nil,
 		LocalAddr:     localAddr,
 	}
 }
