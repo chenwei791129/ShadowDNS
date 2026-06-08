@@ -78,11 +78,12 @@ Response sent to client
 - Split-horizon responses (different answers per view for the same query)
 - SOA inheritance for backup zones (serial tracks the root zone; slaves detect changes correctly)
 - BIND9-compatible query logging — parses the standard `logging{}` block (`channel` with `file`/`severity`/`print-*` plus `category queries`) and appends one line per view-matched query in BIND's exact queries-category format, so existing downstream log parsers keep working unchanged. Rotation is handled by logrotate + SIGUSR1 (BIND's built-in `versions`/`size` parameters are ignored with a startup warning); the file reopens alongside `--log-file` on SIGUSR1. Settings take effect at startup only — SIGHUP reload does not re-apply `logging{}` changes
+- EDNS0 OPT echo (RFC 6891) — responses to EDNS queries carry an OPT record (version 0, 1232-byte UDP payload size per DNS Flag Day 2020); unsupported EDNS versions receive BADVERS
+- DNS Cookies (RFC 7873, answer-only) — queries carrying a COOKIE option receive a full cookie in the response (client cookie echo + server cookie in the RFC 9018 interoperable format, SipHash-2-4). The 128-bit secret is generated at startup, held in memory only, and survives SIGHUP reloads. Cookies are never required: there is no enforcement mode and BADCOOKIE is never returned; malformed COOKIE options get FORMERR per RFC 7873 §5.2.2. Matches BIND 9.11+ default behavior
 
 ### Planned
 
 - IPv6 listener
-- DNS Cookies (RFC 7873) — server-side cookie validation to mitigate source IP spoofing
 - Response Rate Limiting (RRL) — throttle excessive responses to mitigate DNS amplification attacks
 - EDNS Client Subnet (ECS, RFC 7871) — improved GeoIP accuracy when queries arrive via resolvers
 - Health check endpoint — HTTP `/healthz` for load balancer probes
@@ -115,7 +116,7 @@ Response sent to client
 | IXFR                          | Yes           | No           |
 | DNSSEC                        | Yes           | No           |
 | IPv6 listener                 | Yes           | Planned      |
-| DNS Cookies (RFC 7873)        | Yes           | Planned      |
+| DNS Cookies (RFC 7873)        | Yes           | Yes          |
 | Response Rate Limiting (RRL)  | No            | Planned      |
 | EDNS Client Subnet (ECS)      | No            | Planned      |
 | Query logging (BIND format)   | Yes           | Yes          |
