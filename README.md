@@ -85,13 +85,14 @@ Response sent to client
 ### Planned
 
 - EDNS Client Subnet (ECS, RFC 7871) — improved GeoIP accuracy when queries arrive via resolvers
-- CNAME Flattening — resolve CNAME targets at query time and return A/AAAA directly, allowing CNAME to coexist with other record types at the zone apex (no RFC; vendor feature, related to the expired ANAME draft draft-ietf-dnsop-aname)
+- In-bailiwick CNAME Flattening — resolve an apex CNAME whose target points into a zone ShadowDNS already serves, returning A/AAAA directly so a CNAME can coexist with SOA/NS at the zone apex. Resolution is an in-memory lookup in the client's matched view — no outbound resolver, mirroring the in-zone-glue model used for NOTIFY. Targets resolving outside any ShadowDNS-served zone are refused. See [docs/cname-flattening-implementation-survey.md](docs/cname-flattening-implementation-survey.md)
 
 ### Not supported
 
 - DNSSEC — not planned; signing conflicts with zone aliasing (RRSIG owner names cannot survive on-the-fly rewriting) and ephemeral records (TTL-0 records injected at runtime cannot be pre-signed)
 - IXFR (incremental zone transfer) — not planned; slaves receive a full AXFR on each NOTIFY, which is the protocol-defined fallback per RFC 1995
 - Dynamic Update (RFC 2136) — not planned; all record changes go through zone file edits and reload
+- CNAME Flattening with out-of-bailiwick (external) targets — not planned; resolving an arbitrary external target (e.g. a third-party CDN hostname) at query time requires an outbound recursive path, which conflicts with the authoritative-only, `recursion no` design and degrades GeoIP accuracy (the target is resolved from the server's location, not the client's). Only the in-bailiwick subset is planned (see above); for external apex targets, RFC 9460 HTTPS/SVCB records are the standards-track alternative
 - Recursion — ShadowDNS is authoritative-only; `recursion no` is always in effect
 - `type slave` or `type forward` zones — rejected at startup with a fatal error
 - `allow-update`, `dnssec-enable` directives — rejected at startup
@@ -118,7 +119,8 @@ Response sent to client
 | Response Rate Limiting (RRL)       | Yes           | Yes        |
 | EDNS Client Subnet (ECS, RFC 7871) | No            | Planned    |
 | Query logging (BIND format)        | Yes           | Yes        |
-| CNAME Flattening                   | No            | Planned    |
+| CNAME Flattening (external target) | No            | No         |
+| In-bailiwick CNAME Flattening      | No            | Planned    |
 | Dynamic Update                     | Yes           | No         |
 | Recursion                          | Configurable  | Always off |
 
