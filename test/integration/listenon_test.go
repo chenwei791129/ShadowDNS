@@ -78,7 +78,7 @@ func startServerWithListenOn(t *testing.T, listenOnTokens, listenFlag string) (*
 		t.Fatalf("BuildState: %v", err)
 	}
 
-	addrs, err := server.ResolveListenAddresses(listenFlag, cfg.Options.ListenOn, logger)
+	addrs, err := server.ResolveListenAddresses(listenFlag, cfg.Options.ListenOn, cfg.Options.ListenOnV6, logger)
 	if err != nil {
 		_ = country.Close()
 		_ = asn.Close()

@@ -113,8 +113,10 @@ func (s *Server) logBindFailure(addr string, err error) {
 	s.Logger.Sugar().Warnw("listener bind failed; skipping address", args...)
 }
 
-// isLoopbackAddrInUse reports whether addr is in the IPv4 loopback range
-// (127.0.0.0/8) and the underlying syscall error was EADDRINUSE.
+// isLoopbackAddrInUse reports whether addr is a loopback address (IPv4
+// 127.0.0.0/8 or IPv6 ::1) and the underlying syscall error was EADDRINUSE.
+// Both families are covered so the systemd-resolved hint fires for an occupied
+// IPv6 loopback (e.g. [::1]:53) as well as the IPv4 stub addresses.
 func isLoopbackAddrInUse(addr string, err error) bool {
 	if !errors.Is(err, syscall.EADDRINUSE) {
 		return false
@@ -127,11 +129,7 @@ func isLoopbackAddrInUse(addr string, err error) bool {
 	if ip == nil {
 		return false
 	}
-	v4 := ip.To4()
-	if v4 == nil {
-		return false
-	}
-	return v4[0] == 127
+	return ip.IsLoopback()
 }
 
 // Serve starts the serve loop on all bound listeners and blocks until ctx

@@ -63,6 +63,14 @@ cp -R "${FIXTURE_SRC}/master"        "${SMOKE_DIR}/master"
 sed -i.bak "s|TESTDATA_DIR_PLACEHOLDER|${SMOKE_DIR}|g" "${SMOKE_DIR}/named.conf"
 rm -f "${SMOKE_DIR}/named.conf.bak"
 
+# Add a listen-on-v6 directive so the dry-run summary exercises IPv6 listener
+# resolution (loopback ::1 is always present). The shared integration fixture
+# is left untouched; only this smoke copy gets the v6 block. The backslash +
+# newline replacement is portable across GNU and BSD sed.
+sed -i.bak 's|listen-on { any; };|listen-on { any; };\
+    listen-on-v6 { ::1; };|' "${SMOKE_DIR}/named.conf"
+rm -f "${SMOKE_DIR}/named.conf.bak"
+
 # Rewrite relative include and file paths to absolute paths.
 sed -i.bak 's|include "master.zones";|include "'"${SMOKE_DIR}/master.zones"'";|g' "${SMOKE_DIR}/named.conf"
 rm -f "${SMOKE_DIR}/named.conf.bak"

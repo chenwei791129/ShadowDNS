@@ -89,14 +89,14 @@ func reload(
 	// non-empty diff against the originally bound set, and neither is
 	// applied at reload time.
 	currentBound := srv.BoundAddrStrings()
-	resolved, resolveErr := server.ResolveListenAddresses(opts.ListenAddr, cfg.Options.ListenOn, logger)
+	resolved, resolveErr := server.ResolveListenAddresses(opts.ListenAddr, cfg.Options.ListenOn, cfg.Options.ListenOnV6, logger)
 	switch {
 	case resolveErr != nil:
 		logger.Sugar().Warnw("reload: could not resolve listen addresses from new config; keeping current listeners",
 			"err", resolveErr)
 	case !server.AddrSetEqual(currentBound, resolved):
 		logger.Sugar().Infow(
-			"reload: listen-address set differs from bound set; restart to apply (cause: listen-on change and/or interface change since startup)",
+			"reload: listen-address set differs from bound set; restart to apply (cause: listen-on/listen-on-v6 change and/or interface change since startup)",
 			"current_bound", currentBound,
 			"new_resolved", resolved,
 		)
@@ -303,9 +303,11 @@ to change flag values.`,
 	f.StringVar(&opts.NamedConfPath, "named-conf", "", "path to named.conf (required)")
 	f.StringVar(&opts.ConfigPath, "config", "", "path to unified ShadowDNS YAML config (required)")
 	f.StringVar(&opts.ListenAddr, "listen", ":53",
-		"UDP/TCP listen address. Forms with a host component (e.g. \"127.0.0.1:53\") override named.conf's listen-on. "+
-			"Forms without a host (\":PORT\") use the port from --listen but take listen-on addresses from named.conf; "+
-			"when listen-on is absent, all IPv4 interface addresses are used.")
+		"UDP/TCP listen address. Forms with a host component (e.g. \"127.0.0.1:53\", or an IPv6 bracket literal "+
+			"\"[::1]:53\") override named.conf's listen-on/listen-on-v6 and bind exactly that single address. "+
+			"Forms without a host (\":PORT\") apply the port to the union of named.conf's listen-on (IPv4) and "+
+			"listen-on-v6 (IPv6) addresses; when listen-on is absent all IPv4 interface addresses are used, while "+
+			"listen-on-v6 is opt-in (absent means no IPv6 listener).")
 	f.StringVar(&opts.MetricsAddr, "metrics-addr", ":9153", "Prometheus /metrics HTTP listen address (empty string disables)")
 	f.BoolVar(&opts.PProfEnable, "pprof-enable", false, "Expose Go pprof profiling endpoints under /debug/pprof/ on the metrics HTTP server; requires --metrics-addr to be non-empty")
 	f.BoolVar(&opts.DryRun, "dry-run", false, "load configuration and zones, log a summary, then exit without starting listeners")
@@ -431,6 +433,19 @@ func run(ctx context.Context, opts runOptions) error {
 		}
 	}
 
+	// Resolve the listen-address set up front so --dry-run can report exactly
+	// what would be bound (IPv4 from listen-on plus IPv6 from listen-on-v6,
+	// emitted in bracket form) without starting any listener. The non-dry-run
+	// path below reuses this result, so resolution happens exactly once per
+	// startup. Precedence is described in design.md: an explicit host in
+	// --listen overrides everything; otherwise named.conf's listen-on /
+	// listen-on-v6 drive the host list with the port from --listen; otherwise
+	// all IPv4 interface addresses are used.
+	listenAddrs, err := server.ResolveListenAddresses(opts.ListenAddr, cfg.Options.ListenOn, cfg.Options.ListenOnV6, logger)
+	if err != nil {
+		return fmt.Errorf("resolving listen addresses: %w", err)
+	}
+
 	// --dry-run: load and validate the unified config (aliases + ephemeral_api),
 	// build zone state, log a summary, then exit without starting listeners or
 	// the API server. Validation errors from shadowdnscfg.Load above already
@@ -439,6 +454,7 @@ func run(ctx context.Context, opts runOptions) error {
 		logger.Sugar().Infow("dry-run: configuration loaded successfully",
 			"views", len(cfg.Views),
 			"zones", state.ZoneCount(),
+			"listen_addrs", listenAddrs,
 			"ephemeral_api", shadowCfg.EphemeralAPI != nil,
 			"query_log", queryLogSummary(cfg),
 			"rate_limit", rateLimitSummary(cfg),
@@ -539,17 +555,9 @@ func run(ctx context.Context, opts runOptions) error {
 		}()
 	}
 
-	// Resolve the listen-address set using the precedence described in
-	// design.md: explicit host in --listen overrides everything; otherwise
-	// named.conf's listen-on drives the host list with the port from
-	// --listen; otherwise fall back to all IPv4 interface addresses.
-	listenAddrs, err := server.ResolveListenAddresses(opts.ListenAddr, cfg.Options.ListenOn, logger)
-	if err != nil {
-		return fmt.Errorf("resolving listen addresses: %w", err)
-	}
-
 	// Bind listeners before writing the PID file so the port is guaranteed
-	// to be available when the PID file appears on disk.
+	// to be available when the PID file appears on disk. listenAddrs was
+	// resolved once above (shared with the --dry-run preview).
 	if err := srv.BindMany(listenAddrs); err != nil {
 		return err
 	}

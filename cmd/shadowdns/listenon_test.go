@@ -194,6 +194,101 @@ include "` + masterZones + `";
 	}
 }
 
+// TestRun_ReloadLogsListenAddrChangeHint_IPv6 is the IPv6 analogue of the test
+// above: it proves SIGHUP reload drift detection covers listen-on-v6, mirroring
+// the v4 case while logging the same restart hint and not re-binding.
+//
+// Note on addresses: the spec scenario phrases the drift as 2001:db8::1 →
+// 2001:db8::2, but neither documentation-prefix address is assigned to a local
+// interface, so a startup bind on them would fail and the server would never
+// serve them. To exercise the full bind→reload→drift path with a real v6
+// listener, startup uses the always-bindable loopback ::1; the reload then
+// rewrites listen-on-v6 to 2001:db8::1, which only needs to *resolve* (not
+// bind) for drift detection to fire. This preserves the contract intent:
+// drift detection covers IPv6 and reload does not re-bind.
+func TestRun_ReloadLogsListenAddrChangeHint_IPv6(t *testing.T) {
+	dir := setupReloadTestDir(t)
+	namedConf := filepath.Join(dir, "named.conf")
+	masterZones := filepath.Join(dir, "master.zones")
+	geoIPDir := filepath.Join(dir, "geoip")
+
+	// Start with listen-on { 127.0.0.1; } and listen-on-v6 { ::1; } so both a
+	// v4 and a v6 listener actually bind.
+	startContent := `options {
+    directory "` + dir + `";
+    geoip-directory "` + geoIPDir + `";
+    listen-on { 127.0.0.1; };
+    listen-on-v6 { ::1; };
+    recursion no;
+};
+
+include "` + masterZones + `";
+`
+	if err := os.WriteFile(namedConf, []byte(startContent), 0o644); err != nil {
+		t.Fatalf("write start named.conf: %v", err)
+	}
+
+	logger, observed := newObservedLogger()
+	readyCh := make(chan struct{})
+	opts := runOptions{
+		NamedConfPath: namedConf,
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
+		ListenAddr:    ":0",
+		Logger:        logger,
+		ReadyCh:       readyCh,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, opts) }()
+
+	waitReady(t, readyCh)
+
+	// The v6 loopback listener must have bound end-to-end at startup.
+	startupLog := formatObserved(observed)
+	if !strings.Contains(startupLog, "[::1]") {
+		t.Errorf("expected a bound v6 listener on [::1], log: %s", startupLog)
+	}
+
+	// Rewrite listen-on-v6 to a different (resolvable, non-local) v6 address.
+	reloadContent := `options {
+    directory "` + dir + `";
+    geoip-directory "` + geoIPDir + `";
+    listen-on { 127.0.0.1; };
+    listen-on-v6 { 2001:db8::1; };
+    recursion no;
+};
+
+include "` + masterZones + `";
+`
+	if err := os.WriteFile(namedConf, []byte(reloadContent), 0o644); err != nil {
+		t.Fatalf("rewrite named.conf: %v", err)
+	}
+
+	if err := sendSIGHUPToSelf(); err != nil {
+		t.Fatalf("SIGHUP: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	cancel()
+	<-done
+
+	logOut := formatObserved(observed)
+	// Drift across the v6 family must trigger the restart hint.
+	if !strings.Contains(logOut, "restart") {
+		t.Errorf("expected reload log to mention 'restart' for v6 drift, got: %s", logOut)
+	}
+	// The reload must NOT have re-bound to the new v6 address: no "listener
+	// bound" entry should reference 2001:db8::1. (The drift INFO line itself
+	// does mention it under new_resolved — that is the report, not a rebind —
+	// so we inspect bind events specifically rather than the whole log text.)
+	for _, e := range observed.FilterMessage("listener bound").All() {
+		if addr, ok := e.ContextMap()["addr"].(string); ok && strings.Contains(addr, "2001:db8::1") {
+			t.Errorf("reload must not re-bind; found a bind on the new v6 address: %s", addr)
+		}
+	}
+}
+
 // sendSIGHUPToSelf raises SIGHUP on the current process, as a proxy for an
 // operator triggering the reload path.
 func sendSIGHUPToSelf() error {

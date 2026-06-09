@@ -164,6 +164,33 @@ func TestBindMany_LoopbackEADDRINUSEHasResolvedHint(t *testing.T) {
 	}
 }
 
+// TestBindMany_IPv6LoopbackEADDRINUSEHasResolvedHint is the IPv6 analogue:
+// an occupied [::1] address must still trigger the systemd-resolved hint, since
+// the v6 loopback is a realistic stub-listener conflict now that IPv6 binds.
+func TestBindMany_IPv6LoopbackEADDRINUSEHasResolvedHint(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback unavailable on this host: %v", err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+	occupied := pc.LocalAddr().String() // "[::1]:XXXXX"
+
+	logger, buf := newTestLogger()
+	srv := NewServer(ServerState{}, logger)
+
+	// Pair the occupied v6 loopback with a succeeding address so BindMany does
+	// not return a fatal error.
+	if err := srv.BindMany([]string{occupied, "127.0.0.1:0"}); err != nil {
+		t.Fatalf("BindMany: %v", err)
+	}
+	defer srv.shutdownListeners()
+
+	logOut := buf.String()
+	if !strings.Contains(logOut, "DNSStubListener=no") {
+		t.Errorf("IPv6 loopback EADDRINUSE WARN should include systemd-resolved hint 'DNSStubListener=no', got: %s", logOut)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Regression: Bind(single) still works (legacy shim)
 // ---------------------------------------------------------------------------
