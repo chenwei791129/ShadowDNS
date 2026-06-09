@@ -452,3 +452,57 @@ tests:
   - internal/zone/zone_test.go
   - internal/zone/parser_test.go
 -->
+
+---
+### Requirement: Expose response rate limiting counters
+
+When response rate limiting is configured, the prometheus-metrics endpoint SHALL expose a counter tracking rate-limit decisions, labeled by response category (`responses`, `nxdomains`, `nodata`, `errors`) and by action (`dropped`, `slipped`, `exempted`, `logonly_would_drop`). The counter SHALL increment once per UDP response for which the limiter took a rate-limit-relevant action. Responses that are allowed without being over-limit SHALL NOT increment this counter. When rate limiting is unconfigured, the counter MAY be absent or remain at zero.
+
+#### Scenario: Dropped response increments the dropped counter
+
+- **WHEN** the limiter drops an over-limit NXDOMAIN response over UDP
+- **THEN** the rate-limit counter labeled category `nxdomains` and action `dropped` SHALL increment by one
+
+#### Scenario: Slipped response increments the slipped counter
+
+- **WHEN** the limiter truncates (slips) an over-limit positive response over UDP
+- **THEN** the rate-limit counter labeled category `responses` and action `slipped` SHALL increment by one
+
+#### Scenario: Log-only would-drop increments the logonly counter
+
+- **WHEN** `log-only` is enabled and a response that would have been dropped is delivered unchanged
+- **THEN** the rate-limit counter labeled action `logonly_would_drop` SHALL increment by one and no `dropped` increment SHALL occur
+
+<!-- @trace
+source: add-response-rate-limiting
+updated: 2026-06-09
+code:
+  - internal/ratelimit/exempt.go
+  - cmd/shadowdns/main.go
+  - internal/config/options.go
+  - internal/server/handler.go
+  - internal/ratelimit/writer.go
+  - testdata/integration/named.conf
+  - internal/config/ratelimit.go
+  - internal/config/zones.go
+  - internal/ratelimit/slip.go
+  - internal/ratelimit/table.go
+  - internal/ratelimit/classify.go
+  - internal/ratelimit/limiter.go
+  - internal/metrics/metrics.go
+  - internal/server/server.go
+  - README.md
+  - internal/ratelimit/key.go
+tests:
+  - internal/config/ratelimit_test.go
+  - internal/ratelimit/classify_test.go
+  - internal/ratelimit/table_test.go
+  - internal/ratelimit/limiter_decide_test.go
+  - internal/server/handler_ratelimit_test.go
+  - internal/metrics/metrics_ratelimit_test.go
+  - internal/ratelimit/writer_test.go
+  - internal/ratelimit/slip_test.go
+  - internal/ratelimit/limiter_credit_test.go
+  - internal/ratelimit/key_test.go
+  - internal/config/ratelimit_warn_test.go
+-->
