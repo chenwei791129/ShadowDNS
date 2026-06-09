@@ -84,7 +84,6 @@ Response sent to client
 ### Planned
 
 - IPv6 listener — serve DNS queries over IPv6 transport (operational guidance: RFC 3901 / BCP 91)
-- Response Rate Limiting (RRL) — throttle excessive responses to mitigate DNS amplification attacks (no RFC; operational technique by Vixie & Schryver, as implemented in BIND/NSD/Knot)
 - EDNS Client Subnet (ECS, RFC 7871) — improved GeoIP accuracy when queries arrive via resolvers
 - CNAME Flattening — resolve CNAME targets at query time and return A/AAAA directly, allowing CNAME to coexist with other record types at the zone apex (no RFC; vendor feature, related to the expired ANAME draft draft-ietf-dnsop-aname)
 
@@ -116,12 +115,39 @@ Response sent to client
 | DNSSEC                             | Yes           | No         |
 | IPv6 listener                      | Yes           | Planned    |
 | DNS Cookies (RFC 7873)             | Yes           | Yes        |
-| Response Rate Limiting (RRL)       | Yes           | Planned    |
+| Response Rate Limiting (RRL)       | Yes           | Yes        |
 | EDNS Client Subnet (ECS, RFC 7871) | No            | Planned    |
 | Query logging (BIND format)        | Yes           | Yes        |
 | CNAME Flattening                   | No            | Planned    |
 | Dynamic Update                     | Yes           | No         |
 | Recursion                          | Configurable  | Always off |
+
+#### Response Rate Limiting (RRL) — v1 scope
+
+RRL is configured via a BIND-compatible `rate-limit { ... }` block inside the global `options` scope only. A `rate-limit` block placed inside a `view` block is warned and ignored (per-view rate limiting is not supported in v1).
+
+RRL applies to **UDP responses only**; TCP responses are never rate-limited.
+
+Supported sub-options (defaults align with BIND):
+
+| Sub-option            | Notes                                                                                         |
+|-----------------------|-----------------------------------------------------------------------------------------------|
+| `responses-per-second`  | Max response rate per client prefix                                                         |
+| `referrals-per-second`  | Parsed for BIND compatibility; never triggers (ShadowDNS is authoritative-only and emits no referral responses) |
+| `nodata-per-second`     | Max NODATA response rate                                                                    |
+| `nxdomains-per-second`  | Max NXDOMAIN response rate                                                                  |
+| `errors-per-second`     | Max error response rate (SERVFAIL, REFUSED, etc.)                                           |
+| `all-per-second`        | Global cap across all response categories                                                   |
+| `window`                | Tracking window in seconds                                                                  |
+| `slip`                  | Fraction of rate-limited responses answered with a truncated reply instead of dropped       |
+| `ipv4-prefix-length`    | IPv4 prefix length for client grouping                                                      |
+| `ipv6-prefix-length`    | IPv6 prefix length for client grouping                                                      |
+| `exempt-clients`        | ACL of clients exempt from rate limiting                                                    |
+| `log-only`              | Log drops without actually dropping responses                                               |
+| `max-table-size`        | Maximum number of tracked client prefixes                                                   |
+| `min-table-size`        | Minimum table allocation size                                                               |
+
+`qps-scale` is **not supported** — it is warned and ignored.
 
 ## Quick start
 
