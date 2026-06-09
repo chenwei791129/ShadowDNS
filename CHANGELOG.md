@@ -13,6 +13,15 @@
 
 * **shadowdns.yaml:** the `aliases` map now accepts two value shapes per root: the existing list-of-strings (legacy form, equivalent to `rewrite_rdata_labels: false`) and a new object form `{members: [...], rewrite_rdata_labels: <bool>}`. Mixing both shapes across different roots is allowed. Object-form entries with unknown fields, missing `members`, or an empty `members` list are rejected at config load.
 
+## [0.18.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.17.0...v0.18.0) (2026-06-09)
+
+
+### Features
+
+* **ratelimit:** add BIND-compatible response rate limiting ([0658b4e](https://github.com/chenwei791129/ShadowDNS/commit/0658b4e0dff8d22e9d290d78afb1fea94cfe661b))
+* **server:** add DNS Cookies and EDNS0 OPT echo ([008d3cb](https://github.com/chenwei791129/ShadowDNS/commit/008d3cb8cfc9cad083733b055fc9fef536a8095f))
+* **server:** bind IPv6 listeners from named.conf listen-on-v6 ([496a505](https://github.com/chenwei791129/ShadowDNS/commit/496a505953c1aa043b6e7e591a11195c014cb5fa))
+
 ## [0.17.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.16.1...v0.17.0) (2026-06-07)
 
 
