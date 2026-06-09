@@ -272,6 +272,19 @@ func parseView(lx *lexer, path string, opts OptionsBlock, logger *zap.Logger) (V
 			}
 			logger.Sugar().Debugw("recursion directive inside view ignored", "view", viewName, "file", path)
 
+		case "rate-limit":
+			// Rate limiting is supported only at the global options scope (v1).
+			// A view-level rate-limit block is warned and ignored, not fatal, so
+			// migrating a BIND config with per-view rate-limit still starts.
+			logger.Sugar().Warnw("rate-limit inside a view is not supported (only options-scope rate-limit is honored); ignoring",
+				"view", viewName,
+				"line", tok.line,
+				"file", path,
+			)
+			if err := lx.skipOptionValue(path); err != nil {
+				return View{}, err
+			}
+
 		default:
 			return View{}, fmt.Errorf("%s:%d: unsupported directive %q inside view %q", path, tok.line, tok.value, viewName)
 		}

@@ -28,6 +28,7 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/logging"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/querylog"
+	"github.com/chenwei791129/ShadowDNS/internal/ratelimit"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
 	"github.com/chenwei791129/ShadowDNS/internal/shadowdnscfg"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
@@ -168,6 +169,18 @@ func queryLogSummary(cfg *config.Config) string {
 		// No logging{} block at all.
 		return "disabled reason=no logging{} block in named.conf"
 	}
+}
+
+// rateLimitSummary renders the rate_limit field of the dry-run summary: the
+// effective per-second / window / slip values when a rate-limit block is
+// present, or "disabled" when unconfigured.
+func rateLimitSummary(cfg *config.Config) string {
+	rl := cfg.Options.RateLimit
+	if rl == nil {
+		return "disabled reason=no rate-limit block in named.conf options"
+	}
+	return fmt.Sprintf("enabled responses-per-second=%d nxdomains-per-second=%d errors-per-second=%d all-per-second=%d window=%d slip=%d log-only=%v",
+		rl.ResponsesPerSecond, rl.NxdomainsPerSecond, rl.ErrorsPerSecond, rl.AllPerSecond, rl.Window, rl.Slip, rl.LogOnly)
 }
 
 func parseVerifyMode(s string) (server.VerifyMode, error) {
@@ -378,6 +391,16 @@ func run(ctx context.Context, opts runOptions) error {
 		return fmt.Errorf("building server state: %w", err)
 	}
 
+	// Build the response rate limiter from the options-block rate-limit config
+	// (nil when unconfigured). Constructed before the dry-run check so an
+	// invalid exempt-clients entry fails fast even under --dry-run. It is built
+	// once at startup and is not rebuilt on SIGHUP reload (v1 rate-limit config
+	// takes effect at startup only).
+	rateLimiter, err := ratelimit.NewLimiter(cfg.Options.RateLimit)
+	if err != nil {
+		return fmt.Errorf("building rate limiter: %w", err)
+	}
+
 	// Open the query log sink when configured. This is done before the dry-run
 	// check so that (a) a bad path is caught early even in dry-run, and (b) the
 	// rotation warning (task 4.3) is always emitted.
@@ -418,6 +441,7 @@ func run(ctx context.Context, opts runOptions) error {
 			"zones", state.ZoneCount(),
 			"ephemeral_api", shadowCfg.EphemeralAPI != nil,
 			"query_log", queryLogSummary(cfg),
+			"rate_limit", rateLimitSummary(cfg),
 		)
 		// The query log sink was opened above (to fail loudly on a bad path
 		// even in dry-run); close it before exiting so dry-run leaks no fd
@@ -441,6 +465,9 @@ func run(ctx context.Context, opts runOptions) error {
 	srv.EphemeralStore = ephemeralStore
 	// Inject the query log (nil when not configured — server handles nil gracefully).
 	srv.QueryLog = qlLogger
+	// Inject the rate limiter (nil when no rate-limit block — the server skips
+	// installing the wrapper, keeping the response path zero-cost).
+	srv.RateLimiter = rateLimiter
 
 	// Ephemeral TXT HTTP API (optional — only started when the ephemeral_api
 	// section is present in the unified config).
@@ -475,6 +502,8 @@ func run(ctx context.Context, opts runOptions) error {
 			"asn":     asn.Metadata().BuildEpoch,
 		})
 		srv.Metrics = m
+		// Route rate-limit action counts to the metrics registry.
+		rateLimiter.SetRecorder(m)
 		// Trigger initial zone gauge update. NewServer can't do this
 		// because Metrics is assigned after construction.
 		rootCounts := make(map[string]int, len(state.RootZones))

@@ -26,6 +26,10 @@ type OptionsBlock struct {
 	// &false means `notify no;`. The pointer lets downstream precedence
 	// logic distinguish "config did not set this" from "config set it to false".
 	Notify *bool
+	// RateLimit holds the parsed `rate-limit { ... }` block. A nil pointer
+	// means rate limiting is unconfigured (distinct from a block with all-zero
+	// limits), so the response-rate-limiting wrapper is never installed.
+	RateLimit *RateLimitConfig
 }
 
 // ParseOptions parses an `options { ... };` block from the input, starting at the
@@ -184,6 +188,13 @@ func ParseOptions(input []byte, startOffset int, path string, logger *zap.Logger
 			default:
 				return block, startOffset, fmt.Errorf("%s:%d: invalid value %q for 'notify', expected yes/no", path, keyLine, val)
 			}
+
+		case "rate-limit":
+			rl, e := parseRateLimit(lx, path, logger)
+			if e != nil {
+				return block, startOffset, e
+			}
+			block.RateLimit = rl
 
 		default:
 			// Unknown option: emit warning and skip until next ';' or balanced '{ };'.

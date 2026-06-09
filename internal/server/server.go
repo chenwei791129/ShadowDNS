@@ -17,6 +17,7 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/ephemeral"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/querylog"
+	"github.com/chenwei791129/ShadowDNS/internal/ratelimit"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
 	"github.com/chenwei791129/ShadowDNS/internal/view"
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
@@ -116,6 +117,14 @@ type Server struct {
 	// Metrics enables Prometheus metrics collection when non-nil.
 	// A nil value disables all instrumentation (safe for tests).
 	Metrics *metrics.Metrics
+
+	// RateLimiter applies BIND-compatible response rate limiting to UDP
+	// responses when non-nil. A nil value disables rate limiting entirely (the
+	// wrapper is never installed, so the response path has zero added cost).
+	// It is built once at startup from the options-block rate-limit config and
+	// is intentionally not part of ServerState: a SIGHUP reload does not rebuild
+	// it (v1 rate-limit config takes effect at startup only).
+	RateLimiter *ratelimit.Limiter
 
 	// EphemeralStore is an in-memory store of TXT records created via the
 	// ephemeral HTTP API (ACME DNS-01 challenges). It lives outside

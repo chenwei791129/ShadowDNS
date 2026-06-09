@@ -25,6 +25,7 @@ type Metrics struct {
 	zonesBackup     *prometheus.GaugeVec
 	geoipDBInfo     *prometheus.GaugeVec
 	panicsTotal     prometheus.Counter
+	rateLimitTotal  *prometheus.CounterVec
 }
 
 // New creates a fresh prometheus.Registry, registers all ShadowDNS collectors
@@ -85,6 +86,13 @@ func New() *Metrics {
 		Help:      "Total number of panics recovered by ShadowDNS handlers.",
 	})
 
+	rateLimitTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "shadowdns",
+		Subsystem: "dns",
+		Name:      "rate_limit_total",
+		Help:      "RRL decisions partitioned by response category and action.",
+	}, []string{"category", "action"})
+
 	reg.MustRegister(
 		requestsTotal,
 		responsesTotal,
@@ -94,6 +102,7 @@ func New() *Metrics {
 		zonesBackup,
 		geoipDBInfo,
 		panicsTotal,
+		rateLimitTotal,
 	)
 
 	return &Metrics{
@@ -106,6 +115,7 @@ func New() *Metrics {
 		zonesBackup:     zonesBackup,
 		geoipDBInfo:     geoipDBInfo,
 		panicsTotal:     panicsTotal,
+		rateLimitTotal:  rateLimitTotal,
 	}
 }
 
@@ -186,4 +196,10 @@ func (m *Metrics) SetGeoIPInfo(buildEpochs map[string]uint) {
 		ts := time.Unix(int64(epoch), 0).UTC().Format(time.RFC3339)
 		m.geoipDBInfo.WithLabelValues(db, ts).Set(1)
 	}
+}
+
+// RecordRateLimit increments the rate-limit decision counter for the given
+// response category and action. It satisfies ratelimit.Recorder.
+func (m *Metrics) RecordRateLimit(category, action string) {
+	m.rateLimitTotal.WithLabelValues(category, action).Inc()
 }

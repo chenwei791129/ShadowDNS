@@ -14,6 +14,7 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/querylog"
+	"github.com/chenwei791129/ShadowDNS/internal/ratelimit"
 	"github.com/chenwei791129/ShadowDNS/internal/transfer"
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
@@ -114,14 +115,26 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	var clientIP netip.Addr
 	viewLabel := "refused"
 
+	// realW is the underlying writer used for transport detection in the
+	// metrics defer; it stays the real writer even after the rate-limit and
+	// metrics wrappers are installed.
+	realW := w
+
+	// Install the rate-limit wrapper just outside the real writer so it sees
+	// the final response, but inside the metrics wrapper so a dropped response
+	// is still observed by metrics (which count the produced response; RRL
+	// actions are tracked by the limiter's own counters).
+	if s.RateLimiter != nil {
+		w = ratelimit.NewResponseWriter(w, s.RateLimiter)
+	}
+
 	if s.Metrics != nil {
-		origW := w
 		mw = metrics.NewResponseWriter(w, s.Metrics, "refused", time.Now())
 		w = mw
 
 		defer func() {
 			proto := "tcp"
-			if dnsutil.IsUDP(origW) {
+			if dnsutil.IsUDP(realW) {
 				proto = "udp"
 			}
 			qtypeStr := "unknown"
