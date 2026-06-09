@@ -64,8 +64,9 @@ Response sent to client
 
 ### Supported
 
-- `named.conf` options block (`directory`, `geoip-directory`, `listen-on`, `allow-transfer`, `recursion`, `minimal-responses`, `version`, `hostname`, `transfer-format`, `notify`)
+- `named.conf` options block (`directory`, `geoip-directory`, `listen-on`, `listen-on-v6`, `allow-transfer`, `recursion`, `minimal-responses`, `version`, `hostname`, `transfer-format`, `notify`)
 - `listen-on { any; }` and explicit IPv4 address lists from `named.conf` are honored via per-address binding. Individual bind failures (e.g. a `127.0.0.x` alias occupied by `systemd-resolved`) log a warning and are skipped; the server starts as long as at least one listener binds. See [docs/migration.md](docs/migration.md) for the precedence rules between `--listen` and `listen-on`
+- `listen-on-v6` from `named.conf` drives IPv6 listeners using the same per-address binding model as IPv4. Supported tokens: `any` (enumerates local IPv6 interface addresses, excluding link-local `fe80::/10` addresses that require a zone index, but including loopback `::1`), `none`, and explicit IPv6 address literals (e.g. `2001:db8::1`). IPv6 is opt-in: an absent `listen-on-v6` stanza yields no IPv6 listener, keeping IPv4-only deployments unchanged. Unsupported tokens (IPv4 literals, exclusion `!addr`, ACL names, `port N`) are logged at WARN and skipped non-fatally. `--listen` accepts IPv6 bracket literals (e.g. `[::1]:5353`); with the `:PORT` short form the resolved listener set is the union of `listen-on` (IPv4) and `listen-on-v6` (IPv6) addresses, IPv4 first
 - `view "<name>" { match-clients { ... }; ... }` with first-match semantics
 - `match-clients` rule types: `geoip country <ISO-2>`, `geoip asnum "AS<N> <description>"`, bare IPv4 address, IPv4 CIDR prefix, `any`
 - Wildcard record matching per RFC 4592 — closest-encloser algorithm with empty non-terminal (ENT) blocking, CNAME wildcard synthesis, and correct owner name rewriting in responses
@@ -83,7 +84,6 @@ Response sent to client
 
 ### Planned
 
-- IPv6 listener — serve DNS queries over IPv6 transport (operational guidance: RFC 3901 / BCP 91)
 - EDNS Client Subnet (ECS, RFC 7871) — improved GeoIP accuracy when queries arrive via resolvers
 - CNAME Flattening — resolve CNAME targets at query time and return A/AAAA directly, allowing CNAME to coexist with other record types at the zone apex (no RFC; vendor feature, related to the expired ANAME draft draft-ietf-dnsop-aname)
 
@@ -113,7 +113,7 @@ Response sent to client
 | Prometheus metrics                 | No            | Yes        |
 | IXFR                               | Yes           | No         |
 | DNSSEC                             | Yes           | No         |
-| IPv6 listener                      | Yes           | Planned    |
+| IPv6 listener                      | Yes           | Yes        |
 | DNS Cookies (RFC 7873)             | Yes           | Yes        |
 | Response Rate Limiting (RRL)       | Yes           | Yes        |
 | EDNS Client Subnet (ECS, RFC 7871) | No            | Planned    |

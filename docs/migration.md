@@ -392,27 +392,32 @@ ShadowDNS 在啟動時會拒絕部分 BIND 指令（如 `type slave`、`type for
 
 ## 監聽位址行為（Listen address behavior）
 
-ShadowDNS 讀取 `named.conf` 的 `listen-on` 指令，決定要綁在哪些 IP 上。行為與 BIND9 相容：**每個位址各開一個 socket**，單一位址 bind 失敗（例如 systemd-resolved 已佔住 `127.0.0.53:53`）時只會 log WARN 並繼續，不會讓整個 server 起不來。
+ShadowDNS 讀取 `named.conf` 的 `listen-on`（IPv4）與 `listen-on-v6`（IPv6）指令，決定要綁在哪些 IP 上。行為與 BIND9 相容：**每個位址各開一個 socket**，單一位址 bind 失敗（例如 systemd-resolved 已佔住 `127.0.0.53:53`）時只會 log WARN 並繼續，不會讓整個 server 起不來。
 
 ### 位址來源優先順序
 
-| 情境 | `--listen` | `listen-on` | 實際綁定 |
-|------|------------|-------------|----------|
-| 預設 | `:53` | 未指定 | 所有 IPv4 介面位址（隱含 `any`） |
-| 預設 + 指定 listen-on | `:53` | `{ 10.0.0.1; 10.0.0.2; }` | `10.0.0.1:53`、`10.0.0.2:53` |
-| Override | `127.0.0.1:5353` | 任意 | `127.0.0.1:5353`（忽略 listen-on） |
-| Port hint | `:5353` | `{ 10.0.0.1; }` | `10.0.0.1:5353`（port 從 `--listen` 繼承） |
+| 情境 | `--listen` | `listen-on` | `listen-on-v6` | 實際綁定 |
+|------|------------|-------------|----------------|----------|
+| 預設 | `:53` | 未指定 | 未指定 | 所有 IPv4 介面位址（隱含 `any`），無 IPv6 |
+| 預設 + 指定 listen-on | `:53` | `{ 10.0.0.1; 10.0.0.2; }` | 未指定 | `10.0.0.1:53`、`10.0.0.2:53` |
+| Port hint + 雙族並聯 | `:53` | `{ 10.0.0.1; }` | `{ 2001:db8::1; }` | `10.0.0.1:53`、`[2001:db8::1]:53`（v4 在前） |
+| IPv6-only | `:53` | 未指定 | `{ ::1; }` | `[::1]:53` |
+| Override（IPv4） | `127.0.0.1:5353` | 任意 | 任意 | `127.0.0.1:5353`（忽略兩個 block） |
+| Override（IPv6 bracket） | `[::1]:5353` | 任意 | 任意 | `[::1]:5353`（忽略兩個 block） |
+| Port hint | `:5353` | `{ 10.0.0.1; }` | 未指定 | `10.0.0.1:5353`（port 從 `--listen` 繼承） |
 
-**關鍵規則**：`--listen` **有 host component 才是 override**（例如 `127.0.0.1:5353`）；`:PORT` 形式只提供 port，位址仍從 `listen-on` 取得。這讓 `--listen :0`（測試用 ephemeral port）+ `listen-on { 127.0.0.1; }` 能正確配合。
+**關鍵規則**：`--listen` **有 host component 才是 override**（例如 `127.0.0.1:5353` 或 IPv6 bracket literal `[::1]:5353`）；`:PORT` 形式只提供 port，位址分別從 `listen-on`（IPv4）與 `listen-on-v6`（IPv6）取得，v4 在前、v6 以 bracket 形式 `[addr]:port` 排列。`listen-on-v6` 缺省為空集合（opt-in），**不像 `listen-on` 缺省會展開所有 IPv4 介面**；若不設定 `listen-on-v6`，就不會啟動任何 IPv6 listener。當 v4 與 v6 解析結果合併後皆為空時才 fatal；單一 family 空、另一族非空時正常啟動。
 
-### 不支援的 listen-on 語法
+### 不支援的 listen-on / listen-on-v6 語法
 
-下列 BIND 語法目前會被 log WARN 並跳過，不會影響解析：
+下列 BIND 語法在 `listen-on` 與 `listen-on-v6` 中均**不支援**，會被 log WARN 並跳過，不會影響解析：
 
 - Exclusion syntax：`listen-on { !10.0.0.1; any; };`（`!addr` 排除）
 - ACL 參照：`listen-on { trusted-net; };`
 - Port override：`listen-on port 5353 { ... };`（請改用 `--listen :5353`）
 - `interface` keyword
+
+**IPv6 literal 位址現在於 `listen-on-v6` 受支援**（如 `listen-on-v6 { 2001:db8::1; ::1; };`）。若在 `listen-on` 中放 IPv6 literal，或在 `listen-on-v6` 中放 IPv4 literal，該條目會被 log WARN 並跳過（位址 family 不符）。
 
 ### 與 systemd-resolved 的互動
 
@@ -435,7 +440,7 @@ sudo systemctl restart systemd-resolved
 
 ### SIGHUP reload 不會重綁 listener
 
-若 reload 後 `listen-on` 改變，ShadowDNS **不會**重新開 socket。這是刻意的設計，避免 reload 造成短暫的 port 接手空窗。偵測到變動時會 log：
+若 reload 後 `listen-on` 或 `listen-on-v6` 改變，ShadowDNS **不會**重新開 socket。這是刻意的設計，避免 reload 造成短暫的 port 接手空窗。reload drift 偵測涵蓋 v4 與 v6 的合集；偵測到任一 family 的位址集合有變動時會 log：
 
 ```
 level=INFO msg="reload: listen-address changes require restart to take effect"
