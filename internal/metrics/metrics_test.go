@@ -1,6 +1,7 @@
 package metrics_test
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -306,20 +307,83 @@ func TestRecordResponse_IncrementsCounter(t *testing.T) {
 	}
 }
 
-// TestObserveDuration_RecordsHistogram verifies that ObserveDuration records
-// an observation in the request duration histogram.
-func TestObserveDuration_RecordsHistogram(t *testing.T) {
-	m := metrics.New()
-
-	m.ObserveDuration("default", time.Millisecond)
-
+// durationHistogram gathers metrics and returns the request duration
+// histogram of the first recorded label set, failing the test if the family
+// is missing or empty.
+func durationHistogram(t *testing.T, m *metrics.Metrics) *dto.Histogram {
+	t.Helper()
 	families := gatherMetrics(t, m)
 	mf, ok := families["shadowdns_dns_request_duration_seconds"]
 	if !ok {
 		t.Fatal("metric shadowdns_dns_request_duration_seconds not found")
 	}
 	if len(mf.GetMetric()) == 0 {
-		t.Error("expected at least one metric in shadowdns_dns_request_duration_seconds")
+		t.Fatal("expected at least one metric in shadowdns_dns_request_duration_seconds")
+	}
+	return mf.GetMetric()[0].GetHistogram()
+}
+
+// TestObserveDuration_DNSBucketBoundaries verifies that the request duration
+// histogram exposes exactly the DNS-optimised bucket boundaries
+// (100µs–100ms) instead of the Prometheus defaults.
+func TestObserveDuration_DNSBucketBoundaries(t *testing.T) {
+	m := metrics.New()
+
+	m.ObserveDuration("default", time.Millisecond)
+
+	// Intentionally an independent copy of dnsDurationBuckets (metrics.go) so
+	// accidental edits to the production slice fail this test. The +Inf bucket
+	// is implicit in the dto representation and not listed here.
+	want := []float64{0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1}
+	buckets := durationHistogram(t, m).GetBucket()
+	if len(buckets) != len(want) {
+		t.Fatalf("expected %d explicit buckets, got %d", len(want), len(buckets))
+	}
+	for i, b := range buckets {
+		if b.GetUpperBound() != want[i] {
+			t.Errorf("bucket[%d] upper bound = %v, want %v", i, b.GetUpperBound(), want[i])
+		}
+	}
+}
+
+// TestObserveDuration_BucketAssignment verifies, for representative durations
+// from the spec example table, which bucket is the lowest one capturing the
+// observation. Durations above the largest boundary fall only into +Inf.
+func TestObserveDuration_BucketAssignment(t *testing.T) {
+	cases := []struct {
+		name     string
+		duration time.Duration
+		lowestLE float64 // math.Inf(1) means only the implicit +Inf bucket
+	}{
+		{"80µs", 80 * time.Microsecond, 0.0001},
+		{"150µs", 150 * time.Microsecond, 0.00025},
+		{"300µs", 300 * time.Microsecond, 0.0005},
+		{"800µs", 800 * time.Microsecond, 0.001},
+		{"3ms", 3 * time.Millisecond, 0.005},
+		{"20ms", 20 * time.Millisecond, 0.025},
+		{"75ms", 75 * time.Millisecond, 0.1},
+		{"200ms", 200 * time.Millisecond, math.Inf(1)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := metrics.New()
+
+			m.ObserveDuration("default", tc.duration)
+
+			h := durationHistogram(t, m)
+
+			lowest := math.Inf(1)
+			for _, b := range h.GetBucket() {
+				if b.GetCumulativeCount() >= 1 {
+					lowest = b.GetUpperBound()
+					break
+				}
+			}
+			if lowest != tc.lowestLE {
+				t.Errorf("lowest capturing bucket = %v, want %v", lowest, tc.lowestLE)
+			}
+		})
 	}
 }
 

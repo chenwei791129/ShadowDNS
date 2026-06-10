@@ -12,6 +12,11 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
+// dnsDurationBuckets are the request duration histogram boundaries,
+// optimised for authoritative DNS (100µs–100ms): queries typically complete
+// well below prometheus.DefBuckets' 5ms minimum.
+var dnsDurationBuckets = []float64{0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1}
+
 // Metrics holds all Prometheus collectors used by ShadowDNS. The zero value
 // is intentionally non-functional; use New() to obtain a valid instance.
 type Metrics struct {
@@ -53,7 +58,7 @@ func New() *Metrics {
 		Subsystem: "dns",
 		Name:      "request_duration_seconds",
 		Help:      "Histogram of DNS request processing durations in seconds, partitioned by view.",
-		Buckets:   prometheus.DefBuckets,
+		Buckets:   dnsDurationBuckets,
 	}, []string{"view"})
 
 	buildInfo := prometheus.NewGaugeVec(prometheus.GaugeOpts{
