@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.18.0...v0.19.0) (2026-06-11)
+
+
+### Features
+
+* **metrics:** use DNS-optimised latency histogram buckets ([7814af1](https://github.com/chenwei791129/ShadowDNS/commit/7814af12989e199ea91e3ee1a4d097b38071b6d9))
+* **reload:** reload GeoIP, rate limiter, and query log on SIGHUP with reload metrics ([adefe47](https://github.com/chenwei791129/ShadowDNS/commit/adefe475352ddb7a13dfda956a87e0dc75c9d13c))
+
 ## [0.18.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.17.0...v0.18.0) (2026-06-09)
 
 
