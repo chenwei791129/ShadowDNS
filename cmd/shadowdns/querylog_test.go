@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/miekg/dns"
 	"go.uber.org/zap/zapcore"
 
 	"github.com/chenwei791129/ShadowDNS/internal/logging"
@@ -612,13 +613,14 @@ logging {
 }
 
 // ---------------------------------------------------------------------------
-// Task 4.5: SIGHUP reload does NOT re-apply logging configuration
+// SIGHUP reload re-applies logging configuration
 // ---------------------------------------------------------------------------
 
-// TestReload_QueryLogUntouched verifies that after a SIGHUP reload, query log
-// lines keep flowing to the ORIGINAL file even if the named.conf logging{}
-// block was changed.
-func TestReload_QueryLogUntouched(t *testing.T) {
+// TestReload_QueryLogPathChangeApplied verifies that a SIGHUP reload applies a
+// changed logging{} file path: the new path is created and the unchanged
+// remainder of the run keeps serving (scenario "Query log path change takes
+// effect on reload"; the former does-not-re-apply requirement was removed).
+func TestReload_QueryLogPathChangeApplied(t *testing.T) {
 	origQueryLog := filepath.Join(t.TempDir(), "queries.log")
 	newQueryLog := filepath.Join(t.TempDir(), "queries-new.log")
 
@@ -651,10 +653,8 @@ func TestReload_QueryLogUntouched(t *testing.T) {
 	if _, err := os.Stat(origQueryLog); err != nil {
 		t.Fatalf("original query log not created: %v", err)
 	}
-	originalInode := inode(t, origQueryLog)
 
-	// Now change named.conf to point the logging block to a new path.
-	// A reload should discard this and keep the original sink.
+	// Point the logging block at a new path; the reload must apply it.
 	namedConf := filepath.Join(dir, "named.conf")
 	data, err := os.ReadFile(namedConf)
 	if err != nil {
@@ -669,23 +669,29 @@ func TestReload_QueryLogUntouched(t *testing.T) {
 	if err := syscall.Kill(syscall.Getpid(), syscall.SIGHUP); err != nil {
 		t.Fatalf("send SIGHUP: %v", err)
 	}
-	// Give reload time to complete.
-	time.Sleep(300 * time.Millisecond)
 
-	// The new log path must NOT have been created.
-	if _, err := os.Stat(newQueryLog); err == nil {
-		t.Errorf("new query log path %q was created after SIGHUP; it should not be", newQueryLog)
-	}
+	// The new log path must be created by the reload.
+	waitForFile(t, newQueryLog)
 
-	// The original query log must still exist and have the same inode
-	// (it was never closed or reopened by the reload).
-	if _, err := os.Stat(origQueryLog); err != nil {
-		t.Fatalf("original query log disappeared after SIGHUP: %v", err)
+	// Query traffic must land in the new file.
+	c := &dns.Client{Net: "udp", Timeout: 2 * time.Second}
+	m := new(dns.Msg)
+	m.SetQuestion("example.com.", dns.TypeA)
+	if _, _, err := c.Exchange(m, fmt.Sprintf("127.0.0.1:%d", port)); err != nil {
+		t.Fatalf("post-reload query: %v", err)
 	}
-	postInode := inode(t, origQueryLog)
-	if postInode != originalInode {
-		t.Errorf("original query log inode changed after SIGHUP (%d → %d); reload must not re-apply logging config",
-			originalInode, postInode)
+	deadline := time.Now().Add(2 * time.Second)
+	var newContent []byte
+	for time.Now().Before(deadline) {
+		b, rerr := os.ReadFile(newQueryLog)
+		if rerr == nil && strings.Contains(string(b), "example.com") {
+			newContent = b
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(string(newContent), "example.com") {
+		t.Errorf("query line did not land in the new query log; got %q", string(newContent))
 	}
 
 	cancel()

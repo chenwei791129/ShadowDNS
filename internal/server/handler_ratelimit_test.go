@@ -61,7 +61,7 @@ func newRateLimitServer(t *testing.T, l *ratelimit.Limiter) *Server {
 		BackupZones: map[string]map[string]*zone.Zone{},
 		Aliases:     config.AliasMap{},
 	}, silentLogger())
-	srv.RateLimiter = l
+	srv.RateLimiter.Store(l)
 	return srv
 }
 
@@ -148,4 +148,42 @@ func rcodeOf(m *dns.Msg) int {
 		return -1
 	}
 	return m.Rcode
+}
+
+// TestRateLimiterAtomicPointer covers the atomic.Pointer semantics required by
+// "Rate limiter is rebuilt atomically on SIGHUP": handlers load the pointer
+// once per query, a nil Load() means rate limiting is disabled, and a Store()
+// from a reload goroutine is observed by subsequent queries.
+func TestRateLimiterAtomicPointer(t *testing.T) {
+	t.Run("nil Load means no limiting", func(t *testing.T) {
+		srv := newRateLimitServer(t, nil)
+		if got := srv.RateLimiter.Load(); got != nil {
+			t.Fatalf("Load() = %v, want nil for unconfigured limiter", got)
+		}
+		w := &countingWriter{udp: true}
+		for i := 0; i < 20; i++ {
+			srv.ServeDNS(w, aQuery())
+		}
+		if w.writeCount != 20 {
+			t.Errorf("delivered = %d, want 20 (no limiting when Load() is nil)", w.writeCount)
+		}
+	})
+
+	t.Run("Store replaces the limiter for subsequent queries", func(t *testing.T) {
+		srv := newRateLimitServer(t, nil)
+		l := mustLimiter(t, &config.RateLimitConfig{
+			ResponsesPerSecond: 1, Window: 1, Slip: 0, IPv4PrefixLength: 24, IPv6PrefixLength: 56,
+		})
+		srv.RateLimiter.Store(l)
+		if got := srv.RateLimiter.Load(); got != l {
+			t.Fatalf("Load() after Store() = %p, want %p", got, l)
+		}
+		w := &countingWriter{udp: true}
+		for i := 0; i < 20; i++ {
+			srv.ServeDNS(w, aQuery())
+		}
+		if w.writeCount != 1 {
+			t.Errorf("delivered = %d, want 1 (limiter installed via Store takes effect)", w.writeCount)
+		}
+	})
 }

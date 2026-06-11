@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -229,4 +230,54 @@ func splitLines(b []byte) []string {
 		out = append(out, string(b[start:]))
 	}
 	return out
+}
+
+// TestReopenSinkClosedTerminal verifies that Close is terminal: Reopen on a
+// closed sink returns os.ErrClosed without opening a new fd (a closed sink is
+// never resurrected), while Reopen on a live sink still swaps the fd.
+func TestReopenSinkClosedTerminal(t *testing.T) {
+	t.Run("reopen after close returns ErrClosed and opens nothing", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "app.log")
+		s, err := OpenReopenSink(path)
+		if err != nil {
+			t.Fatalf("OpenReopenSink: %v", err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+
+		err = s.Reopen()
+		if !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("Reopen on closed sink: err = %v, want os.ErrClosed", err)
+		}
+		s.mu.Lock()
+		f := s.f
+		s.mu.Unlock()
+		if f != nil {
+			t.Fatal("Reopen on closed sink installed a new fd; close must be terminal")
+		}
+	})
+
+	t.Run("reopen on live sink still swaps the fd", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "app.log")
+		s, err := OpenReopenSink(path)
+		if err != nil {
+			t.Fatalf("OpenReopenSink: %v", err)
+		}
+		defer func() { _ = s.Close() }()
+
+		// Rotate: rename the active file, then Reopen must create a fresh one.
+		if err := os.Rename(path, path+".1"); err != nil {
+			t.Fatalf("rename: %v", err)
+		}
+		if err := s.Reopen(); err != nil {
+			t.Fatalf("Reopen on live sink: %v", err)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("Reopen did not recreate %s: %v", path, err)
+		}
+		if _, err := s.Write([]byte("after reopen\n")); err != nil {
+			t.Fatalf("Write after reopen: %v", err)
+		}
+	})
 }

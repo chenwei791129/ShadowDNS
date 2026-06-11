@@ -123,9 +123,10 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Install the rate-limit wrapper just outside the real writer so it sees
 	// the final response, but inside the metrics wrapper so a dropped response
 	// is still observed by metrics (which count the produced response; RRL
-	// actions are tracked by the limiter's own counters).
-	if s.RateLimiter != nil {
-		w = ratelimit.NewResponseWriter(w, s.RateLimiter)
+	// actions are tracked by the limiter's own counters). A single atomic load
+	// pins this query to one limiter generation even if a reload swaps it.
+	if limiter := s.RateLimiter.Load(); limiter != nil {
+		w = ratelimit.NewResponseWriter(w, limiter)
 	}
 
 	if s.Metrics != nil {
@@ -308,8 +309,8 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// REFUSED because qname is outside all zones are still logged here,
 	// matching BIND9 semantics. The entire entry-build is guarded by a
 	// single nil check so that disabled logging adds no overhead.
-	if s.QueryLog != nil {
-		s.QueryLog.Log(buildQueryEntry(w, req, qnameOrig, viewName, qo))
+	if ql := s.QueryLog.Load(); ql != nil {
+		ql.Log(buildQueryEntry(w, req, qnameOrig, viewName, qo))
 	}
 
 	// Determine zone using longest-suffix match + alias map.
@@ -651,9 +652,9 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 	// The ACL check runs above and returns before reaching this point, so
 	// ACL-refused requests are never logged — consistent with BIND9 semantics
 	// (the existing ACL-before-view ordering is preserved; we do not reorder).
-	if s.QueryLog != nil {
+	if ql := s.QueryLog.Load(); ql != nil {
 		q := req.Question[0]
-		s.QueryLog.Log(buildQueryEntry(w, req, q.Name, viewName, qo))
+		ql.Log(buildQueryEntry(w, req, q.Name, viewName, qo))
 	}
 
 	origins := st.ZoneOrigins[viewName]

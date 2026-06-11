@@ -286,11 +286,16 @@ ns1 IN A     203.0.113.1
 `
 }
 
-// buildEmptyMMDBs creates two minimal valid mmdb files in dir so that
-// view.LoadGeoIP succeeds. The DBs contain no records — every IP lookup
-// returns no-match, which is fine for tests that don't exercise GeoIP rules.
-func buildEmptyMMDBs(t *testing.T, dir string) {
+// buildMMDBPair writes a GeoLite2 country and ASN mmdb into dir, each carrying
+// the given record payload for cidr. Shared by the empty-fixture and
+// data-bearing-fixture helpers.
+func buildMMDBPair(t *testing.T, dir, cidr string, countryData, asnData mmdbtype.Map) {
 	t.Helper()
+
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		t.Fatalf("parse CIDR %q: %v", cidr, err)
+	}
 
 	country, err := mmdbwriter.New(mmdbwriter.Options{
 		DatabaseType:            "GeoLite2-Country",
@@ -300,9 +305,7 @@ func buildEmptyMMDBs(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatalf("create country mmdb writer: %v", err)
 	}
-	// Insert a no-op record so the writer produces a valid file.
-	_, ipnet, _ := net.ParseCIDR("0.0.0.0/0")
-	if err := country.Insert(ipnet, mmdbtype.Map{}); err != nil {
+	if err := country.Insert(ipnet, countryData); err != nil {
 		t.Fatalf("insert country record: %v", err)
 	}
 	writeMMDB(t, country, filepath.Join(dir, "GeoLite2-Country.mmdb"))
@@ -315,10 +318,18 @@ func buildEmptyMMDBs(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatalf("create ASN mmdb writer: %v", err)
 	}
-	if err := asn.Insert(ipnet, mmdbtype.Map{}); err != nil {
+	if err := asn.Insert(ipnet, asnData); err != nil {
 		t.Fatalf("insert ASN record: %v", err)
 	}
 	writeMMDB(t, asn, filepath.Join(dir, "GeoLite2-ASN.mmdb"))
+}
+
+// buildEmptyMMDBs creates two minimal valid mmdb files in dir so that
+// view.LoadGeoIP succeeds. The DBs contain no records — every IP lookup
+// returns no-match, which is fine for tests that don't exercise GeoIP rules.
+func buildEmptyMMDBs(t *testing.T, dir string) {
+	t.Helper()
+	buildMMDBPair(t, dir, "0.0.0.0/0", mmdbtype.Map{}, mmdbtype.Map{})
 }
 
 func writeMMDB(t *testing.T, tree *mmdbwriter.Tree, path string) {
@@ -342,11 +353,8 @@ func writeMMDB(t *testing.T, tree *mmdbwriter.Tree, path string) {
 func TestReload_UpdatesServerState(t *testing.T) {
 	dir := setupReloadTestDir(t)
 
-	srv, country, asn, opts := startReloadTestServer(t, dir)
-	defer func() {
-		_ = country.Close()
-		_ = asn.Close()
-	}()
+	srv, geo, qlState, opts := startReloadTestServer(t, dir)
+	defer geo.closeAll(zap.NewNop())
 
 	// Verify initial A record: 203.0.113.10.
 	resp := reloadQuery(t, srv, "example.com.", dns.TypeA)
@@ -359,7 +367,7 @@ func TestReload_UpdatesServerState(t *testing.T) {
 	}
 
 	// Reload.
-	if err := reload(context.Background(), opts, srv, country, asn, opts.Logger); err != nil {
+	if err := reload(context.Background(), opts, srv, geo, qlState, opts.Logger); err != nil {
 		t.Fatalf("reload returned error: %v", err)
 	}
 
@@ -373,11 +381,8 @@ func TestReload_UpdatesServerState(t *testing.T) {
 func TestReload_FailurePreservesOldState(t *testing.T) {
 	dir := setupReloadTestDir(t)
 
-	srv, country, asn, opts := startReloadTestServer(t, dir)
-	defer func() {
-		_ = country.Close()
-		_ = asn.Close()
-	}()
+	srv, geo, qlState, opts := startReloadTestServer(t, dir)
+	defer geo.closeAll(zap.NewNop())
 
 	// Verify initial state works.
 	resp := reloadQuery(t, srv, "example.com.", dns.TypeA)
@@ -390,7 +395,7 @@ func TestReload_FailurePreservesOldState(t *testing.T) {
 	}
 
 	// Reload should fail.
-	if err := reload(context.Background(), opts, srv, country, asn, opts.Logger); err == nil {
+	if err := reload(context.Background(), opts, srv, geo, qlState, opts.Logger); err == nil {
 		t.Fatal("expected reload to return an error for broken zone")
 	}
 
@@ -454,7 +459,7 @@ include "` + masterZones + `";
 	return dir
 }
 
-func startReloadTestServer(t *testing.T, dir string) (*server.Server, *view.CountryDB, *view.ASNDB, runOptions) {
+func startReloadTestServer(t *testing.T, dir string) (*server.Server, *geoipRuntime, *atomic.Pointer[queryLogState], runOptions) {
 	t.Helper()
 
 	namedConf := filepath.Join(dir, "named.conf")
@@ -484,7 +489,10 @@ func startReloadTestServer(t *testing.T, dir string) (*server.Server, *view.Coun
 	}
 
 	srv := server.NewServer(state, logger)
-	return srv, country, asn, opts
+	geo := &geoipRuntime{country: country, asn: asn}
+	qlState := &atomic.Pointer[queryLogState]{}
+	qlState.Store(&queryLogState{cfg: cfg.QueryLog})
+	return srv, geo, qlState, opts
 }
 
 func reloadQuery(t *testing.T, srv *server.Server, qname string, qtype uint16) *dns.Msg {
@@ -523,17 +531,14 @@ func requireARecord(t *testing.T, resp *dns.Msg, expectedIP string) {
 func TestReload_SuccessLogsCompletionMessage(t *testing.T) {
 	dir := setupReloadTestDir(t)
 
-	srv, country, asn, opts := startReloadTestServer(t, dir)
-	defer func() {
-		_ = country.Close()
-		_ = asn.Close()
-	}()
+	srv, geo, qlState, opts := startReloadTestServer(t, dir)
+	defer geo.closeAll(zap.NewNop())
 
 	// Create a separate logger backed by a buffer we can inspect.
 	var buf bytes.Buffer
 	logger := newBufferLogger(zapcore.AddSync(&buf))
 
-	if err := reload(context.Background(), opts, srv, country, asn, logger); err != nil {
+	if err := reload(context.Background(), opts, srv, geo, qlState, logger); err != nil {
 		t.Fatalf("reload returned unexpected error: %v", err)
 	}
 
@@ -551,11 +556,8 @@ func TestReload_SuccessLogsCompletionMessage(t *testing.T) {
 func TestReload_FailureLogsInitiatedOnly(t *testing.T) {
 	dir := setupReloadTestDir(t)
 
-	srv, country, asn, opts := startReloadTestServer(t, dir)
-	defer func() {
-		_ = country.Close()
-		_ = asn.Close()
-	}()
+	srv, geo, qlState, opts := startReloadTestServer(t, dir)
+	defer geo.closeAll(zap.NewNop())
 
 	// Break the zone file so reload will fail.
 	zoneFile := filepath.Join(dir, "example.com.zone")
@@ -567,7 +569,7 @@ func TestReload_FailureLogsInitiatedOnly(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newBufferLogger(zapcore.AddSync(&buf))
 
-	if err := reload(context.Background(), opts, srv, country, asn, logger); err == nil {
+	if err := reload(context.Background(), opts, srv, geo, qlState, logger); err == nil {
 		t.Fatal("expected reload to return an error for broken zone")
 	}
 
@@ -587,11 +589,8 @@ func TestReload_FailureLogsInitiatedOnly(t *testing.T) {
 func TestReload_DiffLog_ContainsVerifyModeAndCounts(t *testing.T) {
 	dir := setupReloadTestDir(t)
 
-	srv, country, asn, opts := startReloadTestServer(t, dir)
-	defer func() {
-		_ = country.Close()
-		_ = asn.Close()
-	}()
+	srv, geo, qlState, opts := startReloadTestServer(t, dir)
+	defer geo.closeAll(zap.NewNop())
 
 	// Use hash mode (the default and safest mode).
 	opts.ReloadVerify = server.VerifyModeHash
@@ -599,7 +598,7 @@ func TestReload_DiffLog_ContainsVerifyModeAndCounts(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newBufferLogger(zapcore.AddSync(&buf))
 
-	if err := reload(context.Background(), opts, srv, country, asn, logger); err != nil {
+	if err := reload(context.Background(), opts, srv, geo, qlState, logger); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 
@@ -618,11 +617,8 @@ func TestReload_DiffLog_ContainsVerifyModeAndCounts(t *testing.T) {
 func TestReload_DiffLog_ReusedCountReflectsUnchangedZones(t *testing.T) {
 	dir := setupReloadTestDir(t)
 
-	srv, country, asn, opts := startReloadTestServer(t, dir)
-	defer func() {
-		_ = country.Close()
-		_ = asn.Close()
-	}()
+	srv, geo, qlState, opts := startReloadTestServer(t, dir)
+	defer geo.closeAll(zap.NewNop())
 
 	opts.ReloadVerify = server.VerifyModeHash
 
@@ -631,7 +627,7 @@ func TestReload_DiffLog_ReusedCountReflectsUnchangedZones(t *testing.T) {
 
 	// First reload: zone was just loaded at startup, fingerprints are set, so
 	// the zone file is unchanged → reused=1, reparsed=0.
-	if err := reload(context.Background(), opts, srv, country, asn, logger); err != nil {
+	if err := reload(context.Background(), opts, srv, geo, qlState, logger); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 

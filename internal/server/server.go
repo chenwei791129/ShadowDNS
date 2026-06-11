@@ -119,12 +119,12 @@ type Server struct {
 	Metrics *metrics.Metrics
 
 	// RateLimiter applies BIND-compatible response rate limiting to UDP
-	// responses when non-nil. A nil value disables rate limiting entirely (the
-	// wrapper is never installed, so the response path has zero added cost).
-	// It is built once at startup from the options-block rate-limit config and
-	// is intentionally not part of ServerState: a SIGHUP reload does not rebuild
-	// it (v1 rate-limit config takes effect at startup only).
-	RateLimiter *ratelimit.Limiter
+	// responses when the stored pointer is non-nil. A nil value disables rate
+	// limiting entirely (the wrapper is never installed, so the response path
+	// has zero added cost). It is built at startup from the options-block
+	// rate-limit config and rebuilt on SIGHUP reload; the atomic pointer lets
+	// the reload goroutine swap it while handlers read it concurrently.
+	RateLimiter atomic.Pointer[ratelimit.Limiter]
 
 	// EphemeralStore is an in-memory store of TXT records created via the
 	// ephemeral HTTP API (ACME DNS-01 challenges). It lives outside
@@ -133,12 +133,13 @@ type Server struct {
 	// ephemeral TXT lookups are performed.
 	EphemeralStore *ephemeral.Store
 
-	// QueryLog enables BIND9-compatible per-query logging when non-nil.
-	// A nil value disables all query logging (safe for tests and when no
-	// logging{} block is configured). The hot path guards every entry-build
-	// and Log call behind a single nil check so disabled logging adds no
-	// overhead.
-	QueryLog *querylog.Logger
+	// QueryLog enables BIND9-compatible per-query logging when the stored
+	// pointer is non-nil. A nil value disables all query logging (safe for
+	// tests and when no logging{} block is configured). The hot path guards
+	// every entry-build and Log call behind a single nil check so disabled
+	// logging adds no overhead. The atomic pointer lets the SIGHUP reload
+	// goroutine replace the logger while handlers read it concurrently.
+	QueryLog atomic.Pointer[querylog.Logger]
 
 	// listeners holds one entry per successfully bound address. Each entry
 	// owns a UDP *dns.Server and a TCP *dns.Server sharing the same address.

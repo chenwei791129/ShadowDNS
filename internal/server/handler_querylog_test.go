@@ -90,7 +90,7 @@ func newQueryLogServer(ql *querylog.Logger, acl *transfer.ACL) *Server {
 		Aliases:          config.AliasMap{},
 		AllowTransferACL: acl,
 	}, nil)
-	srv.QueryLog = ql
+	srv.QueryLog.Store(ql)
 	return srv
 }
 
@@ -191,7 +191,7 @@ func TestQueryLog_EmissionPoints(t *testing.T) {
 			} else {
 				srv = newQueryLogServer(ql, nil)
 			}
-			srv.QueryLog = ql
+			srv.QueryLog.Store(ql)
 
 			w := tc.makeW()
 			srv.ServeDNS(w, tc.makeMsg())
@@ -260,7 +260,7 @@ func TestQueryLog_Transfer(t *testing.T) {
 			Aliases:          config.AliasMap{},
 			AllowTransferACL: allowACL,
 		}, nil)
-		srv.QueryLog = ql
+		srv.QueryLog.Store(ql)
 
 		w := &tcpRecordingWriter{}
 		srv.ServeDNS(w, makeAXFRReq())
@@ -307,7 +307,7 @@ func TestQueryLog_Transfer(t *testing.T) {
 			Aliases:          config.AliasMap{},
 			AllowTransferACL: denyACL,
 		}, nil)
-		srv.QueryLog = ql
+		srv.QueryLog.Store(ql)
 
 		w := &tcpRecordingWriter{}
 		srv.ServeDNS(w, makeAXFRReq())

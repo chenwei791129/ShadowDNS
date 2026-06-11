@@ -9,12 +9,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"os/signal"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -40,19 +43,143 @@ import (
 // It defaults to "dev" for local development builds.
 var version = "dev"
 
-// reload re-reads configuration and zone data, then atomically swaps the
-// server state and dispatches NOTIFY messages. GeoIP databases are reused
-// from startup. On any error the old state is preserved and the error is
-// returned.
+// errGeoIPDirectoryUnset is shared by the startup and reload validations so
+// the two error messages cannot drift.
+var errGeoIPDirectoryUnset = errors.New("geoip-directory not set in named.conf options")
+
+// warnClose closes c and logs a warning when the close fails; label names the
+// handle in the log line.
+func warnClose(c io.Closer, label string, logger *zap.Logger) {
+	if err := c.Close(); err != nil {
+		logger.Sugar().Warnw("closing "+label, "err", err)
+	}
+}
+
+// openQueryLog emits the rotation-ignored warning when applicable and opens
+// the query-log sink for qlCfg, mapping the parsed named.conf options onto
+// querylog.Config. Shared by the startup and reload paths so the warning text
+// and the field mapping cannot drift between them.
+func openQueryLog(qlCfg *config.QueryLogConfig, logger *zap.Logger) (*querylog.Logger, *logging.ReopenSink, error) {
+	if qlCfg.RotationIgnored {
+		logger.Sugar().Warnw(
+			"query log: BIND rotation parameters (versions/size) are ignored — "+
+				"use an external log rotation tool (e.g. logrotate + SIGUSR1) instead",
+			"path", qlCfg.FilePath,
+		)
+	}
+	lg, sink, err := querylog.New(qlCfg.FilePath, querylog.Config{
+		PrintTime:     qlCfg.PrintTime,
+		PrintCategory: qlCfg.PrintCategory,
+		PrintSeverity: qlCfg.PrintSeverity,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening query log %q: %w", qlCfg.FilePath, err)
+	}
+	return lg, sink, nil
+}
+
+// queryLogState tracks the currently active query-log configuration and its
+// file sink. querylog.Logger retains neither, so reload comparison and sink
+// close/reopen go through this record. Shared between run(), the SIGHUP
+// reload goroutine, and the SIGUSR1 goroutine via an atomic.Pointer; only the
+// SIGHUP goroutine writes after startup.
+type queryLogState struct {
+	cfg  *config.QueryLogConfig // nil when query logging is disabled
+	sink *logging.ReopenSink    // nil when query logging is disabled
+}
+
+// queryLogConfigEqual reports whether the active and reloaded query-log
+// configurations are identical. Whole-value equality covers every field of
+// config.QueryLogConfig (FilePath, the three print options, RotationIgnored),
+// so a field added in the future cannot be silently excluded from change
+// detection.
+func queryLogConfigEqual(a, b *config.QueryLogConfig) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// geoipRuntime owns the live GeoIP handles plus the generation swapped out by
+// the most recent reload. The swapped-out generation is closed at the start
+// of the next reload (or at shutdown), never immediately after the state swap
+// — in-flight queries may still resolve views against the previous state, and
+// closing an mmdb unmaps its memory (use-after-munmap is a fatal,
+// unrecoverable crash). No locking: the writers are the startup path (before
+// any goroutine starts) and the SIGHUP goroutine, and shutdown reads only
+// after that goroutine is joined.
+type geoipRuntime struct {
+	country *view.CountryDB
+	asn     *view.ASNDB
+	// prevCountry/prevASN hold the generation deferred for close; nil before
+	// the first reload.
+	prevCountry *view.CountryDB
+	prevASN     *view.ASNDB
+}
+
+// closePrev closes and clears the deferred-close generation. Called at the
+// start of a reload — a full reload interval after that generation was
+// swapped out, when no in-flight query can still reference it.
+func (g *geoipRuntime) closePrev(logger *zap.Logger) {
+	if g.prevCountry != nil {
+		warnClose(g.prevCountry, "superseded country mmdb", logger)
+		g.prevCountry = nil
+	}
+	if g.prevASN != nil {
+		warnClose(g.prevASN, "superseded ASN mmdb", logger)
+		g.prevASN = nil
+	}
+}
+
+// closeAll closes every live handle (current and deferred) and clears the
+// fields so a repeated call is a no-op. Used by run()'s shutdown defer, which
+// executes after the signal goroutines are joined, and by tests.
+func (g *geoipRuntime) closeAll(logger *zap.Logger) {
+	g.closePrev(logger)
+	if g.country != nil {
+		warnClose(g.country, "country mmdb", logger)
+		g.country = nil
+	}
+	if g.asn != nil {
+		warnClose(g.asn, "ASN mmdb", logger)
+		g.asn = nil
+	}
+}
+
+// reload re-reads configuration and zone data, re-opens the GeoIP mmdb files,
+// rebuilds the rate limiter, re-applies the query-log configuration, then
+// atomically swaps the server state and dispatches NOTIFY messages. Every
+// fallible step runs before the state swap; on any error the old state (zones,
+// GeoIP handles, limiter, query log) is preserved in full and the error is
+// returned. The GeoIP handles superseded by a successful reload are not closed
+// here — they are parked in geo's deferred-close slot and released at the
+// start of the next reload or at shutdown (deferred-by-one-generation close).
 func reload(
 	ctx context.Context,
 	opts runOptions,
 	srv *server.Server,
-	country *view.CountryDB,
-	asn *view.ASNDB,
+	geo *geoipRuntime,
+	qlState *atomic.Pointer[queryLogState],
 	logger *zap.Logger,
-) error {
+) (err error) {
 	logger.Info("reload initiated")
+
+	// Record the outcome exactly once per attempt, whichever step fails.
+	// All three metrics methods are nil-receiver safe, so a disabled-metrics
+	// configuration (srv.Metrics == nil) needs no special case.
+	defer func() {
+		if err != nil {
+			srv.Metrics.RecordReload("failure")
+		} else {
+			srv.Metrics.RecordReload("success")
+			srv.Metrics.SetLastReloadSuccess(time.Now())
+		}
+	}()
+
+	// Step 0: release the GeoIP generation parked by the previous reload. A
+	// full reload interval has passed since it was swapped out, so no
+	// in-flight query can still hold a state snapshot that references it.
+	geo.closePrev(logger)
 
 	cfg, err := config.LoadNamedConf(opts.NamedConfPath, logger)
 	if err != nil {
@@ -66,13 +193,89 @@ func reload(
 		return fmt.Errorf("loading shadowdns config: %w", err)
 	}
 
+	// Mirror the startup validation: an empty geoip-directory must surface as
+	// an explicit configuration error, not a confusing relative-path open error.
+	if cfg.Options.GeoIPDirectory == "" {
+		return errGeoIPDirectoryUnset
+	}
+	newCountry, newASN, err := view.LoadGeoIP(cfg.Options.GeoIPDirectory, logger)
+	if err != nil {
+		return fmt.Errorf("reloading GeoIP: %w", err)
+	}
+	// Release the freshly opened handles when a later fallible step aborts
+	// the reload; the running state keeps the old handles. On success (err ==
+	// nil) the handles have been installed into geo and must stay open.
+	defer func() {
+		if err != nil {
+			warnClose(newCountry, "new country mmdb after failed reload", logger)
+			warnClose(newASN, "new ASN mmdb after failed reload", logger)
+		}
+	}()
+
 	prev := srv.CurrentState()
-	state, summary, err := server.BuildState(cfg, shadowCfg.Aliases, shadowCfg.AliasFlags, shadowCfg.BackupOriginalCase, prev, opts.ReloadVerify, country, asn, logger)
+	state, summary, err := server.BuildState(cfg, shadowCfg.Aliases, shadowCfg.AliasFlags, shadowCfg.BackupOriginalCase, prev, opts.ReloadVerify, newCountry, newASN, logger)
 	if err != nil {
 		return fmt.Errorf("building server state: %w", err)
 	}
 
+	// Rebuild the rate limiter from the reloaded config (nil when the
+	// rate-limit block is absent). The credit table is deliberately reset.
+	newLimiter, err := ratelimit.NewLimiter(cfg.Options.RateLimit)
+	if err != nil {
+		return fmt.Errorf("rebuilding rate limiter: %w", err)
+	}
+	// Guard against the typed-nil trap: storing a nil *metrics.Metrics in the
+	// Recorder interface would pass the limiter's own nil check and panic on
+	// the first RRL decision.
+	if srv.Metrics != nil {
+		newLimiter.SetRecorder(srv.Metrics)
+	}
+
+	// Re-apply the query-log configuration. An unchanged config (whole-value
+	// equality, including RotationIgnored) keeps the existing logger and sink
+	// with no file operations; any difference opens a new sink here (fallible)
+	// and installs it after the swap.
+	curQL := qlState.Load()
+	newQLCfg := cfg.QueryLog
+	qlChanged := !queryLogConfigEqual(curQL.cfg, newQLCfg)
+	var newQLLogger *querylog.Logger
+	var newQLSink *logging.ReopenSink
+	if qlChanged && newQLCfg != nil {
+		// openQueryLog re-emits the rotation warning on this change path
+		// only; the reuse path performs no file operations and no re-warning.
+		newQLLogger, newQLSink, err = openQueryLog(newQLCfg, logger)
+		if err != nil {
+			return err
+		}
+	}
+
+	// All fallible steps are done. Everything below is infallible installation.
 	srv.SwapState(state)
+
+	srv.RateLimiter.Store(newLimiter)
+	if qlChanged {
+		srv.QueryLog.Store(newQLLogger)
+		qlState.Store(&queryLogState{cfg: newQLCfg, sink: newQLSink})
+		// Close the superseded sink last so the SIGUSR1 goroutine's racy
+		// window only ever touches a still-open sink; a Reopen that loses the
+		// race gets os.ErrClosed (close is terminal) and logs it.
+		if curQL.sink != nil {
+			if cerr := curQL.sink.Close(); cerr != nil {
+				logger.Sugar().Warnw("closing superseded query log sink", "err", cerr)
+			}
+		}
+	}
+
+	// Rotate the superseded GeoIP generation into the deferred-close slot —
+	// never close it here; in-flight queries may still resolve views against
+	// the pre-swap state snapshot.
+	geo.prevCountry, geo.prevASN = geo.country, geo.asn
+	geo.country, geo.asn = newCountry, newASN
+	srv.Metrics.SetGeoIPInfo(map[string]uint{
+		"country": newCountry.Metadata().BuildEpoch,
+		"asn":     newASN.Metadata().BuildEpoch,
+	})
+
 	if srv.EphemeralStore != nil {
 		srv.EphemeralStore.Clear()
 	}
@@ -367,7 +570,7 @@ func run(ctx context.Context, opts runOptions) error {
 	}
 
 	if cfg.Options.GeoIPDirectory == "" {
-		return errors.New("geoip-directory not set in named.conf options")
+		return errGeoIPDirectoryUnset
 	}
 
 	shadowCfg, err := shadowdnscfg.Load(opts.ConfigPath, logger)
@@ -379,14 +582,12 @@ func run(ctx context.Context, opts runOptions) error {
 	if err != nil {
 		return fmt.Errorf("loading GeoIP: %w", err)
 	}
-	defer func() {
-		if cerr := country.Close(); cerr != nil {
-			logger.Sugar().Warnw("closing country mmdb", "err", cerr)
-		}
-		if cerr := asn.Close(); cerr != nil {
-			logger.Sugar().Warnw("closing ASN mmdb", "err", cerr)
-		}
-	}()
+	// geo owns every live GeoIP handle from here on; reloads rotate new
+	// generations through it. The single defer covers both the normal
+	// shutdown path (it runs after the signal goroutines are joined in the
+	// function body) and every early-return path below.
+	geo := &geoipRuntime{country: country, asn: asn}
+	defer geo.closeAll(logger)
 
 	state, _, err := server.BuildState(cfg, shadowCfg.Aliases, shadowCfg.AliasFlags, shadowCfg.BackupOriginalCase, nil, opts.ReloadVerify, country, asn, logger)
 	if err != nil {
@@ -395,43 +596,46 @@ func run(ctx context.Context, opts runOptions) error {
 
 	// Build the response rate limiter from the options-block rate-limit config
 	// (nil when unconfigured). Constructed before the dry-run check so an
-	// invalid exempt-clients entry fails fast even under --dry-run. It is built
-	// once at startup and is not rebuilt on SIGHUP reload (v1 rate-limit config
-	// takes effect at startup only).
+	// invalid exempt-clients entry fails fast even under --dry-run. A SIGHUP
+	// reload rebuilds it from the reloaded config and installs the
+	// replacement atomically.
 	rateLimiter, err := ratelimit.NewLimiter(cfg.Options.RateLimit)
 	if err != nil {
 		return fmt.Errorf("building rate limiter: %w", err)
 	}
 
 	// Open the query log sink when configured. This is done before the dry-run
-	// check so that (a) a bad path is caught early even in dry-run, and (b) the
-	// rotation warning (task 4.3) is always emitted.
+	// check so that (a) a bad path is caught early even in dry-run, and (b)
+	// openQueryLog's rotation warning is always emitted exactly once.
 	//
-	// On success, qlLogger is injected into the server and qlReopener is added
-	// to the SIGUSR1 handler alongside LogReopener. On failure the error names
-	// the path so operators can act without reading source code.
+	// On success, qlLogger is injected into the server and qlReopener becomes
+	// the initial qlState sink consumed by the SIGUSR1 handler. On failure the
+	// error names the path so operators can act without reading source code.
 	var qlLogger *querylog.Logger
 	var qlReopener *logging.ReopenSink
 	if cfg.QueryLog != nil {
-		// Warn once (task 4.3) — must appear before both the dry-run exit and
-		// the normal startup path, so it is always emitted exactly once.
-		if cfg.QueryLog.RotationIgnored {
-			logger.Sugar().Warnw(
-				"query log: BIND rotation parameters (versions/size) are ignored — "+
-					"use an external log rotation tool (e.g. logrotate + SIGUSR1) instead",
-				"path", cfg.QueryLog.FilePath,
-			)
-		}
-
-		qlLogger, qlReopener, err = querylog.New(cfg.QueryLog.FilePath, querylog.Config{
-			PrintTime:     cfg.QueryLog.PrintTime,
-			PrintCategory: cfg.QueryLog.PrintCategory,
-			PrintSeverity: cfg.QueryLog.PrintSeverity,
-		})
+		qlLogger, qlReopener, err = openQueryLog(cfg.QueryLog, logger)
 		if err != nil {
-			return fmt.Errorf("opening query log %q: %w", cfg.QueryLog.FilePath, err)
+			return err
 		}
 	}
+
+	// qlState is the single source of truth for the active query-log config
+	// and sink: querylog.Logger retains neither, and a SIGHUP reload may
+	// replace both. Shared with the SIGHUP and SIGUSR1 goroutines.
+	var qlState atomic.Pointer[queryLogState]
+	qlState.Store(&queryLogState{cfg: cfg.QueryLog, sink: qlReopener})
+	// Close whichever query-log sink is active when run() returns — possibly
+	// one opened by a later reload. The defer runs after the shutdown join
+	// sequence in the function body, so it cannot race an in-flight reload,
+	// and it also covers every early-return path (dry-run, bind failures).
+	defer func() {
+		if st := qlState.Load(); st.sink != nil {
+			if cerr := st.sink.Close(); cerr != nil {
+				logger.Sugar().Warnw("closing query log sink", "err", cerr)
+			}
+		}
+	}()
 
 	// Resolve the listen-address set up front so --dry-run can report exactly
 	// what would be bound (IPv4 from listen-on plus IPv6 from listen-on-v6,
@@ -459,14 +663,8 @@ func run(ctx context.Context, opts runOptions) error {
 			"query_log", queryLogSummary(cfg),
 			"rate_limit", rateLimitSummary(cfg),
 		)
-		// The query log sink was opened above (to fail loudly on a bad path
-		// even in dry-run); close it before exiting so dry-run leaks no fd
-		// when run() is invoked in-process (tests, future callers).
-		if qlReopener != nil {
-			if cerr := qlReopener.Close(); cerr != nil {
-				logger.Sugar().Warnw("closing query log after dry-run", "err", cerr)
-			}
-		}
+		// The query log sink opened above (to fail loudly on a bad path even
+		// in dry-run) is closed by the qlState defer.
 		return nil
 	}
 
@@ -480,10 +678,10 @@ func run(ctx context.Context, opts runOptions) error {
 	srv := server.NewServer(state, logger)
 	srv.EphemeralStore = ephemeralStore
 	// Inject the query log (nil when not configured — server handles nil gracefully).
-	srv.QueryLog = qlLogger
+	srv.QueryLog.Store(qlLogger)
 	// Inject the rate limiter (nil when no rate-limit block — the server skips
 	// installing the wrapper, keeping the response path zero-cost).
-	srv.RateLimiter = rateLimiter
+	srv.RateLimiter.Store(rateLimiter)
 
 	// Ephemeral TXT HTTP API (optional — only started when the ephemeral_api
 	// section is present in the unified config).
@@ -511,12 +709,20 @@ func run(ctx context.Context, opts runOptions) error {
 	if opts.MetricsAddr != "" {
 		m := metrics.New()
 		m.SetBuildInfo(version, runtime.Version())
-		// GeoIP metadata is set once at startup; databases are not reloaded
-		// on SIGHUP, so these values remain stable for the server lifetime.
+		// GeoIP metadata from the startup load; a successful SIGHUP reload
+		// re-opens the mmdb files and updates this gauge to the new build
+		// epochs (deleting the stale build_time series).
 		m.SetGeoIPInfo(map[string]uint{
 			"country": country.Metadata().BuildEpoch,
 			"asn":     asn.Metadata().BuildEpoch,
 		})
+		// The initial configuration load succeeded, so initialise the
+		// last-reload-success gauge to the startup time (mirroring
+		// Prometheus's own behaviour) — `time() - <gauge>` staleness alerts
+		// must not fire on servers that never reload. The metrics HTTP
+		// listener starts below, so the registration-time 0 is never
+		// externally observable.
+		m.SetLastReloadSuccess(time.Now())
 		srv.Metrics = m
 		// Route rate-limit action counts to the metrics registry.
 		rateLimiter.SetRecorder(m)
@@ -582,86 +788,72 @@ func run(ctx context.Context, opts runOptions) error {
 		}
 	}
 
-	// Listen for SIGHUP to trigger graceful reload.
-	sighupCh := make(chan os.Signal, 1)
-	signal.Notify(sighupCh, syscall.SIGHUP)
-	defer signal.Stop(sighupCh)
+	// Install the SIGHUP and SIGUSR1 handlers and start their dispatch
+	// goroutines. SIGUSR1 is registered unconditionally in daemon mode: a
+	// SIGHUP reload can introduce a query log at any time, so registration
+	// must not depend on a file sink existing at startup.
+	shutdownSignals := runSignalHandlers(ctx, opts, srv, geo, &qlState, logger)
 
-	// Listen for SIGUSR1 to reopen file-backed log sinks. Install the handler
-	// when either the main log sink or the query log sink is file-backed.
-	// Stderr-only runs with no query log have nothing to reopen and do not
-	// inherit an unused handler.
-	//
-	// Both sinks are reopened independently: a failure on one side keeps its
-	// old fd open and logs an error, but does not prevent the other side from
-	// reopening (task 4.2).
-	type sinkReopener struct {
-		sink  *logging.ReopenSink
-		label string
-	}
-	var reopeners []sinkReopener
-	if opts.LogReopener != nil {
-		reopeners = append(reopeners, sinkReopener{opts.LogReopener, "log file"})
-	}
-	if qlReopener != nil {
-		reopeners = append(reopeners, sinkReopener{qlReopener, "query log file"})
-	}
-	var sigusr1Ch chan os.Signal
-	if len(reopeners) > 0 {
-		sigusr1Ch = make(chan os.Signal, 1)
-		signal.Notify(sigusr1Ch, syscall.SIGUSR1)
-		defer signal.Stop(sigusr1Ch)
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-sigusr1Ch:
-					for _, r := range reopeners {
-						if rerr := r.sink.Reopen(); rerr != nil {
-							// Either the new path could not be opened
-							// (previous fd preserved) or the swap completed
-							// but the old fd's Close reported an error
-							// (e.g. ENOSPC flush on NFS). In both cases
-							// subsequent writes go through a working sink,
-							// so this error itself lands.
-							logger.Sugar().Errorw(r.label+" reopen reported error",
-								"path", r.sink.Path(),
-								"err", rerr,
-							)
-						} else {
-							logger.Sugar().Infow(r.label+" reopened",
-								"path", r.sink.Path(),
-							)
-						}
-					}
-
-					// Drain a second SIGUSR1 that arrived during the
-					// reopen so we do not immediately reopen again.
-					select {
-					case <-sigusr1Ch:
-					default:
-					}
-				}
-			}
-		}()
-	}
-
-	// Signal test callers that the SIGHUP handler is now attached. Closing
-	// this channel here — after signal.Notify but before the dispatch
-	// goroutine starts — gives tests an explicit happens-before sync point
-	// so they can avoid sleeping to wait for startup.
+	// Signal test callers that the signal handlers are now attached, giving
+	// them an explicit happens-before sync point instead of sleeping.
 	if opts.ReadyCh != nil {
 		close(opts.ReadyCh)
 	}
 
+	bound := srv.BoundAddrStrings()
+	logger.Sugar().Infow("shadowdns ready",
+		"views", len(cfg.Views),
+		"bound_addrs", bound,
+		"bound_count", len(bound),
+	)
+	serveErr := srv.Serve(ctx)
+
+	// Shutdown-order contract: Serve has returned (whether because ctx was
+	// cancelled or because a listener died — the latter leaves ctx alive, so
+	// this sequence must not rely on it). Joining the signal goroutines here,
+	// before the deferred sink/GeoIP closes run, gives shutdown a
+	// happens-before edge over any in-flight reload's writes.
+	shutdownSignals()
+	return serveErr
+}
+
+// runSignalHandlers registers the SIGHUP (reload) and SIGUSR1 (log reopen)
+// handlers and starts one dispatch goroutine for each. Both goroutines listen
+// on a child context derived from ctx — srv.Serve can return on a listener
+// error while the parent ctx is still alive, and the join below must not
+// deadlock on that path. reload() receives the child context too, so NOTIFY
+// goroutines spawned by a last-moment reload are cancelled with the shutdown
+// sequence.
+//
+// The returned function implements the shutdown-order contract: stop signal
+// delivery, cancel the child context, then join both goroutines (waiting out
+// an in-flight reload). The caller invokes it after srv.Serve returns and
+// before its deferred query-log-sink and GeoIP closes execute.
+func runSignalHandlers(
+	ctx context.Context,
+	opts runOptions,
+	srv *server.Server,
+	geo *geoipRuntime,
+	qlState *atomic.Pointer[queryLogState],
+	logger *zap.Logger,
+) (shutdown func()) {
+	sigCtx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+
+	sighupCh := make(chan os.Signal, 1)
+	signal.Notify(sighupCh, syscall.SIGHUP)
+	sigusr1Ch := make(chan os.Signal, 1)
+	signal.Notify(sigusr1Ch, syscall.SIGUSR1)
+
+	wg.Add(2)
 	go func() {
+		defer wg.Done()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-sigCtx.Done():
 				return
 			case <-sighupCh:
-				if err := reload(ctx, opts, srv, country, asn, logger); err != nil {
+				if err := reload(sigCtx, opts, srv, geo, qlState, logger); err != nil {
 					logger.Sugar().Errorw("reload failed", "err", err)
 				}
 				// Drain the channel (capacity 1) so that a second SIGHUP
@@ -674,14 +866,68 @@ func run(ctx context.Context, opts runOptions) error {
 			}
 		}
 	}()
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-sigCtx.Done():
+				return
+			case <-sigusr1Ch:
+				reopenLogSinks(opts.LogReopener, qlState, logger)
+				// Drain a second SIGUSR1 that arrived during the
+				// reopen so we do not immediately reopen again.
+				select {
+				case <-sigusr1Ch:
+				default:
+				}
+			}
+		}
+	}()
 
-	bound := srv.BoundAddrStrings()
-	logger.Sugar().Infow("shadowdns ready",
-		"views", len(cfg.Views),
-		"bound_addrs", bound,
-		"bound_count", len(bound),
-	)
-	return srv.Serve(ctx)
+	return func() {
+		// Stop new signal injection first so repeated signals during
+		// shutdown cannot prolong it indefinitely, then unblock the
+		// goroutines and wait for them — including a reload in progress.
+		signal.Stop(sighupCh)
+		signal.Stop(sigusr1Ch)
+		cancel()
+		wg.Wait()
+	}
+}
+
+// reopenLogSinks reopens the file-backed log sinks in response to SIGUSR1.
+// The list is assembled at signal time: the fixed main-log sink (decided at
+// startup) plus the currently active query-log sink from qlState — so a query
+// log introduced or replaced by a SIGHUP reload is always the one reopened.
+//
+// Sinks are reopened independently: a failure on one side keeps its old fd
+// open and logs an error without affecting the other. A sink concurrently
+// retired by a reload reports os.ErrClosed (close is terminal), which is
+// logged and harmless — the newly installed sink is unaffected.
+func reopenLogSinks(mainSink *logging.ReopenSink, qlState *atomic.Pointer[queryLogState], logger *zap.Logger) {
+	reopen := func(sink *logging.ReopenSink, label string) {
+		if rerr := sink.Reopen(); rerr != nil {
+			// Either the new path could not be opened (previous fd
+			// preserved), the swap completed but the old fd's Close reported
+			// an error (e.g. ENOSPC flush on NFS), or the sink was retired by
+			// a concurrent reload (os.ErrClosed). In every case subsequent
+			// writes go through a working sink, so this error itself lands.
+			logger.Sugar().Errorw(label+" reopen reported error",
+				"path", sink.Path(),
+				"err", rerr,
+			)
+		} else {
+			logger.Sugar().Infow(label+" reopened",
+				"path", sink.Path(),
+			)
+		}
+	}
+	if mainSink != nil {
+		reopen(mainSink, "log file")
+	}
+	if st := qlState.Load(); st != nil && st.sink != nil {
+		reopen(st.sink, "query log file")
+	}
 }
 
 // notifySendFn is the dispatch-layer indirection to transfer.SendNOTIFY.

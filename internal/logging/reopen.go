@@ -84,9 +84,17 @@ func (s *ReopenSink) Close() error {
 // flushing kernel buffers on NFS) is returned so the caller can record it
 // — the swap itself has already succeeded so subsequent writes land on
 // the new fd.
+//
+// Close is terminal: Reopen on a closed sink returns os.ErrClosed without
+// opening anything (matching Write), so a sink retired by a concurrent
+// SIGHUP reload is never resurrected into an unowned, leaked fd.
 func (s *ReopenSink) Reopen() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.f == nil {
+		return os.ErrClosed
+	}
 
 	newF, err := os.OpenFile(s.path, logFileFlags, logFileMode)
 	if err != nil {
@@ -95,10 +103,8 @@ func (s *ReopenSink) Reopen() error {
 
 	old := s.f
 	s.f = newF
-	if old != nil {
-		if cerr := old.Close(); cerr != nil {
-			return fmt.Errorf("logging: closing previous log fd: %w", cerr)
-		}
+	if cerr := old.Close(); cerr != nil {
+		return fmt.Errorf("logging: closing previous log fd: %w", cerr)
 	}
 	return nil
 }

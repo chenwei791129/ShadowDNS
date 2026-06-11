@@ -21,7 +21,6 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/ephemeral"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
 	"github.com/chenwei791129/ShadowDNS/internal/shadowdnscfg"
-	"github.com/chenwei791129/ShadowDNS/internal/view"
 )
 
 // writeShadowConf replaces the shadowdns.yaml in dir with the given contents.
@@ -50,9 +49,9 @@ func freePortAddr(t *testing.T) string {
 // startEphemeralFixture starts a full ShadowDNS test server with an ephemeral
 // store and an in-process HTTP API. Returns the DNS server, API base URL,
 // ephemeral store, and cleanup func.
-func startEphemeralFixture(t *testing.T, dir string) (*server.Server, string, *ephemeral.Store, *view.CountryDB, *view.ASNDB, runOptions, func()) {
+func startEphemeralFixture(t *testing.T, dir string) (*server.Server, string, *ephemeral.Store, *geoipRuntime, *atomic.Pointer[queryLogState], runOptions, func()) {
 	t.Helper()
-	srv, country, asn, opts := startReloadTestServer(t, dir)
+	srv, geo, qlState, opts := startReloadTestServer(t, dir)
 
 	// Load the unified config and ensure an ephemeral_api section is set so
 	// the API server is started. Overwrite the fixture shadowdns.yaml to
@@ -98,10 +97,9 @@ ephemeral_api:
 		case <-apiDone:
 		case <-time.After(6 * time.Second):
 		}
-		_ = country.Close()
-		_ = asn.Close()
+		geo.closeAll(zap.NewNop())
 	}
-	return srv, baseURL, store, country, asn, opts, cleanup
+	return srv, baseURL, store, geo, qlState, opts, cleanup
 }
 
 // waitHTTPReady polls the given base URL until a TCP connection succeeds or
@@ -291,7 +289,7 @@ func TestEphemeralTxtApi_PerValueDeleteLastEntryClearsFQDN(t *testing.T) {
 // clear the ephemeral store.
 func TestEphemeralTxtApi_ReloadFailsOnAliasesKeepsOldState(t *testing.T) {
 	dir := setupReloadTestDir(t)
-	srv, _, store, country, asn, opts, cleanup := startEphemeralFixture(t, dir)
+	srv, _, store, geo, qlState, opts, cleanup := startEphemeralFixture(t, dir)
 	defer cleanup()
 
 	// Seed an ephemeral record so we can detect whether reload cleared it.
@@ -310,7 +308,7 @@ ephemeral_api:
     - 127.0.0.1
 `)
 
-	err := reload(context.Background(), opts, srv, country, asn, zap.NewNop())
+	err := reload(context.Background(), opts, srv, geo, qlState, zap.NewNop())
 	if err == nil {
 		t.Fatal("expected reload error for invalid aliases section")
 	}
@@ -326,7 +324,7 @@ ephemeral_api:
 // TestEphemeralTxtApi_ReloadFailsOnEphemeralApiKeepsOldState covers task 7.3.
 func TestEphemeralTxtApi_ReloadFailsOnEphemeralApiKeepsOldState(t *testing.T) {
 	dir := setupReloadTestDir(t)
-	srv, _, store, country, asn, opts, cleanup := startEphemeralFixture(t, dir)
+	srv, _, store, geo, qlState, opts, cleanup := startEphemeralFixture(t, dir)
 	defer cleanup()
 
 	store.Put("_acme.example.com.", "v", 300)
@@ -341,7 +339,7 @@ ephemeral_api:
     - "not-an-ip"
 `)
 
-	err := reload(context.Background(), opts, srv, country, asn, zap.NewNop())
+	err := reload(context.Background(), opts, srv, geo, qlState, zap.NewNop())
 	if err == nil {
 		t.Fatal("expected reload error for invalid ephemeral_api section")
 	}
@@ -357,7 +355,7 @@ ephemeral_api:
 // reload atomically swaps state and clears the ephemeral store.
 func TestEphemeralTxtApi_ReloadAllValidClearsStore(t *testing.T) {
 	dir := setupReloadTestDir(t)
-	srv, _, store, country, asn, opts, cleanup := startEphemeralFixture(t, dir)
+	srv, _, store, geo, qlState, opts, cleanup := startEphemeralFixture(t, dir)
 	defer cleanup()
 
 	store.Put("_acme.example.com.", "v", 300)
@@ -375,7 +373,7 @@ ephemeral_api:
     - 127.0.0.1
 `)
 
-	if err := reload(context.Background(), opts, srv, country, asn, zap.NewNop()); err != nil {
+	if err := reload(context.Background(), opts, srv, geo, qlState, zap.NewNop()); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 

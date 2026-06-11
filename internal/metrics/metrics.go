@@ -29,8 +29,12 @@ type Metrics struct {
 	prevZoneViews   map[string]bool // tracks views from last SetZoneCounts
 	zonesBackup     *prometheus.GaugeVec
 	geoipDBInfo     *prometheus.GaugeVec
+	prevGeoIPLabels map[string]string // database → build_time from last SetGeoIPInfo
 	panicsTotal     prometheus.Counter
 	rateLimitTotal  *prometheus.CounterVec
+	reloadTotal     *prometheus.CounterVec
+
+	lastReloadSuccessTimestamp prometheus.Gauge
 }
 
 // New creates a fresh prometheus.Registry, registers all ShadowDNS collectors
@@ -98,6 +102,22 @@ func New() *Metrics {
 		Help:      "RRL decisions partitioned by response category and action.",
 	}, []string{"category", "action"})
 
+	reloadTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "shadowdns",
+		Name:      "reload_total",
+		Help:      "Total number of SIGHUP reload attempts, partitioned by result (success or failure).",
+	}, []string{"result"})
+	// Pre-initialise both label combinations so the series are present with
+	// value 0 from startup; alert expressions then never see an absent metric.
+	reloadTotal.WithLabelValues("success")
+	reloadTotal.WithLabelValues("failure")
+
+	lastReloadSuccessTimestamp := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "shadowdns",
+		Name:      "config_last_reload_success_timestamp_seconds",
+		Help:      "Unix timestamp of the most recent configuration load that completed without error (set at startup and on each successful SIGHUP reload).",
+	})
+
 	reg.MustRegister(
 		requestsTotal,
 		responsesTotal,
@@ -108,6 +128,8 @@ func New() *Metrics {
 		geoipDBInfo,
 		panicsTotal,
 		rateLimitTotal,
+		reloadTotal,
+		lastReloadSuccessTimestamp,
 	)
 
 	return &Metrics{
@@ -121,6 +143,9 @@ func New() *Metrics {
 		geoipDBInfo:     geoipDBInfo,
 		panicsTotal:     panicsTotal,
 		rateLimitTotal:  rateLimitTotal,
+		reloadTotal:     reloadTotal,
+
+		lastReloadSuccessTimestamp: lastReloadSuccessTimestamp,
 	}
 }
 
@@ -195,12 +220,46 @@ func (m *Metrics) SetZoneCounts(rootCounts, backupCounts map[string]int) {
 
 // SetGeoIPInfo sets the shadowdns_geoip_db_info gauge for each database.
 // Expected keys are "country" and "asn"; values are Unix epoch timestamps
-// from maxminddb.Metadata.BuildEpoch.
+// from maxminddb.Metadata.BuildEpoch. A stale series carrying the previous
+// build_time for the same database is deleted, so at most one build_time
+// series exists per database label (mirrors SetZoneCounts' differential
+// update). Safe to call on a nil receiver — the reload path runs with
+// metrics disabled too.
 func (m *Metrics) SetGeoIPInfo(buildEpochs map[string]uint) {
+	if m == nil {
+		return
+	}
+	if m.prevGeoIPLabels == nil {
+		m.prevGeoIPLabels = make(map[string]string, len(buildEpochs))
+	}
 	for db, epoch := range buildEpochs {
 		ts := time.Unix(int64(epoch), 0).UTC().Format(time.RFC3339)
 		m.geoipDBInfo.WithLabelValues(db, ts).Set(1)
+		if prev, ok := m.prevGeoIPLabels[db]; ok && prev != ts {
+			m.geoipDBInfo.DeleteLabelValues(db, prev)
+		}
+		m.prevGeoIPLabels[db] = ts
 	}
+}
+
+// RecordReload increments the shadowdns_reload_total counter for the given
+// result ("success" or "failure"). Safe to call on a nil receiver so the
+// reload path needs no metrics-disabled special case.
+func (m *Metrics) RecordReload(result string) {
+	if m == nil {
+		return
+	}
+	m.reloadTotal.WithLabelValues(result).Inc()
+}
+
+// SetLastReloadSuccess sets the last-reload-success timestamp gauge to t.
+// Called at startup once the initial configuration load succeeds and after
+// each successful SIGHUP reload. Safe to call on a nil receiver.
+func (m *Metrics) SetLastReloadSuccess(t time.Time) {
+	if m == nil {
+		return
+	}
+	m.lastReloadSuccessTimestamp.Set(float64(t.Unix()))
 }
 
 // RecordRateLimit increments the rate-limit decision counter for the given
