@@ -1,27 +1,6 @@
 # 從 BIND 遷移到 ShadowDNS
 
-本文件為 DNS Ops 團隊提供將 BIND master 替換為 ShadowDNS 的操作指引，涵蓋環境前置條件、四階段切換步驟、Rollback 策略、監控檢核清單，以及常見問題。
-
----
-
-## v0.x 破壞性變更：`--aliases` 已移除
-
-自本版起，`shadowdns` 不再接受 `--aliases` CLI flag，獨立的 `aliases.yaml` 檔案亦不再被讀取；所有設定改由單一 `--config <path>` 指向的 `shadowdns.yaml` 提供。舊設定的遷移屬機械式轉換：
-
-- 原 `aliases.yaml`（root → [backups] 格式）：
-  ```yaml
-  example.com:
-    - backup.example.com
-    - mirror.example.com
-  ```
-- 新 `shadowdns.yaml`（backup → root 反向對照，置於 `aliases:` 區段內）：
-  ```yaml
-  aliases:
-    backup.example.com: example.com
-    mirror.example.com: example.com
-  ```
-
-啟動指令由 `--aliases /path/to/aliases.yaml` 改為 `--config /path/to/shadowdns.yaml`；systemd unit、ansible playbook、管理系統產檔流程均需同步調整。詳細 schema 與可選的 `ephemeral_api:` 區段請見 [README.md](../README.md#shadowdnsyaml-schema)。
+本文件為 DNS Ops 團隊提供將 BIND master 替換為 ShadowDNS 的操作指引，涵蓋環境前置條件、四階段切換步驟、Rollback 策略、監控檢核清單、常見問題，以及切換完成後的 Day 2 維運（監控告警與例行 SOP）。
 
 ---
 
@@ -58,10 +37,10 @@
    go build -o shadowdns ./cmd/shadowdns
    ```
 
-4. 執行啟動煙霧測試（待 `--dry-run` flag 完成後使用），確認設定解析無錯誤：
+4. 以 `--dry-run` 執行啟動煙霧測試，確認設定解析無錯誤：
 
    ```bash
-   ./shadowdns \
+   ./shadowdns --dry-run \
        --named-conf /path/to/named.conf \
        --config     /path/to/shadowdns.yaml
    ```
@@ -77,11 +56,11 @@
    # 查詢 root zone A record
    dig @<shadowdns-ip> example.com A
 
-   # 查詢 backup zone（應得到與 root 相同的 IP，owner 為 backup.com）
-   dig @<shadowdns-ip> backup-example.com A
+   # 查詢 backup zone（應得到與 root 相同的 IP，owner 為 example.net）
+   dig @<shadowdns-ip> example.net A
 
    # 查詢 SOA（backup zone 的 serial 應與 root 一致）
-   dig @<shadowdns-ip> backup-example.com SOA
+   dig @<shadowdns-ip> example.net SOA
    ```
 
 7. 量測記憶體用量（`ps` 或 `/proc/<pid>/status`），確認低於預期上限（約 50 MB）。
@@ -128,8 +107,8 @@
      <(dig @<shadowdns-ip> example.com A +short)
 
    diff \
-     <(dig @<bind-ip>      backup-example.com A +short) \
-     <(dig @<shadowdns-ip> backup-example.com A +short)
+     <(dig @<bind-ip>      example.net A +short) \
+     <(dig @<shadowdns-ip> example.net A +short)
    ```
 
 4. 擴展比對範圍至多種 record type（A、AAAA、CNAME、NS、MX、TXT、SOA）與多個 view（模擬不同來源 IP）。
@@ -176,7 +155,7 @@
 5. 確認 backup zone 的 AXFR 內容中 owner name 與 RDATA 均已正確 rewrite（可用 `dig AXFR` 抽查）：
 
    ```bash
-   dig @<staging-slave-ip> backup-example.com AXFR
+   dig @<staging-slave-ip> example.net AXFR
    ```
 
 6. staging slave 驗證通過後，逐台對生產 slave 執行相同切換流程（每台切換後觀察至少 24 小時無異常再繼續）。
@@ -308,7 +287,7 @@ systemctl start named
 |------|----------|----------|
 | Process 記憶體用量 | `ps`、`/proc/<pid>/status`、或監控 | 應低於 BIND master 的約 20%（目標 ~50 MB） |
 | Process 是否存活 | 監控 / systemd | 無非預期重啟 |
-| 啟動 log 錯誤 | ShadowDNS log（`level=ERROR`） | 正常運行時應無錯誤 log |
+| 啟動 log 錯誤 | ShadowDNS log（ERROR 等級；實際為 console encoder 的 tab 分隔格式，非 logfmt） | 正常運行時應無錯誤 log |
 
 ### GeoIP 指標
 
@@ -318,6 +297,8 @@ systemctl start named
 | 無 view 匹配（REFUSED）比例 | DNS server log | 不應異常升高；升高表示 GeoIP 資料或規則有問題 |
 
 **GeoIP 抽樣方法**：從 ShadowDNS query log 中抽取 1000 筆，統計各 view 的 query 數量，與 BIND 相同時段的 view 分布比對。差異超過 5% 應進一步調查 mmdb 版本是否一致。
+
+Prometheus metrics 告警規則（reload 失敗、latency、GeoIP 新鮮度）見下方「Day 2 維運」章節。
 
 ---
 
@@ -443,7 +424,8 @@ sudo systemctl restart systemd-resolved
 若 reload 後 `listen-on` 或 `listen-on-v6` 改變，ShadowDNS **不會**重新開 socket。這是刻意的設計，避免 reload 造成短暫的 port 接手空窗。reload drift 偵測涵蓋 v4 與 v6 的合集；偵測到任一 family 的位址集合有變動時會 log：
 
 ```
-level=INFO msg="reload: listen-address changes require restart to take effect"
+level=INFO msg="reload: listen-address set differs from bound set; restart to apply
+                (cause: listen-on/listen-on-v6 change and/or interface change since startup)"
   current_bound=[10.0.0.1:53, 127.0.0.1:53]
   new_resolved=[10.0.0.2:53]
 ```
@@ -455,6 +437,278 @@ level=INFO msg="reload: listen-address changes require restart to take effect"
 - 預設綁定從「單一 `0.0.0.0:53` wildcard socket」改為「per-address bind」。視覺上的差別：啟動 log 從 1 筆變成 N 筆 `listener bound`。
 - 新增網卡 / IP alias 不會自動被 pick up；BIND 的 `interface-interval` 動態掃描本版不支援，請用 `systemctl restart shadowdns` 讓新位址進入監聽集合。
 - `--listen` 語意從「綁定目標」改為「override hint + port hint」。若你之前寫 `--listen :53` 是期望 `0.0.0.0` wildcard 行為，現在會被當成「port hint，位址從 listen-on 取（或 any 展開）」——行為在大多數情況一致，但顯式 log 會不同。
+
+---
+
+## Day 2 維運
+
+本章涵蓋切換完成（ShadowDNS 成為唯一 master）後的穩態維運：以 Prometheus metrics 為主的告警設定與例行 SOP。前述「監控檢核清單」的指標基準在 Day 2 仍然適用。
+
+### Reload 靜默失敗偵測
+
+SIGHUP reload 失敗時（例如 zone 檔語法錯誤、config parse error），ShadowDNS **不會 crash，也不會中斷服務**——程式保留前一份設定繼續應答，對外可見的症狀只有 SOA serial 停在舊值。若沒有主動偵測，過期資料可能持續服務數小時而無人察覺。
+
+**主要偵測手段：reload metrics 告警**
+
+ShadowDNS 經 `--metrics-addr`（預設 `:9153`）揭露 `shadowdns_reload_total{result="success"|"failure"}` counter 與 `shadowdns_config_last_reload_success_timestamp_seconds` gauge——語意詳見 [README 的 shadowdns.yaml schema 一節](../README.md#shadowdnsyaml-schema)；兩個 `result` label 組合在啟動時即預先初始化，告警表達式不需處理 metric 缺席。建議告警規則：
+
+```promql
+# reload 失敗即告警
+increase(shadowdns_reload_total{result="failure"}[15m]) > 0
+
+# staleness 告警：若 zone 推送頻率固定（例如至少每日一次），
+# 可偵測「推送了卻一直沒有成功 reload」的情況
+# （注意：process 重啟也會重設此 gauge，故僅靠它無法涵蓋所有情境）
+time() - shadowdns_config_last_reload_success_timestamp_seconds > 86400
+```
+
+**每次推送後的驗證步驟：serial probe**
+
+zone 變更推送並送出 SIGHUP 後，比對磁碟上的 serial 與線上應答的 serial：
+
+```bash
+# 1. 讀取磁碟上 zone 檔宣告的 serial。多行 SOA 寫法中 serial 是括號後的
+#    第一個數值（慣例上標註「; serial」）；注意若 SOA 行帶有顯式 TTL，
+#    行內第一個數字是 TTL 而非 serial，別取錯欄位
+grep -m1 -A1 'SOA' /etc/namedb/master/example.com.zone
+
+# 2. 取得線上應答的 serial（dig SOA +short 輸出的第 3 個欄位）
+dig @127.0.0.1 example.com SOA +short | awk '{print $3}'
+```
+
+比對邏輯：
+
+- **兩者相符** → reload 成功，推送完成。
+- **線上 serial 比磁碟舊** → reload 靜默失敗，正在服務過期設定。立即告警，並將 zone 檔回滾到上一個已知可用版本（讓下次 reload 至少恢復一致狀態），再調查新 zone 檔的錯誤原因。
+
+推送後驗證的另一半——回應內容比對——見本章「持續性答案一致性回歸驗證」。
+
+**輔助手段：log 檢查**
+
+未部署 Prometheus 的環境，可監看應用層 log 中 ERROR 等級的 `reload failed` 訊息：
+
+```bash
+# 以 tail 限定範圍，避免每次檢查都重複掃出輪替窗口內的歷史事件
+sudo tail -n 5000 /var/log/shadowdns/shadowdns.log | grep -E 'ERROR\s+reload failed'
+```
+
+注意：ShadowDNS 的 log 為 console encoder 格式（tab 分隔的 `時間  等級  訊息  欄位`），**不是** logfmt 的 `level=ERROR msg="..."` 形式；設定 log-based alert 時 pattern 要對應實際格式（本文件較早章節的 log 摘錄為示意寫法）。
+
+### Latency 監控
+
+ShadowDNS 以 `shadowdns_dns_request_duration_seconds` histogram（label：`view`）記錄每筆查詢的處理時間，bucket 邊界涵蓋 **0.1 ms 到 100 ms**，對授權 DNS 的 sub-millisecond 常態與十毫秒級異常都有足夠解析度。
+
+以 `histogram_quantile` 推導分位數延遲：
+
+```promql
+# 全域 p99（聚合所有 view）；改用 sum by (le, view) 可看各 view，
+# 把 0.99 換成 0.5 / 0.95 即得 p50 / p95
+histogram_quantile(0.99,
+  sum by (le) (rate(shadowdns_dns_request_duration_seconds_bucket[5m])))
+```
+
+**告警建議**：對上述全域 p99 查詢式加上 `> 0.01`（10 ms，恰為 bucket 邊界之一，分位數估計在此處最準確）即為告警條件。實際閾值依環境 SLA 調整；建議同時看 p50（常態水位漂移）與 p99（尾端惡化），兩者背離往往指向 GC、磁碟 I/O（query log）或單一 view 的熱點問題。
+
+### GeoIP DB 過期監控與月度輪換
+
+MaxMind 每月更新 GeoLite2 資料庫。mmdb 過期會讓 GeoIP view 判斷逐漸偏離現實（IP 區段易主、ASN 重新分配），症狀是特定來源的查詢被導到錯誤的 view——這類偏差不會觸發任何錯誤告警，只能靠主動監控 DB 新鮮度。
+
+**過期監控（告警閾值：35 天）**
+
+ShadowDNS 將載入中的 mmdb 建置時間揭露為 `shadowdns_geoip_db_info` gauge（值恆為 1，`build_time` label 為 RFC3339 字串）：
+
+```
+shadowdns_geoip_db_info{build_time="2026-05-13T00:00:00Z",database="country"} 1
+shadowdns_geoip_db_info{build_time="2026-05-13T00:00:00Z",database="asn"} 1
+```
+
+由於 `build_time` 是字串 label，純 PromQL 無法直接換算年齡；建議用排程腳本抓取 `/metrics` 計算，超過 **35 天**即告警（MaxMind 月更週期約 30 天，35 天表示已錯過一輪更新）：
+
+```bash
+# cron 檢查：任一 database 的 build_time 超過 35 天即輸出 STALE（無輸出 = 通過）
+curl -s http://127.0.0.1:9153/metrics \
+  | awk -F'"' '/^shadowdns_geoip_db_info/{print $2}' \
+  | while read -r ts; do
+      [ "$(date -d "$ts" +%s)" -lt "$(date -d '35 days ago' +%s)" ] && echo "STALE: $ts"
+    done
+```
+
+若監控棧支援從 label 取數值（例如 VictoriaMetrics 的 MetricsQL），也可直接以查詢式告警。
+
+**月度例行維護 SOP**
+
+mmdb 檔在每次 SIGHUP reload 都會重新開啟（見 [README 的 GeoIP databases 一節](../README.md#geoip-databases)），GeoIP 更新**不需要重啟 process**——把新檔案放到原路徑後逐台 reload 即可：
+
+1. 下載新版 Country 與 ASN 資料庫的 tar.gz 套件，**驗證 checksum** 後再解壓（MaxMind 提供的 SHA256 檔對應 tar.gz 壓縮檔，不是解出來的 `.mmdb`），確認無誤後把 `.mmdb` 放到生產路徑：
+
+   ```bash
+   sha256sum -c GeoLite2-Country_<date>.tar.gz.sha256
+   sha256sum -c GeoLite2-ASN_<date>.tar.gz.sha256
+   tar -xzf GeoLite2-Country_<date>.tar.gz
+   tar -xzf GeoLite2-ASN_<date>.tar.gz
+   ```
+
+2. 逐台（每次一台）觸發 reload（systemd unit 已定義 `ExecReload` 送 SIGHUP）：
+
+   ```bash
+   sudo systemctl reload shadowdns
+   ```
+
+3. 確認該台的 `shadowdns_geoip_db_info{build_time}` 已反映新的建置日期；若未更新，用 reload metrics 與應用層 log（見「Reload 靜默失敗偵測」）找出 reload 失敗原因：
+
+   ```bash
+   curl -s http://<instance-ip>:9153/metrics | grep '^shadowdns_geoip_db_info'
+   ```
+
+4. 該台驗證通過後，再對下一台執行步驟 2–3，直到所有實例完成。
+
+### Ephemeral DNS-01 記錄揮發性
+
+透過 ephemeral API（`PUT /v1/txt/{fqdn}`）寫入的 ACME DNS-01 challenge TXT 記錄是**純記憶體儲存**：**process 重啟**（restart、升級、主機重開機）與**成功的 SIGHUP reload** 都會清空所有 ephemeral 記錄。後者是刻意設計（見 `internal/ephemeral/store.go`：「ephemeral state does not survive a config reload」），確保 reload 後的服務狀態完全由設定檔推導；完整的生命週期行為見 [docs/ephemeral-api.md](ephemeral-api.md)。
+
+若清除發生在 ACME challenge 寫入 TXT 之後、CA 驗證查詢之前，該次 challenge 會驗證失敗，憑證續期中斷。
+
+**操作前確認清單**
+
+執行重啟**或**送出 SIGHUP 之前：
+
+1. 確認目前沒有進行中的 DNS-01 challenge。ephemeral API 只有 PUT / DELETE 端點、無法列舉記錄，請改用以下任一方式確認：
+
+   ```bash
+   # 直接查詢 challenge TXT 記錄是否存在（NXDOMAIN / 空回應 = 無進行中的 challenge）
+   dig @127.0.0.1 _acme-challenge.example.com TXT +short
+   ```
+
+   或檢查 ACME client（certbot / lego 等）的 log 與排程狀態，確認沒有正在執行的續期流程。
+
+2. 若有進行中的 challenge，等它完成（成功或失敗皆可）後再執行重啟 / reload。
+
+**排程建議**：將 shadowdns 的重啟 / reload（含 zone 推送觸發的 SIGHUP）排在 ACME 憑證續期窗口之外——ACME client 的續期排程通常可固定時段（例如 certbot 的 systemd timer），制度上即可消除互相干擾的機會。固定窗口建立後，例行 zone 推送的 SIGHUP 不需逐網域 dig 確認；上述確認清單主要用於計畫外的重啟 / reload。
+
+### 重啟成本與 Rolling Restart SOP
+
+**哪些變更走 SIGHUP、哪些需要重啟**
+
+現行版本中，絕大多數設定變更都由 SIGHUP reload 套用，需要 full restart 的只剩三類：
+
+| 變更類型 | 套用方式 |
+|----------|----------|
+| Zone 資料（zone 檔、`master.zones`） | SIGHUP reload |
+| GeoIP mmdb 更新 | SIGHUP reload |
+| RRL（rate-limit）設定 | SIGHUP reload |
+| Query log 路徑 / 選項（`logging{}`） | SIGHUP reload |
+| `shadowdns.yaml` 的 `aliases:` 區段 | SIGHUP reload |
+| **`shadowdns.yaml` 的 `ephemeral_api:` 區段** | **full restart**（API server 只在啟動時依當下設定建立一次；reload 不會重讀 listen / allow / token，也不會啟動或停止 API） |
+| **任何 CLI flag**（如 `--log-file`、`--listen`、`--metrics-addr`） | **full restart**（flags 為 process-lifetime sticky，systemd unit 修改後需 `daemon-reload` + restart） |
+| **`listen-on` / `listen-on-v6` 位址變更** | **full restart**（reload 會偵測 drift 並 log 提示，但刻意不重綁 socket，見「SIGHUP reload 不會重綁 listener」一節） |
+
+**重啟的效能成本**
+
+重啟後的 ShadowDNS 處於冷啟動狀態：在 dnspyre benchmark 中觀察到**重啟後的首輪壓測 QPS 約低 30%**，隨後回穩。此為 benchmark 觀察值（Go runtime 暖機、OS page cache 等因素），**不是服務容量保證**，但容量規劃與重啟排程仍應假設重啟後短時間內尖峰處理能力下降。
+
+**Rolling Restart SOP**
+
+前提：**生產部署至少 2 台實例**。單實例部署沒有 rolling 的空間，任何重啟都是服務中斷。
+
+1. 把需要重啟的設定變更**批次化**：累積到維護窗口一次套用，而不是每改一個 flag 就重啟一輪。
+2. 完成「Ephemeral DNS-01 記錄揮發性」一節的操作前確認清單後，從第一台開始，移出流量（若前端有 LB / anycast 撤告）後重啟：
+
+   ```bash
+   sudo systemctl restart shadowdns
+   ```
+
+3. 確認該台健康（本檢查序列也供升級 / 回滾 SOP 引用）：
+
+   ```bash
+   # process 存活
+   systemctl is-active shadowdns
+
+   # 無 ERROR log（無輸出 = 通過；log 檔跨重啟累積，注意排除重啟時間點之前的歷史行）
+   sudo tail -n 200 /var/log/shadowdns/shadowdns.log | grep ERROR
+
+   # 應答正常
+   dig @127.0.0.1 example.com SOA +short
+   ```
+
+4. 等該台 QPS 回到重啟前基準（觀察監控的 QPS 曲線，或比對 `rate(shadowdns_dns_requests_total[1m])` 與重啟前水位）後，再對下一台執行步驟 2–3。
+5. 全部完成後，以監控確認整體 QPS、錯誤率回到變更前基準。
+
+### 升級與回滾 SOP
+
+**v0.x.x 是實驗階段：每次升版都假設有 breaking CLI / config 變更**（flag 改名、設定 schema 調整、預設值改變），因此 `--dry-run` 驗證是**強制步驟**。
+
+**標準升級流程（逐台執行）**
+
+1. 下載新版 `.deb` 套件，並**保留現行版本的 `.deb`** 供回滾（先記下目前版本）：
+
+   ```bash
+   shadowdns --version   # 記錄回滾基準
+   ```
+
+2. 先把新版 binary 解包到暫存目錄（不安裝、不影響運行中的服務），以新 binary 對**現行服務實際使用的設定路徑**執行 `--dry-run` 驗證（路徑以 `systemctl cat shadowdns` 中 `ExecStart` 的 flag 為準；套件預設為 `/etc/shadowdns/`）：
+
+   ```bash
+   dpkg-deb -x shadowdns_<new-version>_amd64.deb /tmp/shadowdns-new
+   /tmp/shadowdns-new/usr/bin/shadowdns --dry-run \
+       --named-conf /etc/shadowdns/named.conf \
+       --config     /etc/shadowdns/shadowdns.yaml
+   ```
+
+   `--dry-run` 語意見 [docs/benchmark.md](benchmark.md)。任何 parse error、不支援的 flag、schema 不相容都在這一步暴露。**dry-run 失敗就停止升級**——因為尚未安裝任何東西，不需要回滾，直接調查相容性問題。
+
+3. dry-run 通過後安裝新套件，依 Rolling Restart SOP 逐台套用（步驟 2–4：Ephemeral 確認清單、重啟、健康檢查、等 QPS 回穩）：
+
+   ```bash
+   sudo dpkg -i shadowdns_<new-version>_amd64.deb
+   sudo systemctl restart shadowdns
+   ```
+
+4. **回滾**（任一台啟動失敗或行為異常時）：
+
+   ```bash
+   sudo dpkg -i shadowdns_<previous-version>_amd64.deb
+   sudo systemctl restart shadowdns
+   ```
+
+   重啟後跑一次 Rolling Restart SOP 步驟 3 的健康檢查，驗證無誤後再回頭調查新版的失敗原因。已升級成功的其他實例可暫時維持新版（確認新舊版可並存服務），或一併回滾以維持版本一致——依故障性質判斷。
+
+### 持續性答案一致性回歸驗證
+
+Phase 1 步驟 3 的 answer-diff 比對不應在切換完成後束之高閣——它是常態維運工具，**每次 zone 變更推送後都應執行**，比對兩台實例（熱備援期間為 BIND vs ShadowDNS；之後為新舊版 ShadowDNS、或任兩台應該一致的實例）對相同查詢的回應差異：
+
+```bash
+# 推送 zone 變更並確認兩台都完成 reload 後，比對受影響網域的回應
+diff \
+  <(dig @<instance-a-ip> example.com A +short | sort) \
+  <(dig @<instance-b-ip> example.com A +short | sort)
+```
+
+比對範圍建議覆蓋本次變更的 zone 及其 backup / alias 網域，record type 比照 Phase 1 步驟 4（A、AAAA、CNAME、NS、MX、TXT、SOA）；比對 SOA 時可先以 `awk '{$3=""; print}'` 拿掉 serial 欄位，避免 reload 時間差造成的假差異。
+
+**特別注意 alias / CNAME flattening**：ShadowDNS 的 backup 網域改寫邏輯（owner name 與 RDATA rewrite）是與 BIND 行為差異最大的部分，邊界 case（深層 CNAME 鏈、跨 zone 指向、萬用字元記錄與 alias 的交互）可能產生與預期不同的回應。任何 answer-diff 差異都**不應**直接視為雜訊放行——先確認是已知的可接受差異（如前述 SOA serial 時間差），否則一律主動調查。
+
+### Query Log 磁碟管理
+
+授權 DNS server 的 query log **每一筆查詢一行**——生產 QPS 數千的環境，單日 log 可達數 GB。未受控的 query log 是磁碟爆滿、進而影響服務的常見肇因。
+
+**查核 logrotate 設定**
+
+`.deb` 套件安裝的 logrotate 設定位於 `/etc/logrotate.d/shadowdns`（內容以 repo 的 `packaging/logrotate.shadowdns` 為準；預設每日輪替、保留 14 份、壓縮，輪替後以 SIGUSR1 通知 ShadowDNS 重開 log 檔）。以乾跑模式驗證：
+
+```bash
+sudo logrotate -d /etc/logrotate.d/shadowdns
+```
+
+輸出會列出匹配的 log 檔與將執行的動作但不實際輪替；確認 `/var/log/shadowdns/*.log` 有被匹配、輪替策略如預期。
+
+**依實際查詢量調整輪替頻率**
+
+預設「每日 × 14 份」是通用起點，不是容量承諾。上線後以實際量校準：觀察單日 log 大小（`du -sh /var/log/shadowdns/`），推算 14 天保留量是否在磁碟預算內；量大時改 `hourly` 或縮短保留份數，量小時可拉長保留期換取更長的查詢回溯窗口。
+
+**Query log 與應用層 log 是兩條流**
+
+- **Query log**：每筆 DNS 查詢的記錄，路徑由 `logging{}` 設定決定，受上述 logrotate 管理。
+- **應用層 log**：啟動、reload、錯誤等程式事件，寫往 `/var/log/shadowdns/shadowdns.log`（讀取需 sudo）。排查服務異常（reload 失敗、bind 失敗、panic）看這裡，不要在 query log 裡撈。
 
 ---
 
