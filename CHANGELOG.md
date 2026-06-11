@@ -13,224 +13,224 @@
 
 ### Features
 
-* **ratelimit:** add BIND-compatible response rate limiting ([0658b4e](https://github.com/chenwei791129/ShadowDNS/commit/0658b4e0dff8d22e9d290d78afb1fea94cfe661b))
-* **server:** add DNS Cookies and EDNS0 OPT echo ([008d3cb](https://github.com/chenwei791129/ShadowDNS/commit/008d3cb8cfc9cad083733b055fc9fef536a8095f))
-* **server:** bind IPv6 listeners from named.conf listen-on-v6 ([496a505](https://github.com/chenwei791129/ShadowDNS/commit/496a505953c1aa043b6e7e591a11195c014cb5fa))
+* **ratelimit:** add BIND-compatible response rate limiting ([66040c8](https://github.com/chenwei791129/ShadowDNS/commit/66040c8ed97866874a8b88ed9e859420cbcbe3f8))
+* **server:** add DNS Cookies and EDNS0 OPT echo ([87320ad](https://github.com/chenwei791129/ShadowDNS/commit/87320ad3fa73b9c0d8110db701ea00f441e19d21))
+* **server:** bind IPv6 listeners from named.conf listen-on-v6 ([c2ad9e3](https://github.com/chenwei791129/ShadowDNS/commit/c2ad9e33125165d1849f45d8ba862b11968baafe))
 
 ## [0.17.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.16.1...v0.17.0) (2026-06-07)
 
 
 ### Features
 
-* **notify:** resolve NOTIFY targets from in-zone glue records ([f11f712](https://github.com/chenwei791129/ShadowDNS/commit/f11f7121c64842dc3729ee47e788450b35c55130))
-* **querylog:** add BIND9-compatible query logging from named.conf logging{} ([dd33fee](https://github.com/chenwei791129/ShadowDNS/commit/dd33feef84fb2157418a2e7b37a839091bc8e8cd))
+* **notify:** resolve NOTIFY targets from in-zone glue records ([f35208a](https://github.com/chenwei791129/ShadowDNS/commit/f35208a7ac83d711eda37d6522f2d5636f36c3cb))
+* **querylog:** add BIND9-compatible query logging from named.conf logging{} ([e5dcfac](https://github.com/chenwei791129/ShadowDNS/commit/e5dcfac94e43e2a9c08380c66733e3a96854fcb0))
 
 ## [0.16.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.16.0...v0.16.1) (2026-05-09)
 
 
 ### Performance Improvements
 
-* **dnsutil:** eliminate string concat in IsInZone hot path ([8d2440b](https://github.com/chenwei791129/ShadowDNS/commit/8d2440b96bbcc04553ba2b82be97f7a822c37f1e))
-* **zone:** eliminate "."+origin concat in LookupWildcard/FollowCNAME ([9201c6e](https://github.com/chenwei791129/ShadowDNS/commit/9201c6e7aef8d9c52d7ab401feead6e4e803ce08))
+* **dnsutil:** eliminate string concat in IsInZone hot path ([dac6f43](https://github.com/chenwei791129/ShadowDNS/commit/dac6f43c258f75ed00ba4dcd096add0c3ea4b92f))
+* **zone:** eliminate "."+origin concat in LookupWildcard/FollowCNAME ([f7c935b](https://github.com/chenwei791129/ShadowDNS/commit/f7c935b99e935cbe9e9fac238483697d32c4ba5a))
 
 ## [0.16.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.15.0...v0.16.0) (2026-05-05)
 
 
 ### Features
 
-* prune backup zones without declared root + summarize discard log ([7fb43eb](https://github.com/chenwei791129/ShadowDNS/commit/7fb43eb27df2672fe6e94785e6df3d7b4bdd0b54))
+* prune backup zones without declared root + summarize discard log ([f4f5ffc](https://github.com/chenwei791129/ShadowDNS/commit/f4f5ffc5145162a49d2aff567512d9fc88ec5b7f))
 
 
 ### Bug Fixes
 
-* **smoke:** use unified aliases mapping form ([9313cc9](https://github.com/chenwei791129/ShadowDNS/commit/9313cc95be2adba94f7235bf2174ba9dd9faff33))
+* **smoke:** use unified aliases mapping form ([319b684](https://github.com/chenwei791129/ShadowDNS/commit/319b6843a9b2b6f0fc951f84794cb1351954cf63))
 
 ## [0.15.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.14.0...v0.15.0) (2026-05-05)
 
 
 ### Features
 
-* **logging:** add file-backed sink with SIGUSR1 reopen ([4fb2bd4](https://github.com/chenwei791129/ShadowDNS/commit/4fb2bd45293ff54e2c95ac3d5b063d818c2d8205))
-* **packaging:** install logrotate config and route daemon log to file ([c832798](https://github.com/chenwei791129/ShadowDNS/commit/c832798ec821c9e5c39f3cf3b362f147eed92642))
+* **logging:** add file-backed sink with SIGUSR1 reopen ([85344b8](https://github.com/chenwei791129/ShadowDNS/commit/85344b8976031be773518301f54b83c79bdd3e4a))
+* **packaging:** install logrotate config and route daemon log to file ([0674a48](https://github.com/chenwei791129/ShadowDNS/commit/0674a48eda446ec8b226bda4568267a9a7bd4c6d))
 
 ## [0.14.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.13.0...v0.14.0) (2026-05-04)
 
 
 ### Features
 
-* **prune-backup:** add offline CLI to prune redundant backup records ([#26](https://github.com/chenwei791129/ShadowDNS/issues/26)) ([68b02c5](https://github.com/chenwei791129/ShadowDNS/commit/68b02c545cc8bf3bc20491ac371c5a906ce08244))
-* **prune-backup:** stream pairs to bound peak memory ([7d9c93c](https://github.com/chenwei791129/ShadowDNS/commit/7d9c93c88cc2f02a3abf4dd8b4518d7d7a238201))
+* **prune-backup:** add offline CLI to prune redundant backup records ([#26](https://github.com/chenwei791129/ShadowDNS/issues/26)) ([b475918](https://github.com/chenwei791129/ShadowDNS/commit/b47591883936a292eb3c8ef7c428dece2bc375ab))
+* **prune-backup:** stream pairs to bound peak memory ([e4ed742](https://github.com/chenwei791129/ShadowDNS/commit/e4ed742d061e123e33533eb196839ae2c9be61f8))
 
 
 ### Bug Fixes
 
-* **test:** replace flaky time.Sleep sync points with explicit channels ([#28](https://github.com/chenwei791129/ShadowDNS/issues/28)) ([7696dae](https://github.com/chenwei791129/ShadowDNS/commit/7696dae7d1de556e5a83d06fdc13c435e287c373))
-* **zone:** suppress zero-signal logs for expected backup-zone drops ([#29](https://github.com/chenwei791129/ShadowDNS/issues/29)) ([63630e5](https://github.com/chenwei791129/ShadowDNS/commit/63630e5853e6a422ffa657728a3acc14bcc7fecc))
+* **test:** replace flaky time.Sleep sync points with explicit channels ([#28](https://github.com/chenwei791129/ShadowDNS/issues/28)) ([6aa8e9f](https://github.com/chenwei791129/ShadowDNS/commit/6aa8e9f6c666ec0940934086e669b97df22d7da7))
+* **zone:** suppress zero-signal logs for expected backup-zone drops ([#29](https://github.com/chenwei791129/ShadowDNS/issues/29)) ([3bd2112](https://github.com/chenwei791129/ShadowDNS/commit/3bd2112b4f5497e5b5e908b80c67230423a6a638))
 
 ## [0.13.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.12.4...v0.13.0) (2026-04-29)
 
 
 ### Features
 
-* **dns:** preserve query and zone-file case in DNS responses ([2bdf2be](https://github.com/chenwei791129/ShadowDNS/commit/2bdf2beea805300096748c2bc181a17011db2ddb))
+* **dns:** preserve query and zone-file case in DNS responses ([fa3c1da](https://github.com/chenwei791129/ShadowDNS/commit/fa3c1dacac4e66f8143a6ca5fc1d2ec763fc3ee6))
 
 
 ### Bug Fixes
 
-* **alias:** rewrite root labels in mid-RDATA when opt-in flag is set ([ffe1271](https://github.com/chenwei791129/ShadowDNS/commit/ffe127172565d76cf360a9325e708e5b4d5a5b69))
+* **alias:** rewrite root labels in mid-RDATA when opt-in flag is set ([9182659](https://github.com/chenwei791129/ShadowDNS/commit/9182659d05ac723ae213f417df3cd70ae19e3c66))
 
 ## [0.12.4](https://github.com/chenwei791129/ShadowDNS/compare/v0.12.3...v0.12.4) (2026-04-25)
 
 
 ### Bug Fixes
 
-* adjust ephemeral ttl to 0 to try fix cert issue ([9fb95cf](https://github.com/chenwei791129/ShadowDNS/commit/9fb95cf90ab3443be5ff329dc847a5647c77f1c8))
+* adjust ephemeral ttl to 0 to try fix cert issue ([b928b73](https://github.com/chenwei791129/ShadowDNS/commit/b928b73ea412a44cd5634679af91a86652b4db5d))
 
 ## [0.12.3](https://github.com/chenwei791129/ShadowDNS/compare/v0.12.2...v0.12.3) (2026-04-24)
 
 
 ### Bug Fixes
 
-* **handler:** enforce UDP budget via Pack() and enable name compression ([#21](https://github.com/chenwei791129/ShadowDNS/issues/21)) ([bda64fc](https://github.com/chenwei791129/ShadowDNS/commit/bda64fc984446309406e8980fdf68bc63123e630))
+* **handler:** enforce UDP budget via Pack() and enable name compression ([#21](https://github.com/chenwei791129/ShadowDNS/issues/21)) ([bc801b1](https://github.com/chenwei791129/ShadowDNS/commit/bc801b1de75a02016fe5c9a32d92e6c2b511cc27))
 
 ## [0.12.2](https://github.com/chenwei791129/ShadowDNS/compare/v0.12.1...v0.12.2) (2026-04-24)
 
 
 ### Bug Fixes
 
-* **ephemeral:** use fixed 30s TTL on ephemeral TXT DNS responses ([02a4362](https://github.com/chenwei791129/ShadowDNS/commit/02a4362c293ae14ffd2f6d27d7077a4fe3a41ed7))
+* **ephemeral:** use fixed 30s TTL on ephemeral TXT DNS responses ([d627e28](https://github.com/chenwei791129/ShadowDNS/commit/d627e28ecfd406c08734774dfa958225c1d3e29e))
 
 ## [0.12.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.12.0...v0.12.1) (2026-04-23)
 
 
 ### Bug Fixes
 
-* **ci:** generate shell completions before nfpm packaging ([1c6f38e](https://github.com/chenwei791129/ShadowDNS/commit/1c6f38e57e1cb5dc1508a3515e764cc6f27c635e))
+* **ci:** generate shell completions before nfpm packaging ([64fa915](https://github.com/chenwei791129/ShadowDNS/commit/64fa915be00db779482594ba6f70e52d84d60d5d))
 
 ## [0.12.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.11.1...v0.12.0) (2026-04-23)
 
 
 ### Features
 
-* **packaging:** generate shell completion in deb package ([fcc79a0](https://github.com/chenwei791129/ShadowDNS/commit/fcc79a01aa1c5dcfa9d577a1f8ff27c314b39564))
+* **packaging:** generate shell completion in deb package ([1e6ce62](https://github.com/chenwei791129/ShadowDNS/commit/1e6ce6264534be1defad5314e35f8ba71918c183))
 
 ## [0.11.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.11.0...v0.11.1) (2026-04-23)
 
 
 ### Bug Fixes
 
-* **ephemeral-api:** reject PUT for FQDNs outside loaded zones ([8aca32f](https://github.com/chenwei791129/ShadowDNS/commit/8aca32f7088fa583052513978aab12337f9bcce9))
+* **ephemeral-api:** reject PUT for FQDNs outside loaded zones ([fe52ad5](https://github.com/chenwei791129/ShadowDNS/commit/fe52ad50cd817f25d9739aa5eaf4e9581a739e43))
 
 ## [0.11.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.10.0...v0.11.0) (2026-04-22)
 
 
 ### Features
 
-* **config:** flip aliases schema to root→[backups] ([09041e7](https://github.com/chenwei791129/ShadowDNS/commit/09041e7da9d478175b56015de5b342e533066251))
-* **server:** serve ephemeral TXT ahead of RFC 1034 CNAME fallback for TXT queries ([7674e36](https://github.com/chenwei791129/ShadowDNS/commit/7674e361c47289b1cc3583ba62403c8671297bcb))
+* **config:** flip aliases schema to root→[backups] ([7ea23e5](https://github.com/chenwei791129/ShadowDNS/commit/7ea23e54661062bae65719cbdca6aa47ce5fb858))
+* **server:** serve ephemeral TXT ahead of RFC 1034 CNAME fallback for TXT queries ([831d154](https://github.com/chenwei791129/ShadowDNS/commit/831d154834d665c8a77653e891ebdc9be9f65a1d))
 
 ## [0.10.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.9.1...v0.10.0) (2026-04-22)
 
 
 ### Features
 
-* **dns:** exact-match ephemeral TXT takes precedence over zone wildcard ([2b2d214](https://github.com/chenwei791129/ShadowDNS/commit/2b2d2145f7af9da2981555f257fc471718b60728))
-* ephemeral TXT HTTP API with multi-value support and unified config ([c63b891](https://github.com/chenwei791129/ShadowDNS/commit/c63b8917fa90a0c7c866c372b93cd24ec5f9ee5c))
-* **ephemeral:** add per-value DELETE and 255-byte value cap ([d571578](https://github.com/chenwei791129/ShadowDNS/commit/d571578363d4114daf987337f76721544ab78dcc))
+* **dns:** exact-match ephemeral TXT takes precedence over zone wildcard ([69e3bcd](https://github.com/chenwei791129/ShadowDNS/commit/69e3bcda47576c6881468884fad60ec6359c0e0c))
+* ephemeral TXT HTTP API with multi-value support and unified config ([6800b0a](https://github.com/chenwei791129/ShadowDNS/commit/6800b0a49b7762e9dc9c1dea25e2937d6adb94b0))
+* **ephemeral:** add per-value DELETE and 255-byte value cap ([25135e1](https://github.com/chenwei791129/ShadowDNS/commit/25135e17d39323fbf811901829451817bd5e36d8))
 
 
 ### Bug Fixes
 
-* **lint:** handle errcheck for Body.Close and f.Close ([bedeb4c](https://github.com/chenwei791129/ShadowDNS/commit/bedeb4cca88f629fb0a7ad40a4ad78c9f9b39e55))
+* **lint:** handle errcheck for Body.Close and f.Close ([5725353](https://github.com/chenwei791129/ShadowDNS/commit/572535390383d2b48b7829de854e5e553bf0a475))
 
 ## [0.9.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.9.0...v0.9.1) (2026-04-21)
 
 
 ### Bug Fixes
 
-* **scripts:** recurse into subdirectories when copying zone testdata ([2a4d8c6](https://github.com/chenwei791129/ShadowDNS/commit/2a4d8c688eef54b95135629b8bcda8c79c30e998))
+* **scripts:** recurse into subdirectories when copying zone testdata ([2a454e5](https://github.com/chenwei791129/ShadowDNS/commit/2a454e56aa3044e292de7327aef6b35379ae52a2))
 
 ## [0.9.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.8.0...v0.9.0) (2026-04-20)
 
 
 ### Features
 
-* **cli:** add opt-in pprof endpoint on metrics HTTP server ([556b968](https://github.com/chenwei791129/ShadowDNS/commit/556b9688ff2aee0df4746c7689a7d2a563eb527d))
+* **cli:** add opt-in pprof endpoint on metrics HTTP server ([0d24b9f](https://github.com/chenwei791129/ShadowDNS/commit/0d24b9f12b2ad013ef148f7a4d7043eb695aab72))
 
 
 ### Bug Fixes
 
-* **cli:** satisfy errcheck on flag.Usage fmt.Fprintln calls ([e1cf836](https://github.com/chenwei791129/ShadowDNS/commit/e1cf83633e6d485946d0f3f9f384543d482f2e22))
+* **cli:** satisfy errcheck on flag.Usage fmt.Fprintln calls ([ec6a11d](https://github.com/chenwei791129/ShadowDNS/commit/ec6a11db3af547c8200eca9cb7b54582d5659cec))
 
 ## [0.8.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.7.0...v0.8.0) (2026-04-17)
 
 
 ### Features
 
-* **server:** diff-based zone reload with fingerprint reuse ([10c1dbc](https://github.com/chenwei791129/ShadowDNS/commit/10c1dbcbe1c53322da2616b68ec59c239595e9d9))
+* **server:** diff-based zone reload with fingerprint reuse ([68277b2](https://github.com/chenwei791129/ShadowDNS/commit/68277b2183c5f706d221054c493b55b26ca3eb97))
 
 
 ### Bug Fixes
 
-* **test:** eliminate flaky pointer lookup in reload diff test ([6c8f16f](https://github.com/chenwei791129/ShadowDNS/commit/6c8f16fb67f73f996ca19b7ea8b2746656eb8e22))
+* **test:** eliminate flaky pointer lookup in reload diff test ([06aac8b](https://github.com/chenwei791129/ShadowDNS/commit/06aac8b502cdd271b7f1df361c407bbf88ba4cdf))
 
 ## [0.7.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.6.0...v0.7.0) (2026-04-16)
 
 
 ### Features
 
-* **dns:** follow in-zone CNAME targets per RFC 1034 §3.6.2 ([0931d4b](https://github.com/chenwei791129/ShadowDNS/commit/0931d4bfa1b8432e1b0f1b848ae577d021f4a494))
+* **dns:** follow in-zone CNAME targets per RFC 1034 §3.6.2 ([d624eef](https://github.com/chenwei791129/ShadowDNS/commit/d624eef0cf7e9ce736621e3fd7bfa71686b51506))
 
 ## [0.6.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.5.0...v0.6.0) (2026-04-16)
 
 
 ### Features
 
-* **dns:** match wildcard records per RFC 4592 ([4265738](https://github.com/chenwei791129/ShadowDNS/commit/42657384b856f5efe5d5733da572fed2a3fd5c2f))
+* **dns:** match wildcard records per RFC 4592 ([1f1d695](https://github.com/chenwei791129/ShadowDNS/commit/1f1d695a0e119ae7125acad1c143083e0831d3f7))
 
 
 ### Bug Fixes
 
-* **config:** add pid-file option for shadowdns service ([8997a6d](https://github.com/chenwei791129/ShadowDNS/commit/8997a6d5db195a0129ac35f8a897f1ece7a79772))
-* **dns:** synthesize CNAME response per RFC 1034 §3.6.2 ([1b62f1e](https://github.com/chenwei791129/ShadowDNS/commit/1b62f1e926846c858e044d132af38a5a079c448d))
+* **config:** add pid-file option for shadowdns service ([f3a8b86](https://github.com/chenwei791129/ShadowDNS/commit/f3a8b864fa1e129b6579623d70a9354006e12d68))
+* **dns:** synthesize CNAME response per RFC 1034 §3.6.2 ([17a507d](https://github.com/chenwei791129/ShadowDNS/commit/17a507dedf7be71a1d9fdf0a8dfe133e56a22dfc))
 
 ## [0.5.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.4.0...v0.5.0) (2026-04-15)
 
 
 ### Features
 
-* **notify:** add -no-notify flag and options.notify directive ([41f30c8](https://github.com/chenwei791129/ShadowDNS/commit/41f30c8bcf283da713d74c78605f10090c6d0eb9))
+* **notify:** add -no-notify flag and options.notify directive ([43d926b](https://github.com/chenwei791129/ShadowDNS/commit/43d926b3f66d53655182b694a263ad358ef4ff75))
 
 ## [0.4.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.3.0...v0.4.0) (2026-04-15)
 
 
 ### Features
 
-* **server:** honor named.conf listen-on with per-address binding ([d027f96](https://github.com/chenwei791129/ShadowDNS/commit/d027f963ec2a5afc25af467846cecd03d6303f2f))
+* **server:** honor named.conf listen-on with per-address binding ([f1607e1](https://github.com/chenwei791129/ShadowDNS/commit/f1607e1f7db1dc49d65dae956cece693c7615fb4))
 
 ## [0.3.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.2.1...v0.3.0) (2026-04-15)
 
 
 ### Features
 
-* **view:** support GeoIP2/GeoLite2 mmdb fallback chain ([caa9aa0](https://github.com/chenwei791129/ShadowDNS/commit/caa9aa08131896871e21b451fe5f15e44d5ad69f))
-* **zone:** support BIND-compatible quoted $INCLUDE syntax ([397182e](https://github.com/chenwei791129/ShadowDNS/commit/397182e98c1a073a260dd7cab393b95ce4c11329))
+* **view:** support GeoIP2/GeoLite2 mmdb fallback chain ([2c53b62](https://github.com/chenwei791129/ShadowDNS/commit/2c53b621e928b909156d171f5fcd62dc1dbae967))
+* **zone:** support BIND-compatible quoted $INCLUDE syntax ([1621aa8](https://github.com/chenwei791129/ShadowDNS/commit/1621aa8cd9ec15fb1ad630d56584ae6c3de07a90))
 
 
 ### Bug Fixes
 
-* **smoke:** copy entire master/ tree recursively ([f17e14e](https://github.com/chenwei791129/ShadowDNS/commit/f17e14eac0a189a057a33a60811ef5ed185a5f86))
+* **smoke:** copy entire master/ tree recursively ([13b57eb](https://github.com/chenwei791129/ShadowDNS/commit/13b57ebf46f3a10efe371328aa885f3e09eb152c))
 
 ## [0.2.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.2.0...v0.2.1) (2026-04-14)
 
 
 ### Bug Fixes
 
-* pass release tag to nfpm so .deb version matches the release ([a496a7f](https://github.com/chenwei791129/ShadowDNS/commit/a496a7f621fe6e66a6e7cfa398b03cab9f8c711c))
+* pass release tag to nfpm so .deb version matches the release ([beb3472](https://github.com/chenwei791129/ShadowDNS/commit/beb3472239630c4c0411d894a5d447c7fad1dbd8))
 
 ## [0.2.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.1.0...v0.2.0) (2026-04-14)
 
 
 ### Features
 
-* add Prometheus /metrics endpoint with 8 DNS metrics ([6920b02](https://github.com/chenwei791129/ShadowDNS/commit/6920b022760981c67c60b288831457c2e35be27c))
+* add Prometheus /metrics endpoint with 8 DNS metrics ([a0433cc](https://github.com/chenwei791129/ShadowDNS/commit/a0433cc1cc57524c8470e13ecd202944570c1c97))
