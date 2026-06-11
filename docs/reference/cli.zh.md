@@ -12,6 +12,7 @@
 | `--log-file` | （空，輸出到 stderr） | 否 | 將輸出寫入指定檔案（`O_APPEND\|O_CREATE`，mode 0640）。送 SIGUSR1 讓 daemon 重開檔案（供 logrotate postrotate 使用）。 |
 | `--metrics-addr` | `:9153` | 否 | Prometheus `/metrics` HTTP 監聽位址，空字串停用。 |
 | `--pprof-enable` | `false` | 否 | 在 metrics HTTP server 上開放 `/debug/pprof/` 端點，需要 `--metrics-addr` 非空。只在啟動時讀取，SIGHUP 不會改變其值。**只應在受信任網路或 loopback 綁定下啟用**：pprof 沒有驗證機制，會回傳 debugger 等級的 runtime 狀態，CPU/trace profile 端點還可被用來讓 process 停頓指定時長。 |
+| `--ecs-enable` | `false` | 否 | 啟用 RFC 7871 EDNS Client Subnet 處理。查詢中合法的 ECS option 會驅動 GeoIP view 選擇（僅 country/ASN 規則；IP/CIDR ACL 規則永遠以真實來源 IP 評估），回應會 echo ECS option 且 scope 等於 source prefix length。預設關閉：查詢中的 ECS option 一律忽略、回應不帶 ECS option，行為與 BIND 一致。只在啟動時讀取，SIGHUP 不會改變其值。 |
 | `--reload-verify` | `hash` | 否 | SIGHUP reload 時的 zone file 變更偵測策略：`hash`（預設，對 `rsync -avc --inplace` 安全）、`size`（只比 mtime+size，不讀檔）、`none`（一律完整重建）。 |
 | `--dry-run` | `false` | 否 | 載入設定與 zone、輸出摘要後結束，不開啟 listener。 |
 | `--no-notify` | （未指定） | 否 | 停用整個 process 生命週期的 NOTIFY 發送。未指定時 NOTIFY 依 `named.conf` 的 `options.notify`（預設啟用）；指定時覆寫設定檔指令，且跨 SIGHUP reload 持續有效。 |

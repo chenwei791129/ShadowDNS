@@ -44,7 +44,7 @@ In the reference deployment, memory usage is reduced by about **80%** compared w
 | IPv6 listener                      | Yes           | Yes        |
 | DNS Cookies (RFC 7873)             | Yes           | Yes        |
 | Response Rate Limiting (RRL)       | Yes           | Yes        |
-| EDNS Client Subnet (ECS, RFC 7871) | No            | Planned    |
+| EDNS Client Subnet (ECS, RFC 7871) | No            | Yes (opt-in via `--ecs-enable`, default off) |
 | Query logging (BIND format)        | Yes           | Yes        |
 | CNAME Flattening (external targets) | No           | No         |
 | In-bailiwick CNAME Flattening      | No            | Planned    |

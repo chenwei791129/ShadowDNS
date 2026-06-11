@@ -83,10 +83,10 @@ Response sent to client
 - BIND9-compatible query logging — parses the standard `logging{}` block (`channel` with `file`/`severity`/`print-*` plus `category queries`) and appends one line per view-matched query in BIND's exact queries-category format, so existing downstream log parsers keep working unchanged. Rotation is handled by logrotate + SIGUSR1 (BIND's built-in `versions`/`size` parameters are ignored with a warning); the file reopens alongside `--log-file` on SIGUSR1. SIGHUP reload re-applies `logging{}` changes — path and `print-*` option edits take effect without a restart, and SIGUSR1 reopen semantics are unchanged
 - EDNS0 OPT echo (RFC 6891) — responses to EDNS queries carry an OPT record (version 0, 1232-byte UDP payload size per DNS Flag Day 2020); unsupported EDNS versions receive BADVERS
 - DNS Cookies (RFC 7873, answer-only) — queries carrying a COOKIE option receive a full cookie in the response (client cookie echo + server cookie in the RFC 9018 interoperable format, SipHash-2-4). The 128-bit secret is generated at startup, held in memory only, and survives SIGHUP reloads. Cookies are never required: there is no enforcement mode and BADCOOKIE is never returned; malformed COOKIE options get FORMERR per RFC 7873 §5.2.2. Matches BIND 9.11+ default behavior
+- EDNS Client Subnet (ECS, RFC 7871) — opt-in via `--ecs-enable` (default off). When enabled, a valid ECS option drives GeoIP view selection (country/ASN rules) instead of the resolver's source IP, improving geo accuracy for queries arriving via public resolvers; IP/CIDR ACL rules always evaluate the real source IP, so a forged ECS option can never select an ACL-protected view. Responses echo the ECS option with a scope equal to the source prefix length, and client opt-out (source prefix length 0) is honored. When disabled, ECS options in queries are ignored and responses never carry one — matching BIND, which does not support ECS
 
 ### Planned
 
-- EDNS Client Subnet (ECS, RFC 7871) — improved GeoIP accuracy when queries arrive via resolvers
 - In-bailiwick CNAME Flattening — resolve an apex CNAME whose target points into a zone ShadowDNS already serves, returning A/AAAA directly so a CNAME can coexist with SOA/NS at the zone apex. Resolution is an in-memory lookup in the client's matched view — no outbound resolver, mirroring the in-zone-glue model used for NOTIFY. Targets resolving outside any ShadowDNS-served zone are refused. See [docs/cname-flattening-implementation-survey.md](docs/cname-flattening-implementation-survey.md)
 
 ### Not supported
@@ -119,7 +119,7 @@ Response sent to client
 | IPv6 listener                      | Yes           | Yes        |
 | DNS Cookies (RFC 7873)             | Yes           | Yes        |
 | Response Rate Limiting (RRL)       | Yes           | Yes        |
-| EDNS Client Subnet (ECS, RFC 7871) | No            | Planned    |
+| EDNS Client Subnet (ECS, RFC 7871) | No            | Yes (opt-in via `--ecs-enable`, default off) |
 | Query logging (BIND format)        | Yes           | Yes        |
 | CNAME Flattening (external target) | No            | No         |
 | In-bailiwick CNAME Flattening      | No            | Planned    |

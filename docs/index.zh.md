@@ -44,7 +44,7 @@ ShadowDNS 透過 zone aliasing 消除這項浪費：
 | IPv6 listener                      | Yes           | Yes        |
 | DNS Cookies (RFC 7873)             | Yes           | Yes        |
 | Response Rate Limiting (RRL)       | Yes           | Yes        |
-| EDNS Client Subnet (ECS, RFC 7871) | No            | Planned    |
+| EDNS Client Subnet (ECS, RFC 7871) | No            | Yes（opt-in，`--ecs-enable`，預設關閉） |
 | Query logging（BIND 格式）         | Yes           | Yes        |
 | CNAME Flattening（外部 target）    | No            | No         |
 | In-bailiwick CNAME Flattening      | No            | Planned    |
