@@ -8,18 +8,16 @@ from *Planned* in the [feature comparison table](index.md#feature-comparison-wit
 > **Survey method**: multi-source web research (open-source software documentation, each vendor's official documentation, IETF datatracker / RFCs,
 > blogs from Cloudflare / APNIC / Akamai and others, community field tests). Primary sources are listed at the end of each section.
 
-> **Key difference from the ECS survey**: ECS is a bilateral resolver ↔ authoritative cooperation feature; CNAME Flattening
-> is a **purely authoritative-side** feature — the authoritative server itself resolves the "CNAME-like" record
-> at the apex into A/AAAA and answers directly. This report therefore has no "recursive resolver" section
-> corresponding to the one in the ECS survey; it is replaced by a "Standardization
-> background" section.
+> **Scope note**: CNAME Flattening is a **purely authoritative-side** feature — the authoritative server itself
+> resolves the "CNAME-like" record at the apex into A/AAAA and answers directly. This report therefore covers
+> authoritative software, the standardization background, and commercial hosted services.
 
 ---
 
 ## Summary
 
 The README marks CNAME Flattening as **Planned** and the BIND comparison column as "No" — both are **correct**.
-But unlike ECS, this time the landscape shows a clear **"open source weak, commercial strong" split**:
+The landscape shows a clear **"open source weak, commercial strong" split**:
 
 - **None of the three major traditional open-source authoritative servers support it** — BIND 9, NSD, and Knot DNS all refuse to implement it
   on the grounds of "strict RFC compliance; CNAME semantics are not allowed at the apex". **In the open-source world, only PowerDNS (ALIAS, v4.0+) and
@@ -72,8 +70,7 @@ Points worth noting:
   client (no expansion) and is forbidden at the apex; the CoreDNS plugin is after-the-fact response rewriting, requires recompiling, and is not production
   grade. Neither **satisfies** the core semantics of apex flattening.
 - **The unanimous refusal by the three major traditional servers (BIND / NSD / Knot) is a positioning reference for ShadowDNS**: not doing this feature
-  does not make ShadowDNS look behind in the "serious authoritative server" category — the exact opposite of the ECS situation
-  (where gdnsd / PowerDNS / Knot all support it and not doing it would mean falling behind).
+  does not make ShadowDNS look behind in the "serious authoritative server" category.
 
 ---
 
@@ -188,7 +185,7 @@ Several architectural divergences are worth noting:
 
 ## 5. Interpretation and recommendations for ShadowDNS
 
-### Should it be done? Leaning "doable if restricted to in-bailiwick targets, but still lower priority than ECS"
+### Should it be done? Leaning "doable if restricted to in-bailiwick targets"
 
 **Arguments in favor of implementing:**
 
@@ -241,16 +238,6 @@ This scoping knocks out multiple obstacles at once:
    in-bailiwick rewrite runs first, must be explicitly defined.
 5. **Recommend apex-only**: non-apex names can already carry a CNAME, so keep the scope as tight as possible.
 
-### Priority comparison with ECS
-
-| Dimension | ECS (Planned) | CNAME Flattening (Planned) |
-|---|---|---|
-| Do open-source peers all have it | gdnsd/PowerDNS/Knot have it; **not doing it means falling behind** | Only PowerDNS/Technitium have it; BIND/NSD/Knot do not — **not doing it is not falling behind** |
-| Conflict with core architecture | None (pure read of query contents) | General-purpose version: **high**; **eliminated** when restricted to in-bailiwick (pure in-memory lookup) |
-| DNSSEC obstacle | None | None (ShadowDNS does not support it anyway — void) |
-| GeoIP interaction | **Enhances** geo precision | General-purpose version **degrades** it; **preserved** when restricted to in-bailiwick (resolved in the same view) |
-| IETF standards status | RFC 7871 (Informational, stalled) | No RFC (ANAME is dead; moved to RFC 9460 SVCB/HTTPS) |
-
 ### One-sentence summary
 
 > For ShadowDNS, implementing CNAME Flattening is not a "fall behind if we don't" matter in the open-source world (BIND/NSD/Knot all skip it), and its
@@ -258,8 +245,8 @@ This scoping knocks out multiple obstacles at once:
 > path, in head-on conflict with the core "authoritative-only, recursion-off, zero external dependency" stance**. **However, restricting
 > flatten targets to zones ShadowDNS itself serves (in-bailiwick) dissolves the conflict** — target resolution degenerates
 > into an in-memory lookup, the same approach as NOTIFY in-zone-glue, and GeoIP inaccuracy and loop detection are solved along the way.
-> The cost is serving only "apex pointing at a local zone", not "apex pointing at an external CDN". Recommended priority **remains below
-> ECS**; if the actual need is an external CDN, evaluate the RFC 9460 HTTPS record instead.
+> The cost is serving only "apex pointing at a local zone", not "apex pointing at an external CDN"; if the actual
+> need is an external CDN, evaluate the RFC 9460 HTTPS record instead.
 
 ---
 
