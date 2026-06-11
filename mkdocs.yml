@@ -121,10 +121,10 @@ nav:
       - CLI Reference: reference/cli.md
   - Feature Guides:
       - How Zone Aliasing Works: guides/zone-aliasing.md
+      - EDNS Client Subnet (ECS): guides/ecs.md
       - Ephemeral TXT API: ephemeral-api.md
   - Operations:
       - Migrating from BIND: migration.md
       - Startup Performance Benchmark: benchmark.md
   - Design Surveys:
       - CNAME Flattening: cname-flattening-implementation-survey.md
-      - EDNS Client Subnet (ECS): ecs-implementation-survey.md
