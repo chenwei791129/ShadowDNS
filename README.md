@@ -383,4 +383,4 @@ The flag is intentionally "set-only" — `--no-notify` can only disable NOTIFY. 
 
 ## License
 
-TBD
+[MIT](LICENSE) © 2026 Chen-Wei Sun
