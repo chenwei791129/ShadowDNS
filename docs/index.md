@@ -4,39 +4,39 @@
   <img src="assets/logo.png" alt="ShadowDNS Logo" width="480">
 </p>
 
-ShadowDNS 是一套權威 DNS 伺服器（authoritative DNS server），核心特色是 **zone aliasing**：以極低的記憶體成本服務大量備援網域（backup domain），同時對 client、BIND slave 與既有管理系統保持完全透明的相容性。
+ShadowDNS is an authoritative DNS server whose core feature is **zone aliasing**: serving a large number of backup domains at an extremely low memory cost, while remaining fully transparent and compatible with clients, BIND slaves, and existing management systems.
 
-## 為什麼需要 ShadowDNS？
+## Why ShadowDNS?
 
-在 BIND 上服務大量備援網域時，每個備援網域在每個 view 都需要載入一份完整的 zone 副本。以典型的 split-horizon 部署為例 —— 3,000 個備援網域 × 7 個 view —— 記憶體中就存在約 21,000 份近乎相同的 zone 副本，彼此只差在 zone 名稱。以平均 zone 大小 10 KB 計算，這代表約 210 MB 不帶任何有效資訊的記憶體開銷。
+When serving a large number of backup domains on BIND, every backup domain requires a full zone copy to be loaded in every view. Take a typical split-horizon deployment as an example — 3,000 backup domains × 7 views — and roughly 21,000 nearly identical zone copies exist in memory, differing only in the zone name. With an average zone size of 10 KB, this amounts to about 210 MB of memory overhead carrying no useful information whatsoever.
 
-ShadowDNS 透過 zone aliasing 消除這項浪費：
+ShadowDNS eliminates this waste through zone aliasing:
 
-- 只有 root domain 會完整載入記憶體。
-- 備援網域只是一個指向 root 的指標。
-- 對備援 zone 的查詢透過 **in-bailiwick rewriting** 即時改寫：回應看起來與載入完整備援 zone 完全相同，但伺服器只保留一份權威資料。
+- Only the root domain is fully loaded into memory.
+- A backup domain is just a pointer to the root.
+- Queries against a backup zone are rewritten on the fly via **in-bailiwick rewriting**: the response looks exactly the same as if a complete backup zone had been loaded, but the server keeps only a single copy of the authoritative data.
 
-在參考部署中，相較於同等的 BIND master，記憶體用量約減少 **80%**。
+In the reference deployment, memory usage is reduced by about **80%** compared with an equivalent BIND master.
 
-## 設計目標：透明相容
+## Design Goal: Transparent Compatibility
 
-- 查詢備援網域的 client 看不到任何回應差異。
-- 既有 BIND slave 照常透過 AXFR 接收 zone transfer。
-- 產生 `named.conf` 與 zone file 的管理系統不需任何修改 —— ShadowDNS 直接讀取既有設定檔。
+- Clients querying backup domains see no difference in responses.
+- Existing BIND slaves keep receiving zone transfers via AXFR as usual.
+- Management systems that generate `named.conf` and zone files require no changes — ShadowDNS reads the existing configuration files directly.
 
-## 與 BIND 的功能比較
+## Feature Comparison with BIND
 
-| 功能                               | BIND (master) | ShadowDNS  |
+| Feature                            | BIND (master) | ShadowDNS  |
 |------------------------------------|---------------|------------|
-| RFC 1035 zone file 解析            | Yes           | Yes        |
+| RFC 1035 zone file parsing         | Yes           | Yes        |
 | Split-horizon views                | Yes           | Yes        |
-| GeoIP country 比對                 | Yes           | Yes        |
-| GeoIP ASN 比對                     | Yes           | Yes        |
-| IP / CIDR 比對                     | Yes           | Yes        |
+| GeoIP country matching             | Yes           | Yes        |
+| GeoIP ASN matching                 | Yes           | Yes        |
+| IP / CIDR matching                 | Yes           | Yes        |
 | AXFR                               | Yes           | Yes        |
 | NOTIFY                             | Yes           | Yes        |
 | Wildcard records (RFC 4592)        | Yes           | Yes        |
-| Zone aliasing（備援網域）          | No            | Yes        |
+| Zone aliasing (backup domains)     | No            | Yes        |
 | Hot reload (SIGHUP)                | Yes           | Yes        |
 | Prometheus metrics                 | No            | Yes        |
 | IXFR                               | Yes           | No         |
@@ -45,18 +45,18 @@ ShadowDNS 透過 zone aliasing 消除這項浪費：
 | DNS Cookies (RFC 7873)             | Yes           | Yes        |
 | Response Rate Limiting (RRL)       | Yes           | Yes        |
 | EDNS Client Subnet (ECS, RFC 7871) | No            | Planned    |
-| Query logging（BIND 格式）         | Yes           | Yes        |
-| CNAME Flattening（外部 target）    | No            | No         |
+| Query logging (BIND format)        | Yes           | Yes        |
+| CNAME Flattening (external targets) | No           | No         |
 | In-bailiwick CNAME Flattening      | No            | Planned    |
 | Dynamic Update                     | Yes           | No         |
-| Recursion                          | 可設定        | 永遠關閉   |
+| Recursion                          | Configurable  | Always off |
 
-!!! note "專案狀態"
-    ShadowDNS 目前為 v0.x 實驗階段，尚未部署到正式環境。切換正式流量前，計劃先以正式環境規模的資料集（7 個 view、12,000+ 個 zone file）完成整合測試。
+!!! note "Project status"
+    ShadowDNS is currently in the v0.x experimental stage and has not been deployed to production. Before switching production traffic over, the plan is to complete integration testing with a production-scale dataset (7 views, 12,000+ zone files).
 
-## 下一步
+## Next Steps
 
-- [快速開始](getting-started.md) — 從 build 到啟動的最短路徑
-- [安裝](installation.md) — 原始碼編譯與 `.deb` 套件安裝
-- [Zone Aliasing 原理](guides/zone-aliasing.md) — 查詢處理管線與改寫規則
-- [從 BIND 遷移](migration.md) — 四階段切換步驟與 rollback 策略
+- [Quick Start](getting-started.md) — the shortest path from build to launch
+- [Installation](installation.md) — building from source and installing the `.deb` package
+- [How Zone Aliasing Works](guides/zone-aliasing.md) — the query processing pipeline and rewrite rules
+- [Migrating from BIND](migration.md) — the four-phase cutover procedure and rollback strategy

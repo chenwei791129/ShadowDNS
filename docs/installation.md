@@ -1,10 +1,10 @@
-# 安裝
+# Installation
 
-ShadowDNS 提供兩種安裝方式：從原始碼編譯，或在 Debian/Ubuntu 上以 `.deb` 套件安裝（內含 systemd service、logrotate 設定與 shell completion）。
+ShadowDNS offers two installation methods: building from source, or installing the `.deb` package on Debian/Ubuntu (which includes a systemd service, logrotate configuration, and shell completions).
 
-## 從原始碼編譯
+## Building from Source
 
-前置條件：Go 1.26+。
+Prerequisite: Go 1.26+.
 
 ```bash
 git clone https://github.com/chenwei791129/ShadowDNS.git
@@ -12,48 +12,48 @@ cd ShadowDNS
 make build
 ```
 
-Binary 產出於 `bin/shadowdns-<GOOS>-<GOARCH>`。如需在 macOS 上交叉編譯 linux/amd64 的部署用 binary：
+The binary is produced at `bin/shadowdns-<GOOS>-<GOARCH>`. To cross-compile a linux/amd64 deployment binary on macOS:
 
 ```bash
-make build-linux    # 產出 bin/shadowdns-linux-amd64
+make build-linux    # produces bin/shadowdns-linux-amd64
 ```
 
-## .deb 套件安裝
+## .deb Package Installation
 
-### 建置套件
+### Building the Package
 
 ```bash
-make deb    # 隱含執行 make build-linux 與 make completions
+make deb    # implicitly runs make build-linux and make completions
 ```
 
-### 安裝
+### Installing
 
 ```bash
 sudo dpkg -i shadowdns_<version>_amd64.deb
 ```
 
-### 套件安裝內容
+### Package Contents
 
-| 路徑 | 內容 |
+| Path | Contents |
 |------|------|
-| `/usr/bin/shadowdns` | 主程式 |
+| `/usr/bin/shadowdns` | Main binary |
 | `/lib/systemd/system/shadowdns.service` | systemd service unit |
-| `/etc/logrotate.d/shadowdns` | logrotate 設定（每日輪替 `/var/log/shadowdns/*.log`，postrotate 送 SIGUSR1 讓 daemon 重開 log 檔） |
-| `/etc/shadowdns/named.conf.example` | `named.conf` 範例 |
-| `/etc/shadowdns/shadowdns.yaml.example` | `shadowdns.yaml` 範例 |
+| `/etc/logrotate.d/shadowdns` | logrotate configuration (daily rotation of `/var/log/shadowdns/*.log`; postrotate sends SIGUSR1 so the daemon reopens its log files) |
+| `/etc/shadowdns/named.conf.example` | `named.conf` example |
+| `/etc/shadowdns/shadowdns.yaml.example` | `shadowdns.yaml` example |
 | `/usr/share/bash-completion/completions/shadowdns` | bash completion |
 | `/usr/share/zsh/vendor-completions/_shadowdns` | zsh completion |
 | `/usr/share/fish/vendor_completions.d/shadowdns.fish` | fish completion |
 
-安裝時的 postinstall script 會自動：
+The postinstall script automatically:
 
-- 建立 `shadowdns` 系統使用者與群組（如不存在）
-- 建立 `/var/log/shadowdns` log 目錄（owner `shadowdns:shadowdns`，mode 0750）
-- 執行 `systemctl daemon-reload`
+- Creates the `shadowdns` system user and group (if they do not exist)
+- Creates the `/var/log/shadowdns` log directory (owner `shadowdns:shadowdns`, mode 0750)
+- Runs `systemctl daemon-reload`
 
-### systemd 服務
+### systemd Service
 
-套件附帶的 service unit 以下列參數啟動：
+The service unit shipped with the package starts with the following parameters:
 
 ```text
 /usr/bin/shadowdns \
@@ -62,33 +62,33 @@ sudo dpkg -i shadowdns_<version>_amd64.deb
     --log-file   /var/log/shadowdns/shadowdns.log
 ```
 
-因此啟用服務前，請先把設定檔放到 `/etc/shadowdns/`（可從同目錄的 `.example` 檔案複製修改）：
+Therefore, before enabling the service, place the configuration files in `/etc/shadowdns/` (you can copy and modify the `.example` files in the same directory):
 
 ```bash
 sudo cp /etc/shadowdns/named.conf.example     /etc/shadowdns/named.conf
 sudo cp /etc/shadowdns/shadowdns.yaml.example /etc/shadowdns/shadowdns.yaml
-# 編輯兩個檔案以符合你的環境後：
+# After editing both files to match your environment:
 sudo systemctl enable --now shadowdns
 ```
 
-Service unit 的安全強化重點：
+Security hardening highlights of the service unit:
 
-- 以非特權使用者 `shadowdns` 執行，透過 `AmbientCapabilities=CAP_NET_BIND_SERVICE` 綁定 53 port
-- `ProtectSystem=strict` 沙箱，僅 `/var/log/shadowdns` 可寫
-- `RuntimeDirectory=shadowdns` 於每次啟動建立 `/run/shadowdns`，供預設的 `pid-file "/var/run/shadowdns/pid"` 使用
-- `ExecReload` 對應 SIGHUP，因此 `systemctl reload shadowdns` 即可熱重載設定
+- Runs as the unprivileged user `shadowdns`, binding port 53 via `AmbientCapabilities=CAP_NET_BIND_SERVICE`
+- `ProtectSystem=strict` sandbox; only `/var/log/shadowdns` is writable
+- `RuntimeDirectory=shadowdns` creates `/run/shadowdns` on every start, used by the default `pid-file "/var/run/shadowdns/pid"`
+- `ExecReload` maps to SIGHUP, so `systemctl reload shadowdns` hot-reloads the configuration
 
-### 驗證安裝
+### Verifying the Installation
 
 ```bash
 shadowdns --version
 sudo systemctl status shadowdns
 ```
 
-應用層 log 位於 `/var/log/shadowdns/shadowdns.log`。
+Application-level logs are located at `/var/log/shadowdns/shadowdns.log`.
 
-## 容器內端對端測試（開發用）
+## In-Container End-to-End Test (for Development)
 
 ```bash
-make test-deb    # 需要 podman 或 docker
+make test-deb    # requires podman or docker
 ```

@@ -1,6 +1,6 @@
 # shadowdns.yaml
 
-`shadowdns.yaml` 是 ShadowDNS 自有的統一設定檔（以 `--config` 指定），單一 YAML 文件包含兩個可選的頂層區段：`aliases`（備援網域 → root 對照表）與 `ephemeral_api`（短時效 TXT record 的 HTTP API）。任何其他頂層 key 都會在啟動時被拒絕（strict decoding）。
+`shadowdns.yaml` is ShadowDNS's own unified configuration file (specified with `--config`): a single YAML document containing two optional top-level sections, `aliases` (backup domain → root mapping) and `ephemeral_api` (an HTTP API for short-lived TXT records). Any other top-level key is rejected at startup (strict decoding).
 
 ```yaml
 # shadowdns.yaml
@@ -20,35 +20,35 @@ ephemeral_api:
   # token: "optional-bearer-token"
 ```
 
-## aliases 規則
+## aliases rules
 
-- 每個 key 是一個 root domain，value 是它的備援網域清單。
-- 同一個備援網域在所有 root 之間（正規化後）最多只能出現一次。
-- 備援網域不可等於它的 root（self-alias 會被拒絕）。
-- 沒有列在這裡的網域視為獨立的 root zone，完整載入記憶體。
-- 備援 zone 可以選擇性提供自己的 zone file，內含 TXT、MX、SRV 覆寫紀錄。備援 zone file 中的 A、AAAA、CNAME、NS、SOA 紀錄會被丟棄並記 WARN —— 這些類型永遠從 root 繼承。
+- Each key is a root domain; the value is its list of backup domains.
+- A given backup domain may appear at most once across all roots (after normalization).
+- A backup domain must not equal its root (self-aliases are rejected).
+- Domains not listed here are treated as independent root zones, fully loaded into memory.
+- A backup zone may optionally provide its own zone file containing TXT, MX, and SRV override records. A, AAAA, CNAME, NS, and SOA records in a backup zone file are discarded with a WARN — these types are always inherited from the root.
 
-Zone aliasing 的查詢處理細節請見 [Zone Aliasing 原理](../guides/zone-aliasing.md)。
+For the query-handling details of zone aliasing, see [Zone Aliasing Internals](../guides/zone-aliasing.md).
 
-## ephemeral_api 欄位
+## ephemeral_api fields
 
-| 欄位 | 必填 | 說明 |
+| Field | Required | Description |
 |------|------|------|
-| `listen` | 是 | API server 綁定的 `host:port` |
-| `allow` | 是（不可為空） | 允許存取 API 的來源 IP 或 CIDR 清單；空清單會被拒絕 |
-| `token` | 否 | Pre-shared bearer token。設定後每個請求都必須帶 `Authorization: Bearer <token>`；省略時跳過 token 驗證（IP ACL 仍然有效） |
+| `listen` | Yes | The `host:port` the API server binds to |
+| `allow` | Yes (must be non-empty) | List of source IPs or CIDRs allowed to access the API; an empty list is rejected |
+| `token` | No | Pre-shared bearer token. When set, every request must carry `Authorization: Bearer <token>`; when omitted, token verification is skipped (the IP ACL still applies) |
 
-`ephemeral_api` 區段不存在時，不會啟動 HTTP API server。端點細節、request/response schema 與 `curl` 範例請見 [Ephemeral TXT API](../ephemeral-api.md)。
+When the `ephemeral_api` section is absent, no HTTP API server is started. For endpoint details, request/response schemas, and `curl` examples, see [Ephemeral TXT API](../ephemeral-api.md).
 
-## SIGHUP 熱重載
+## SIGHUP hot reload
 
-SIGHUP 會重新讀取 `shadowdns.yaml` 並**原子性地**替換記憶體中的 alias map：
+SIGHUP re-reads `shadowdns.yaml` and **atomically** replaces the in-memory alias map:
 
-- 任一區段驗證失敗時，運行中的伺服器保持先前狀態，ephemeral record 不受影響。
-- 重載成功時，ephemeral record store 會被清空。
-- 每次重載嘗試都可透過 Prometheus 觀測：
-    - `shadowdns_reload_total{result="success"|"failure"}` 計數重載結果
-    - `shadowdns_config_last_reload_success_timestamp_seconds` 記錄最近一次成功載入設定的 Unix 時間（啟動時初始化），可用 `time() - <gauge>` 做設定過期告警
+- If validation of either section fails, the running server keeps its previous state and ephemeral records are unaffected.
+- On a successful reload, the ephemeral record store is cleared.
+- Every reload attempt is observable via Prometheus:
+    - `shadowdns_reload_total{result="success"|"failure"}` counts reload outcomes
+    - `shadowdns_config_last_reload_success_timestamp_seconds` records the Unix time of the last successful configuration load (initialized at startup); use `time() - <gauge>` for configuration-staleness alerting
 
-!!! warning "v0.x 起的 breaking change"
-    舊版的 `--aliases` CLI flag 與 `aliases.yaml` 檔案已移除。遷移方式很機械：把舊 `aliases.yaml`（root → [backups] 格式）的項目搬到新 `shadowdns.yaml` 的 `aliases:` 區段下即可。
+!!! warning "Breaking change as of v0.x"
+    The legacy `--aliases` CLI flag and the `aliases.yaml` file have been removed. Migration is mechanical: move the entries from the old `aliases.yaml` (root → [backups] format) under the `aliases:` section of the new `shadowdns.yaml`.

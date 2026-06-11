@@ -1,79 +1,83 @@
-# Zone Aliasing 原理
+# How Zone Aliasing Works
 
-Zone aliasing 是 ShadowDNS 的核心機制：root domain 完整載入記憶體，備援網域只是一個指向 root 的指標，查詢時透過 in-bailiwick rewriting 即時產生「看起來像完整備援 zone」的回應。本頁說明查詢處理管線的四個階段與改寫規則。
+Zone aliasing is the core mechanism of ShadowDNS: the root domain is fully loaded into memory, a backup domain is just a pointer to the root, and at query time, in-bailiwick rewriting produces on the fly a response that "looks like a complete backup zone". This page describes the four stages of the query processing pipeline and the rewrite rules.
 
-## 查詢處理管線
+## Query Processing Pipeline
 
 ```text
 Client query
      |
      v
 [ View Matcher ]
-     |   依宣告順序評估 match-clients 規則（GeoIP country、
-     |   GeoIP ASN、IP/CIDR、any）。First match wins，回傳 view 名稱。
+     |   Evaluates match-clients rules (GeoIP country, GeoIP ASN,
+     |   IP/CIDR, any) in declaration order. First match wins,
+     |   returning the view name.
      |
      v
 [ Alias Resolver ]
-     |   檢查被查詢的 zone 是否為備援 alias。是的話，先把查詢名稱
-     |   從 backup.domain 改寫為 root.domain 再查詢，
-     |   並記下原始備援名稱供回應使用。
+     |   Checks whether the queried zone is a backup alias. If so,
+     |   rewrites the query name from backup.domain to root.domain
+     |   before the lookup, and records the original backup name
+     |   for use in the response.
      |
      v
 [ Zone Lookup ]
-     |   在選定 view 的記憶體 zone tree（map[ownerName][]RR）中
-     |   尋找符合的 owner entry，每個 owner name O(1) 查詢。
-     |   無精確命中時，依 RFC 4592 嘗試 wildcard 比對：由左而右
-     |   逐層剝除 label，直到找到 `*.<parent>` entry，或被既有
-     |   名稱阻擋（ENT 規則）。
+     |   Looks up the matching owner entry in the selected view's
+     |   in-memory zone tree (map[ownerName][]RR), O(1) per owner name.
+     |   On no exact hit, attempts wildcard matching per RFC 4592:
+     |   strips labels left to right, level by level, until a
+     |   `*.<parent>` entry is found, or an existing name blocks
+     |   it (ENT rule).
      |
      v
 [ In-Bailiwick Rewrite ]
-     |   把 owner name 改寫回備援網域。RDATA 中含 DNS 名稱的欄位
-     |   （CNAME target、NS、MX、SRV、SOA MNAME/RNAME）：若 target
-     |   指向 root zone 內部，改寫為備援 zone；指向其他位置的 target
-     |   （例如第三方 CDN 主機名）保持不變。
+     |   Rewrites the owner name back to the backup domain. For RDATA
+     |   fields containing DNS names (CNAME target, NS, MX, SRV,
+     |   SOA MNAME/RNAME): if the target points inside the root zone,
+     |   it is rewritten to the backup zone; targets pointing elsewhere
+     |   (e.g., third-party CDN hostnames) are left unchanged.
      |
      v
 Response sent to client
 ```
 
-## 各階段細節
+## Stage Details
 
 ### View Matcher
 
-每個 view 的 `match-clients` 區塊在啟動時編譯為有序的規則 slice。規則由左至右評估，第一條命中 client 來源 IP 的規則決定 view；沒有任何 view 命中時回應 REFUSED。GeoIP 查詢使用直接讀入記憶體的 MaxMind mmdb；mmdb 檔案在每次 SIGHUP reload 時重新開啟，MaxMind 的每月更新不需重啟 process 即可生效。
+Each view's `match-clients` block is compiled at startup into an ordered slice of rules. Rules are evaluated left to right; the first rule matching the client's source IP determines the view, and if no view matches, the response is REFUSED. GeoIP lookups use MaxMind mmdb files read directly into memory; the mmdb files are reopened on every SIGHUP reload, so MaxMind's monthly updates take effect without restarting the process.
 
 ### Alias Resolver
 
-查詢時，resolver 對 alias map（啟動時從 `shadowdns.yaml` 的 `aliases` 區段建立）做 **longest-suffix match**。備援 zone entry 是一個薄指標 —— resolver 剝除備援後綴、替換為 root 後綴，把改寫後的名稱交給 zone lookup。原始備援名稱會保留下來，供改寫階段還原。
+At query time, the resolver performs a **longest-suffix match** against the alias map (built at startup from the `aliases` section of `shadowdns.yaml`). A backup zone entry is a thin pointer — the resolver strips the backup suffix, substitutes the root suffix, and hands the rewritten name to the zone lookup. The original backup name is retained so the rewrite stage can restore it.
 
 ### Zone Lookup
 
-Zone 資料以 `map[viewName]map[zoneName]*Zone` 儲存，每個 `Zone` 持有 `map[ownerName][]dns.RR`。所有結構在啟動後唯讀，讀取路徑不需要任何鎖。
+Zone data is stored as `map[viewName]map[zoneName]*Zone`, with each `Zone` holding a `map[ownerName][]dns.RR`. All structures are read-only after startup, so the read path requires no locking.
 
-精確比對無結果時，依 RFC 4592 退回 wildcard 比對：從查詢名稱逐一剝除 DNS label，探測 map 中是否存在 `*.<parent>` entry，直到抵達 zone origin，或被阻擋進一步遍歷的既有名稱擋下（empty non-terminal 規則）。支援 CNAME wildcard 合成與正確的回應 owner name 改寫。
+When an exact match yields no result, it falls back to wildcard matching per RFC 4592: DNS labels are stripped from the query name one at a time, probing the map for a `*.<parent>` entry, until the zone origin is reached or an existing name that blocks further traversal is hit (the empty non-terminal rule). CNAME wildcard synthesis and correct response owner name rewriting are supported.
 
-備援覆寫紀錄（備援 zone 自有 zone file 提供的 TXT、MX、SRV）獨立儲存，在 root lookup 之後合併進結果。
+Backup override records (TXT, MX, SRV provided by the backup zone's own zone file) are stored separately and merged into the result after the root lookup.
 
 ### In-Bailiwick Rewrite
 
-改寫規則刻意保守：
+The rewrite rules are deliberately conservative:
 
-| 對象 | 改寫行為 |
+| Target | Rewrite behavior |
 |------|----------|
-| Owner name | 一律改寫（依定義必然 in-bailiwick） |
-| RDATA 中的 DNS 名稱（CNAME target、NS、MX、SRV、SOA MNAME/RNAME） | 只在指向 root zone 內部時改寫 —— 確保改寫後的名稱也能透過同一套 alias 機制正確解析 |
-| 指向外部的 RDATA 名稱（如第三方 CDN 主機名） | 保持不變 |
-| A / AAAA | 承載 IP 位址，永不改寫 |
-| TXT | RDATA 視為不透明資料，永不改寫 —— 即使內容字串恰好等於 root domain 名稱 |
+| Owner name | Always rewritten (in-bailiwick by definition) |
+| DNS names in RDATA (CNAME target, NS, MX, SRV, SOA MNAME/RNAME) | Rewritten only when pointing inside the root zone — ensuring the rewritten name can also be resolved correctly through the same alias mechanism |
+| RDATA names pointing externally (e.g., third-party CDN hostnames) | Left unchanged |
+| A / AAAA | Carry IP addresses; never rewritten |
+| TXT | RDATA is treated as opaque data; never rewritten — even if the content string happens to equal the root domain name |
 
-## SOA 繼承與 zone transfer
+## SOA Inheritance and Zone Transfers
 
-- 備援 zone 的 SOA 繼承自 root zone（serial 跟隨 root），因此 slave 能正確偵測變更。
-- AXFR（TCP 全量 zone transfer）對 root zone 與 alias zone 都支援；既有 BIND slave 不需任何修改。
-- NOTIFY 在啟動與 reload 後送往各 zone 的 NS record（可用 `--no-notify` 或 `options { notify no; };` 停用）。NOTIFY 目標 IP **只取自 in-zone glue record**，細節見[從 BIND 遷移](../migration.md)。
+- A backup zone's SOA is inherited from the root zone (the serial follows the root), so slaves can detect changes correctly.
+- AXFR (full zone transfer over TCP) is supported for both root zones and alias zones; existing BIND slaves require no changes.
+- NOTIFY is sent to each zone's NS records after startup and reload (can be disabled with `--no-notify` or `options { notify no; };`). NOTIFY target IPs are taken **only from in-zone glue records**; see [Migrating from BIND](../migration.md) for details.
 
-## 設定範例
+## Configuration Example
 
 ```yaml
 # shadowdns.yaml
@@ -83,6 +87,6 @@ aliases:
     - mirror.example.com
 ```
 
-對 `www.backup.example.com` 的 A 查詢，回應與「載入了一份完整的 `backup.example.com` zone」完全相同 —— 但記憶體中只有 `example.com` 一份權威資料。
+An A query for `www.backup.example.com` returns exactly the same response as if "a complete `backup.example.com` zone had been loaded" — but only a single copy of the `example.com` authoritative data exists in memory.
 
-aliases 的完整規則（唯一性、self-alias 禁止、覆寫紀錄類型限制）見 [shadowdns.yaml](../configuration/shadowdns-yaml.md)。
+For the complete rules governing aliases (uniqueness, self-alias prohibition, override record type restrictions), see [shadowdns.yaml](../configuration/shadowdns-yaml.md).

@@ -16,7 +16,7 @@
 - `packaging/` — Debian packaging assets (systemd service, example configs, install scripts)
 - `scripts/` — Build and test helper scripts
 - `nfpm.yaml` — nfpm configuration for `.deb` packaging
-- `mkdocs.yml` + `docs/` — Bilingual MkDocs Material manual site via mkdocs-static-i18n (suffix structure): `page.md` is Traditional Chinese (default, served at site root), `page.en.md` is English (served under `/en/`). Every new page needs BOTH language files, a `nav:` entry in `mkdocs.yml`, and (if the nav title is Chinese) a matching `nav_translations` entry under the i18n plugin's `en` language. Published to GitHub Pages at https://chenwei791129.github.io/ShadowDNS/ by `.github/workflows/docs.yml` on push to main touching `docs/**` or `mkdocs.yml` (Pages source: GitHub Actions).
+- `mkdocs.yml` + `docs/` — Bilingual MkDocs Material manual site via mkdocs-static-i18n (suffix structure): `page.md` is English (default, served at site root), `page.zh.md` is Traditional Chinese (served under `/zh/`). Every new page needs BOTH language files, an English `nav:` entry in `mkdocs.yml`, and a matching `nav_translations` entry under the i18n plugin's `zh` language. Published to GitHub Pages at https://chenwei791129.github.io/ShadowDNS/ by `.github/workflows/docs.yml` on push to main touching `docs/**` or `mkdocs.yml` (Pages source: GitHub Actions).
 
 <!-- SPECTRA:START v1.0.2 -->
 

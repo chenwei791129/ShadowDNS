@@ -1,23 +1,23 @@
-# ShadowDNS 啟動效能基準測試
+# ShadowDNS Startup Performance Benchmark
 
-本文記錄 `--dry-run` 啟動煙霧測試的執行方式與樣本輸出。
+This document records how the `--dry-run` startup smoke test is run, along with sample output.
 
-## 什麼是 `--dry-run`？
+## What Is `--dry-run`?
 
-`--dry-run` flag 讓 ShadowDNS 執行完整的載入流程（解析 `named.conf`、讀取所有 zone 檔、載入 GeoIP mmdb），但在啟動 UDP/TCP listener **之前**即退出並印出摘要。適用於：
+The `--dry-run` flag makes ShadowDNS execute the full loading process (parsing `named.conf`, reading all zone files, loading the GeoIP mmdb files), but exit and print a summary **before** starting the UDP/TCP listeners. It is suitable for:
 
-- 確認設定檔語法正確
-- 在不影響 DNS 服務的情況下計算記憶體基線
-- CI/CD pipeline 的設定驗證步驟
+- Confirming the configuration file syntax is correct
+- Computing a memory baseline without affecting DNS service
+- A configuration validation step in CI/CD pipelines
 
-## 建置步驟
+## Build Steps
 
 ```bash
-# 在 repo 根目錄執行
+# Run from the repo root
 go build -o ./shadowdns ./cmd/shadowdns
 ```
 
-## 使用方式
+## Usage
 
 ```bash
 ./shadowdns \
@@ -26,28 +26,28 @@ go build -o ./shadowdns ./cmd/shadowdns
     --dry-run
 ```
 
-成功時以 exit code 0 退出，並輸出：
+On success it exits with code 0 and outputs:
 
 ```
 level=INFO msg="dry-run: configuration loaded successfully" views=N zones=M
 ```
 
-## 自動化煙霧測試腳本
+## Automated Smoke Test Script
 
-`scripts/smoke.sh` 自動完成以下步驟：
+`scripts/smoke.sh` automates the following steps:
 
-1. 建置 binary
-2. 將 `testdata/integration/` 複製到 `/tmp/shadowdns-smoke/`，替換 `TESTDATA_DIR_PLACEHOLDER`
-3. 產生測試用 GeoIP mmdb 檔
-4. 以 `/usr/bin/time` 執行 `--dry-run`，記錄記憶體使用量
+1. Build the binary
+2. Copy `testdata/integration/` to `/tmp/shadowdns-smoke/`, replacing `TESTDATA_DIR_PLACEHOLDER`
+3. Generate test GeoIP mmdb files
+4. Run `--dry-run` under `/usr/bin/time`, recording memory usage
 
 ```bash
 ./scripts/smoke.sh
 ```
 
-## 樣本輸出（2026-04-13，Apple Silicon，testdata/integration 固件）
+## Sample Output (2026-04-13, Apple Silicon, testdata/integration fixture)
 
-執行環境：macOS Darwin 24.6.0，Apple M 系列，Go 1.25.6
+Execution environment: macOS Darwin 24.6.0, Apple M-series, Go 1.25.6
 
 ```
 time=2026-04-13T23:28:01.556+08:00 level=INFO msg="shadowdns starting" \
@@ -62,16 +62,16 @@ time=2026-04-13T23:28:01.558+08:00 level=INFO msg="dry-run: configuration loaded
              8437760  maximum resident set size
 ```
 
-| 指標                           | 值                |
+| Metric                         | Value             |
 |-------------------------------|-------------------|
-| 載入時間（real）               | 0.31 s            |
-| 最大 RSS（maximum resident set size） | 8,437,760 bytes（≈ 8.0 MB） |
-| 視圖數（views）                | 2                 |
-| 載入 zone 數（zones）          | 4                 |
+| Load time (real)               | 0.31 s            |
+| Maximum RSS (maximum resident set size) | 8,437,760 bytes (≈ 8.0 MB) |
+| View count (views)             | 2                 |
+| Loaded zone count (zones)      | 4                 |
 
-## 注意事項
+## Notes
 
-- **此固件極小**：僅有 2 個 view × 2 個 zone（1 root + 1 backup），記憶體幾乎全由 Go runtime 佔用。
-- **正式部署規模估算**：依照 Context 中的數字（3,600 root domains × 7 views，平均 zone 10 KB），ShadowDNS 預計僅載入 root zones（不重複載入 backup），記憶體約為 `3,600 × 7 × 10 KB ≈ 252 MB` 加上 GeoIP mmdb（約 60–80 MB），合計約 **330–350 MB**，相較 BIND 的 ~630 MB（含冗餘 backup）節省約 45–50%。
-- 實際生產記憶體必須以生產規模設定檔實測；`--dry-run` 提供基線，實際監聽後 Go runtime 可能因 goroutine stack 等因素略增。
-- 建議在 CI 加入 `./scripts/smoke.sh` 步驟，確保每次合併後設定檔能正確載入。
+- **This fixture is tiny**: only 2 views × 2 zones (1 root + 1 backup); memory is almost entirely consumed by the Go runtime.
+- **Production-scale deployment estimate**: based on the numbers in Context (3,600 root domains × 7 views, average zone size 10 KB), ShadowDNS is expected to load only root zones (no duplicate loading of backups), giving roughly `3,600 × 7 × 10 KB ≈ 252 MB` plus the GeoIP mmdb files (about 60–80 MB), for a total of about **330–350 MB** — roughly 45–50% savings compared with BIND's ~630 MB (including redundant backups).
+- Actual production memory must be measured with a production-scale configuration; `--dry-run` provides a baseline, and once actually listening, the Go runtime may grow slightly due to goroutine stacks and similar factors.
+- It is recommended to add a `./scripts/smoke.sh` step in CI to ensure the configuration loads correctly after every merge.
