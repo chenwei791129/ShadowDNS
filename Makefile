@@ -57,9 +57,11 @@ test-deb:
 # `docs-serve` runs a live-reload MkDocs preview of the manual site at
 # http://127.0.0.1:8000. Requires uv; the mkdocs-material toolchain is
 # fetched into uv's cache on demand — nothing is installed globally.
+# Keep MKDOCS_DEPS in sync with .github/workflows/docs.yml.
+MKDOCS_DEPS := --with mkdocs-material --with mkdocs-static-i18n
 docs-serve:
-	uvx --with mkdocs-material mkdocs serve
+	uvx $(MKDOCS_DEPS) mkdocs serve
 
 # `docs-build` renders the static site into ./site (gitignored).
 docs-build:
-	uvx --with mkdocs-material mkdocs build
+	uvx $(MKDOCS_DEPS) mkdocs build --strict
