@@ -52,7 +52,7 @@ Client query
 Response sent to client
 ```
 
-**View Matcher**: Each view's `match-clients` block is compiled into an ordered rule slice at startup. Rules are evaluated left to right; the first rule that matches the client's source IP determines the view. If no view matches, the server returns REFUSED. GeoIP lookups use MaxMind's mmdb format read directly into memory at startup.
+**View Matcher**: Each view's `match-clients` block is compiled into an ordered rule slice at startup. Rules are evaluated left to right; the first rule that matches the client's source IP determines the view. If no view matches, the server returns REFUSED. GeoIP lookups use MaxMind's mmdb format read directly into memory; the mmdb files are re-opened on every SIGHUP reload, so MaxMind's monthly updates take effect without a process restart.
 
 **Alias Resolver**: At query time, the resolver performs a longest-suffix match against the alias map (built from the `aliases` section of `shadowdns.yaml` at startup). A backup zone entry is a thin pointer — the resolver strips the backup suffix, replaces it with the root suffix, and hands the rewritten name to the zone lookup. The original backup name is retained so the rewrite stage can restore it.
 
@@ -78,7 +78,7 @@ Response sent to client
 - `allow-transfer` ACL enforcement
 - Split-horizon responses (different answers per view for the same query)
 - SOA inheritance for backup zones (serial tracks the root zone; slaves detect changes correctly)
-- BIND9-compatible query logging — parses the standard `logging{}` block (`channel` with `file`/`severity`/`print-*` plus `category queries`) and appends one line per view-matched query in BIND's exact queries-category format, so existing downstream log parsers keep working unchanged. Rotation is handled by logrotate + SIGUSR1 (BIND's built-in `versions`/`size` parameters are ignored with a startup warning); the file reopens alongside `--log-file` on SIGUSR1. Settings take effect at startup only — SIGHUP reload does not re-apply `logging{}` changes
+- BIND9-compatible query logging — parses the standard `logging{}` block (`channel` with `file`/`severity`/`print-*` plus `category queries`) and appends one line per view-matched query in BIND's exact queries-category format, so existing downstream log parsers keep working unchanged. Rotation is handled by logrotate + SIGUSR1 (BIND's built-in `versions`/`size` parameters are ignored with a warning); the file reopens alongside `--log-file` on SIGUSR1. SIGHUP reload re-applies `logging{}` changes — path and `print-*` option edits take effect without a restart, and SIGUSR1 reopen semantics are unchanged
 - EDNS0 OPT echo (RFC 6891) — responses to EDNS queries carry an OPT record (version 0, 1232-byte UDP payload size per DNS Flag Day 2020); unsupported EDNS versions receive BADVERS
 - DNS Cookies (RFC 7873, answer-only) — queries carrying a COOKIE option receive a full cookie in the response (client cookie echo + server cookie in the RFC 9018 interoperable format, SipHash-2-4). The 128-bit secret is generated at startup, held in memory only, and survives SIGHUP reloads. Cookies are never required: there is no enforcement mode and BADCOOKIE is never returned; malformed COOKIE options get FORMERR per RFC 7873 §5.2.2. Matches BIND 9.11+ default behavior
 
@@ -270,7 +270,11 @@ When the `ephemeral_api` section is absent, no HTTP API server is started. See [
 SIGHUP reload re-reads `shadowdns.yaml` and swaps the in-memory alias map
 atomically — if any section fails validation the running server keeps its
 previous state and ephemeral records are preserved. On successful reload the
-ephemeral record store is cleared.
+ephemeral record store is cleared. Every reload attempt is observable via
+Prometheus: `shadowdns_reload_total{result="success"|"failure"}` counts
+outcomes, and `shadowdns_config_last_reload_success_timestamp_seconds` carries
+the Unix time of the most recent successful configuration load (initialised at
+startup), enabling `time() - <gauge>` staleness alerts.
 
 > **Breaking change since v0.x:** the previous `--aliases` CLI flag and
 > `aliases.yaml` file have been removed. Migration is mechanical: take the
@@ -286,7 +290,7 @@ The `geoip-directory` option in `named.conf` specifies where ShadowDNS looks for
 | `GeoLite2-Country.mmdb`    | `geoip country` rules       |
 | `GeoLite2-ASN.mmdb`        | `geoip asnum` rules         |
 
-ShadowDNS uses the same data source as BIND's `geoip` module, so GeoIP view assignment will be consistent when running both systems in parallel during migration.
+ShadowDNS uses the same data source as BIND's `geoip` module, so GeoIP view assignment will be consistent when running both systems in parallel during migration. The databases are re-opened on every SIGHUP reload — drop in MaxMind's monthly update and send SIGHUP; the `shadowdns_geoip_db_info` gauge reflects the new `build_time` after a successful reload.
 
 ### named.conf example
 
