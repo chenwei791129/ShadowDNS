@@ -8,12 +8,15 @@
 - `make deb` — Build `.deb` package (implicitly runs `make build-linux` and `make completions`; requires nfpm via `go tool`)
 - `make completions` — Generate bash/zsh/fish completion files at `bin/shadowdns.{bash,zsh,fish}` via `go run ./cmd/shadowdns completion <shell>`. Single source of truth for supported shells; consumed by `make deb` and `scripts/test-deb.sh`.
 - `make test-deb` — End-to-end container test of `.deb` package (requires podman or docker)
+- `make docs-serve` — Live-reload preview of the MkDocs manual site at http://127.0.0.1:8000 (requires uv; runs mkdocs-material via `uvx`, no global install)
+- `make docs-build` — Render the manual site into `site/` (gitignored)
 
 # Project Structure
 
 - `packaging/` — Debian packaging assets (systemd service, example configs, install scripts)
 - `scripts/` — Build and test helper scripts
 - `nfpm.yaml` — nfpm configuration for `.deb` packaging
+- `mkdocs.yml` + `docs/` — MkDocs Material manual site (Traditional Chinese). `docs/` doubles as the MkDocs `docs_dir`; every page must be registered in the `nav:` section of `mkdocs.yml`. Intended for GitHub Pages once the repo goes public; for now local preview only via `make docs-serve`.
 
 <!-- SPECTRA:START v1.0.2 -->
 

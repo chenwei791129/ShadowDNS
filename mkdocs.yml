@@ -1,0 +1,75 @@
+# MkDocs configuration for the ShadowDNS manual site.
+# Local preview: make docs-serve (http://127.0.0.1:8000)
+site_name: ShadowDNS
+site_description: Authoritative DNS server with first-class zone aliasing for memory-efficient backup-domain serving
+repo_url: https://github.com/chenwei791129/ShadowDNS
+repo_name: chenwei791129/ShadowDNS
+docs_dir: docs
+
+theme:
+  name: material
+  language: zh-TW
+  logo: assets/logo.png
+  favicon: assets/logo.png
+  features:
+    # Render top-level nav groups as expanded sidebar sections (MetalLB-style layout)
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.highlight
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-night
+        name: 切換為深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-sunny
+        name: 切換為淺色模式
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  # Unicode-aware slugify so CJK headings get usable anchors
+  - toc:
+      permalink: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - 首頁: index.md
+  - 入門:
+      - 快速開始: getting-started.md
+      - 安裝: installation.md
+  - 設定:
+      - named.conf 相容性: configuration/named-conf.md
+      - shadowdns.yaml: configuration/shadowdns-yaml.md
+      - GeoIP 資料庫: configuration/geoip.md
+  - 參考:
+      - CLI 參考: reference/cli.md
+  - 功能指南:
+      - Zone Aliasing 原理: guides/zone-aliasing.md
+      - Ephemeral TXT API: ephemeral-api.md
+  - 維運:
+      - 從 BIND 遷移: migration.md
+      - 啟動效能基準: benchmark.md
+  - 設計調查:
+      - CNAME Flattening: cname-flattening-implementation-survey.md
+      - EDNS Client Subnet (ECS): ecs-implementation-survey.md

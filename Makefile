@@ -5,7 +5,7 @@ BINARY := $(BIN_DIR)/shadowdns-$(HOST_GOOS)-$(HOST_GOARCH)
 LINUX_BINARY := $(BIN_DIR)/shadowdns-linux-amd64
 CMD_PKG := ./cmd/shadowdns
 
-.PHONY: all build build-linux test lint smoke completions deb test-deb
+.PHONY: all build build-linux test lint smoke completions deb test-deb docs-serve docs-build
 
 all: build
 
@@ -53,3 +53,13 @@ deb: build-linux completions
 
 test-deb:
 	@./scripts/test-deb.sh
+
+# `docs-serve` runs a live-reload MkDocs preview of the manual site at
+# http://127.0.0.1:8000. Requires uv; the mkdocs-material toolchain is
+# fetched into uv's cache on demand — nothing is installed globally.
+docs-serve:
+	uvx --with mkdocs-material mkdocs serve
+
+# `docs-build` renders the static site into ./site (gitignored).
+docs-build:
+	uvx --with mkdocs-material mkdocs build

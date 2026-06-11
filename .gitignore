@@ -11,6 +11,9 @@ coverage.txt
 # Packaging artifacts
 *.deb
 
+# MkDocs build output
+/site/
+
 # Local dev
 .local/
 *.swp

@@ -450,7 +450,7 @@ SIGHUP reload 失敗時（例如 zone 檔語法錯誤、config parse error），
 
 **主要偵測手段：reload metrics 告警**
 
-ShadowDNS 經 `--metrics-addr`（預設 `:9153`）揭露 `shadowdns_reload_total{result="success"|"failure"}` counter 與 `shadowdns_config_last_reload_success_timestamp_seconds` gauge——語意詳見 [README 的 shadowdns.yaml schema 一節](../README.md#shadowdnsyaml-schema)；兩個 `result` label 組合在啟動時即預先初始化，告警表達式不需處理 metric 缺席。建議告警規則：
+ShadowDNS 經 `--metrics-addr`（預設 `:9153`）揭露 `shadowdns_reload_total{result="success"|"failure"}` counter 與 `shadowdns_config_last_reload_success_timestamp_seconds` gauge——語意詳見 [shadowdns.yaml 設定說明](configuration/shadowdns-yaml.md#sighup-熱重載)；兩個 `result` label 組合在啟動時即預先初始化，告警表達式不需處理 metric 缺席。建議告警規則：
 
 ```promql
 # reload 失敗即告警
@@ -537,7 +537,7 @@ curl -s http://127.0.0.1:9153/metrics \
 
 **月度例行維護 SOP**
 
-mmdb 檔在每次 SIGHUP reload 都會重新開啟（見 [README 的 GeoIP databases 一節](../README.md#geoip-databases)），GeoIP 更新**不需要重啟 process**——把新檔案放到原路徑後逐台 reload 即可：
+mmdb 檔在每次 SIGHUP reload 都會重新開啟（見 [GeoIP 資料庫說明](configuration/geoip.md)），GeoIP 更新**不需要重啟 process**——把新檔案放到原路徑後逐台 reload 即可：
 
 1. 下載新版 Country 與 ASN 資料庫的 tar.gz 套件，**驗證 checksum** 後再解壓（MaxMind 提供的 SHA256 檔對應 tar.gz 壓縮檔，不是解出來的 `.mmdb`），確認無誤後把 `.mmdb` 放到生產路徑：
 

@@ -1,7 +1,7 @@
 # ECS (EDNS Client Subnet, RFC 7871) 業界實作現況調查
 
 本文調查 EDNS Client Subnet（ECS, RFC 7871）在其他 DNS 服務的實作狀況，作為 ShadowDNS
-是否將 ECS 從 [README.md](../README.md) 中的 *Planned* 推進為實作功能的決策依據。
+是否將 ECS 從 [功能比較表](index.md#與-bind-的功能比較)中的 *Planned* 推進為實作功能的決策依據。
 
 > **調查日期**：2026-06-10
 > **調查方法**：多來源網路研究（開源軟體文件、各供應商官方文件、IETF 草案、學術量測論文、
