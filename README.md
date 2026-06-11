@@ -8,6 +8,8 @@
 
 An authoritative DNS server with first-class zone aliasing for memory-efficient backup-domain serving.
 
+📖 **Manual**: [English](https://chenwei791129.github.io/ShadowDNS/) · [正體中文](https://chenwei791129.github.io/ShadowDNS/zh/)
+
 ## Why ShadowDNS?
 
 Hosting many backup domains on BIND requires loading one complete zone copy per backup per view. In a typical split-horizon deployment with 3,000 backup domains across 7 views, that means roughly 21,000 redundant zone copies in memory — each backup a near-identical replica of its root domain, differing only in the zone name. At an average zone size of 10 KB, this accounts for approximately 210 MB of memory that carries no useful information.
