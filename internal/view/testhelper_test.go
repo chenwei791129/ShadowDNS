@@ -11,10 +11,11 @@ import (
 )
 
 // buildCountryMMDB creates a temporary GeoLite2-Country-compatible mmdb file
-// and returns its path. The db contains two entries:
+// and returns its path. The db contains three entries:
 //
 //	192.0.2.1/32 → country "TH"
 //	198.51.100.1/32 → country "JP"
+//	203.0.113.0/32 → country "TW"
 func buildCountryMMDB(t testing.TB) string {
 	t.Helper()
 
@@ -42,6 +43,7 @@ func buildCountryMMDB(t testing.TB) string {
 
 	insertCountry("192.0.2.1/32", "TH")
 	insertCountry("198.51.100.1/32", "JP")
+	insertCountry("203.0.113.0/32", "TW")
 
 	dir := t.TempDir()
 	path := dir + "/GeoLite2-Country.mmdb"

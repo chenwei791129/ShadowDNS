@@ -56,7 +56,7 @@ func TestMatcher_FirstMatchWins(t *testing.T) {
 			anyView("view3"),
 		},
 	}
-	got := m.Resolve(netip.MustParseAddr("192.0.2.1"))
+	got := m.Resolve(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.1"))
 	if got != "view1" {
 		t.Errorf("expected view1, got %q", got)
 	}
@@ -71,7 +71,7 @@ func TestMatcher_SecondViewMatchesWhenFirstDoesNot(t *testing.T) {
 			anyView("view3"),
 		},
 	}
-	got := m.Resolve(netip.MustParseAddr("192.0.2.2"))
+	got := m.Resolve(netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("192.0.2.2"))
 	if got != "view2" {
 		t.Errorf("expected view2, got %q", got)
 	}
@@ -86,7 +86,7 @@ func TestMatcher_FallbackToAnyWhenNothingElseMatches(t *testing.T) {
 			anyView("catch-all"),
 		},
 	}
-	got := m.Resolve(netip.MustParseAddr("10.0.0.99"))
+	got := m.Resolve(netip.MustParseAddr("10.0.0.99"), netip.MustParseAddr("10.0.0.99"))
 	if got != "catch-all" {
 		t.Errorf("expected catch-all, got %q", got)
 	}
@@ -100,7 +100,7 @@ func TestMatcher_NoMatchReturnsEmptyString(t *testing.T) {
 			ipView("view2", "192.0.2.2"),
 		},
 	}
-	got := m.Resolve(netip.MustParseAddr("10.0.0.1"))
+	got := m.Resolve(netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("10.0.0.1"))
 	if got != "" {
 		t.Errorf("expected empty string, got %q", got)
 	}
@@ -125,7 +125,7 @@ func TestMatcher_FirstRuleInViewDecides(t *testing.T) {
 	}
 	// 192.0.2.1 should match "mixed" via its AnyRule (second rule),
 	// because that view is evaluated first.
-	got := m.Resolve(netip.MustParseAddr("192.0.2.1"))
+	got := m.Resolve(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.1"))
 	if got != "mixed" {
 		t.Errorf("expected mixed (AnyRule fires), got %q", got)
 	}
@@ -142,14 +142,14 @@ func TestMatcher_CIDRRule(t *testing.T) {
 	}
 
 	t.Run("IP inside CIDR", func(t *testing.T) {
-		got := m.Resolve(netip.MustParseAddr("10.1.2.3"))
+		got := m.Resolve(netip.MustParseAddr("10.1.2.3"), netip.MustParseAddr("10.1.2.3"))
 		if got != "internal" {
 			t.Errorf("expected internal, got %q", got)
 		}
 	})
 
 	t.Run("IP outside CIDR", func(t *testing.T) {
-		got := m.Resolve(netip.MustParseAddr("11.0.0.1"))
+		got := m.Resolve(netip.MustParseAddr("11.0.0.1"), netip.MustParseAddr("11.0.0.1"))
 		if got != "external" {
 			t.Errorf("expected external, got %q", got)
 		}
@@ -167,7 +167,7 @@ func TestMatcher_CountryRule_NilCountryDB_NoMatch(t *testing.T) {
 		},
 		Country: nil,
 	}
-	got := m.Resolve(netip.MustParseAddr("192.0.2.1"))
+	got := m.Resolve(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.1"))
 	if got != "fallback" {
 		t.Errorf("expected fallback (country nil → no-match), got %q", got)
 	}
@@ -193,21 +193,21 @@ func TestMatcher_CountryRule_WithRealDB(t *testing.T) {
 	}
 
 	t.Run("TH IP matches thai-view", func(t *testing.T) {
-		got := m.Resolve(netip.MustParseAddr("192.0.2.1"))
+		got := m.Resolve(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.1"))
 		if got != "thai-view" {
 			t.Errorf("expected thai-view, got %q", got)
 		}
 	})
 
 	t.Run("JP IP matches japan-view", func(t *testing.T) {
-		got := m.Resolve(netip.MustParseAddr("198.51.100.1"))
+		got := m.Resolve(netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("198.51.100.1"))
 		if got != "japan-view" {
 			t.Errorf("expected japan-view, got %q", got)
 		}
 	})
 
 	t.Run("unknown country IP falls through to any", func(t *testing.T) {
-		got := m.Resolve(netip.MustParseAddr("10.0.0.1"))
+		got := m.Resolve(netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("10.0.0.1"))
 		if got != "other" {
 			t.Errorf("expected other, got %q", got)
 		}
@@ -222,7 +222,7 @@ func TestMatcher_CountryRule_WithRealDB(t *testing.T) {
 			},
 			Country: db,
 		}
-		got := m2.Resolve(netip.MustParseAddr("192.0.2.1"))
+		got := m2.Resolve(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.1"))
 		if got != "lower-th" {
 			t.Errorf("expected lower-th (case-insensitive), got %q", got)
 		}
@@ -239,7 +239,7 @@ func TestMatcher_ASNRule_NilASNDB_NoMatch(t *testing.T) {
 		},
 		ASN: nil,
 	}
-	got := m.Resolve(netip.MustParseAddr("203.0.113.1"))
+	got := m.Resolve(netip.MustParseAddr("203.0.113.1"), netip.MustParseAddr("203.0.113.1"))
 	if got != "fallback" {
 		t.Errorf("expected fallback (ASN nil → no-match), got %q", got)
 	}
@@ -265,32 +265,159 @@ func TestMatcher_ASNRule_WithRealDB(t *testing.T) {
 	}
 
 	t.Run("AS64500 IP matches asn64500-view", func(t *testing.T) {
-		got := m.Resolve(netip.MustParseAddr("203.0.113.1"))
+		got := m.Resolve(netip.MustParseAddr("203.0.113.1"), netip.MustParseAddr("203.0.113.1"))
 		if got != "asn64500-view" {
 			t.Errorf("expected asn64500-view, got %q", got)
 		}
 	})
 
 	t.Run("AS64501 IP matches asn64501-view", func(t *testing.T) {
-		got := m.Resolve(netip.MustParseAddr("203.0.113.2"))
+		got := m.Resolve(netip.MustParseAddr("203.0.113.2"), netip.MustParseAddr("203.0.113.2"))
 		if got != "asn64501-view" {
 			t.Errorf("expected asn64501-view, got %q", got)
 		}
 	})
 
 	t.Run("unknown ASN IP falls through to any", func(t *testing.T) {
-		got := m.Resolve(netip.MustParseAddr("10.0.0.1"))
+		got := m.Resolve(netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("10.0.0.1"))
 		if got != "other" {
 			t.Errorf("expected other, got %q", got)
 		}
 	})
 }
 
+// --- Dual-address resolution (srcIP vs geoIP) ---------------------------------
+
+func TestMatcher_DualAddress_GeoAndACLRulesEvaluateDifferentAddresses(t *testing.T) {
+	// Spec scenario: CIDR rules evaluate srcIP, country rules evaluate geoIP,
+	// both within a single resolution.
+	path := buildCountryMMDB(t)
+	db, err := OpenCountryDB(path)
+	if err != nil {
+		t.Fatalf("OpenCountryDB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			cidrView("view-internal", "192.0.2.0/24"),
+			countryView("view-asia", "TW"),
+		},
+		Country: db,
+	}
+
+	// srcIP is outside the CIDR (and maps to JP in the country db, so a buggy
+	// country lookup against srcIP would also fail to match TW); geoIP maps to TW.
+	srcIP := netip.MustParseAddr("198.51.100.1")
+	geoIP := netip.MustParseAddr("203.0.113.0")
+	got := m.Resolve(srcIP, geoIP)
+	if got != "view-asia" {
+		t.Errorf("expected view-asia (CIDR misses srcIP, country TW hits geoIP), got %q", got)
+	}
+}
+
+func TestMatcher_DualAddress_GeoIPNeverSatisfiesCIDRRule(t *testing.T) {
+	// Spec scenario: the geo lookup address is client-controlled (ECS-derived)
+	// and must never satisfy ACL-style CIDR rules.
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			cidrView("view-internal", "192.0.2.0/24"),
+			anyView("fallback"),
+		},
+	}
+
+	// geoIP 192.0.2.5 is inside the CIDR, but only srcIP may satisfy it.
+	srcIP := netip.MustParseAddr("203.0.113.7")
+	geoIP := netip.MustParseAddr("192.0.2.5")
+	got := m.Resolve(srcIP, geoIP)
+	if got != "fallback" {
+		t.Errorf("expected fallback (geoIP must not satisfy CIDR rule), got %q", got)
+	}
+}
+
+func TestMatcher_DualAddress_GeoIPNeverSatisfiesIPRule(t *testing.T) {
+	// Same anti-spoofing guarantee for exact-IP rules.
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			ipView("view-pinned", "192.0.2.5"),
+		},
+	}
+
+	srcIP := netip.MustParseAddr("203.0.113.7")
+	geoIP := netip.MustParseAddr("192.0.2.5")
+	got := m.Resolve(srcIP, geoIP)
+	if got != "" {
+		t.Errorf("expected no view (geoIP must not satisfy IP rule), got %q", got)
+	}
+}
+
+func TestMatcher_DualAddress_ASNRuleEvaluatesGeoIP(t *testing.T) {
+	// Same geo-address routing guarantee as country rules: ASN rules must
+	// read geoIP, never srcIP.
+	path := buildASNMMDB(t)
+	db, err := OpenASNDB(path)
+	if err != nil {
+		t.Fatalf("OpenASNDB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			asnView("asn64501-view", 64501),
+			anyView("other"),
+		},
+		ASN: db,
+	}
+
+	t.Run("geoIP ASN selects the view", func(t *testing.T) {
+		// srcIP maps to ASN 64500, geoIP to ASN 64501 — only a geoIP lookup
+		// can match the 64501 view.
+		got := m.Resolve(netip.MustParseAddr("203.0.113.1"), netip.MustParseAddr("203.0.113.2"))
+		if got != "asn64501-view" {
+			t.Errorf("expected asn64501-view (ASN rule reads geoIP), got %q", got)
+		}
+	})
+
+	t.Run("srcIP ASN does not leak into the lookup", func(t *testing.T) {
+		// srcIP maps to ASN 64501 but geoIP is absent from the db; a buggy
+		// srcIP lookup would match, the correct geoIP lookup falls through.
+		got := m.Resolve(netip.MustParseAddr("203.0.113.2"), netip.MustParseAddr("10.0.0.1"))
+		if got != "other" {
+			t.Errorf("expected other (srcIP ASN must not satisfy the rule), got %q", got)
+		}
+	})
+}
+
+func TestMatcher_ZeroGeoIPFallsBackToSrcIP(t *testing.T) {
+	// Defense against caller mistakes: a zero-value geoIP (a caller passing
+	// netip.Addr{} instead of the source IP) must behave like single-address
+	// resolution, not silently disable every geo rule.
+	path := buildCountryMMDB(t)
+	db, err := OpenCountryDB(path)
+	if err != nil {
+		t.Fatalf("OpenCountryDB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			countryView("th-view", "TH"),
+			anyView("other"),
+		},
+		Country: db,
+	}
+
+	got := m.Resolve(netip.MustParseAddr("192.0.2.1"), netip.Addr{})
+	if got != "th-view" {
+		t.Errorf("expected th-view (zero geoIP falls back to srcIP), got %q", got)
+	}
+}
+
 // --- Edge cases --------------------------------------------------------------
 
 func TestMatcher_EmptyViews(t *testing.T) {
 	m := &Matcher{Views: []NamedRuleSet{}}
-	got := m.Resolve(netip.MustParseAddr("192.0.2.1"))
+	got := m.Resolve(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.1"))
 	if got != "" {
 		t.Errorf("expected empty string for empty views, got %q", got)
 	}
@@ -303,7 +430,7 @@ func TestMatcher_ViewWithNoRules(t *testing.T) {
 			anyView("fallback"),
 		},
 	}
-	got := m.Resolve(netip.MustParseAddr("192.0.2.1"))
+	got := m.Resolve(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.1"))
 	// "no-rules" has no rules, so it never matches; fallback catches.
 	if got != "fallback" {
 		t.Errorf("expected fallback, got %q", got)
@@ -318,7 +445,7 @@ func TestMatcher_ZeroClientIP_DoesNotPanic(t *testing.T) {
 	}
 	var zero netip.Addr
 	// Must not panic; AnyRule always returns true regardless of IP.
-	got := m.Resolve(zero)
+	got := m.Resolve(zero, zero)
 	if got != "catch-all" {
 		t.Errorf("expected catch-all, got %q", got)
 	}

@@ -328,7 +328,11 @@ type runOptions struct {
 	ListenAddr    string
 	MetricsAddr   string
 	PProfEnable   bool
-	DryRun        bool
+	// ECSEnable turns on RFC 7871 EDNS Client Subnet processing in the DNS
+	// handler. Process-lifetime sticky: a SIGHUP reload never re-reads the
+	// CLI, so the value set at startup stays in effect until restart.
+	ECSEnable bool
+	DryRun    bool
 	// NoNotifyExplicit records whether --no-notify was explicitly passed on
 	// the command line (detected via cobra's Flags().Changed()). This is
 	// process-lifetime sticky: a SIGHUP reload never re-reads the CLI, so
@@ -513,6 +517,7 @@ to change flag values.`,
 			"listen-on-v6 is opt-in (absent means no IPv6 listener).")
 	f.StringVar(&opts.MetricsAddr, "metrics-addr", ":9153", "Prometheus /metrics HTTP listen address (empty string disables)")
 	f.BoolVar(&opts.PProfEnable, "pprof-enable", false, "Expose Go pprof profiling endpoints under /debug/pprof/ on the metrics HTTP server; requires --metrics-addr to be non-empty")
+	f.BoolVar(&opts.ECSEnable, "ecs-enable", false, "enable RFC 7871 EDNS Client Subnet processing: a valid ECS address in a query drives GeoIP view selection (country/ASN rules only; IP/CIDR ACL rules always use the real source IP) and responses echo the ECS option. Disabled by default — queries' ECS options are ignored and responses never carry one, matching BIND")
 	f.BoolVar(&opts.DryRun, "dry-run", false, "load configuration and zones, log a summary, then exit without starting listeners")
 	// --no-notify is registered without a variable binding: its runtime value
 	// is intentionally never read. Explicit-supply detection uses
@@ -650,6 +655,12 @@ func run(ctx context.Context, opts runOptions) error {
 		return fmt.Errorf("resolving listen addresses: %w", err)
 	}
 
+	// ECS state is logged in both flag states, before the dry-run early exit,
+	// so dry-run output also reports it (spec: startup log states ECS state).
+	logger.Sugar().Infow("EDNS Client Subnet (ECS) processing",
+		"enabled", opts.ECSEnable,
+	)
+
 	// --dry-run: load and validate the unified config (aliases + ephemeral_api),
 	// build zone state, log a summary, then exit without starting listeners or
 	// the API server. Validation errors from shadowdnscfg.Load above already
@@ -676,6 +687,7 @@ func run(ctx context.Context, opts runOptions) error {
 	go ephemeralStore.GC(ctx, ephemeral.DefaultGCInterval)
 
 	srv := server.NewServer(state, logger)
+	srv.ECSEnabled = opts.ECSEnable
 	srv.EphemeralStore = ephemeralStore
 	// Inject the query log (nil when not configured — server handles nil gracefully).
 	srv.QueryLog.Store(qlLogger)

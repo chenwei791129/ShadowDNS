@@ -1839,3 +1839,21 @@ func TestDispatchNotifies_CrossViewDedup(t *testing.T) {
 		t.Errorf("addr: want %q, got %q", want, addrs[0])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// --ecs-enable flag
+// ---------------------------------------------------------------------------
+
+// Requirement: ECS support is disabled by default and gated by the
+// --ecs-enable flag — the flag MUST be registered on the root command with
+// default false.
+func TestECSEnableFlag_RegisteredWithDefaultFalse(t *testing.T) {
+	cmd := newRootCmd()
+	flag := cmd.Flags().Lookup("ecs-enable")
+	if flag == nil {
+		t.Fatal("--ecs-enable flag not registered on root command")
+	}
+	if flag.DefValue != "false" {
+		t.Errorf("--ecs-enable default = %q, want %q", flag.DefValue, "false")
+	}
+}

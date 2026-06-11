@@ -39,6 +39,14 @@ type queryOpt struct {
 	// cookie echo + fresh RFC 9018 server cookie) to emit in the response.
 	// Empty when the query carried no valid COOKIE option.
 	respCookie string
+	// ecs points at the first ECS option in the OPT record (first-wins,
+	// mirroring the COOKIE rule); nil when absent. It is always extracted
+	// regardless of the --ecs-enable state — whether it is used is the
+	// handler's decision, keeping this parse function configuration-free.
+	ecs *dns.EDNS0_SUBNET
+	// respECS is the ECS option to emit in the response (echo of the query
+	// option with the scope set); nil when the response carries none.
+	respECS *dns.EDNS0_SUBNET
 }
 
 // parseQueryOpt extracts the EDNS0 OPT record fields from req in one pass.
@@ -57,9 +65,15 @@ func parseQueryOpt(req *dns.Msg) queryOpt {
 		opt:     opt,
 	}
 	for _, o := range opt.Option {
-		if c, ok := o.(*dns.EDNS0_COOKIE); ok {
-			qo.cookie = c
-			break
+		switch v := o.(type) {
+		case *dns.EDNS0_COOKIE:
+			if qo.cookie == nil {
+				qo.cookie = v
+			}
+		case *dns.EDNS0_SUBNET:
+			if qo.ecs == nil {
+				qo.ecs = v
+			}
 		}
 	}
 	return qo
@@ -105,6 +119,9 @@ func attachOPT(m *dns.Msg, qo queryOpt) {
 			Code:   dns.EDNS0COOKIE,
 			Cookie: qo.respCookie,
 		})
+	}
+	if qo.respECS != nil {
+		opt.Option = append(opt.Option, qo.respECS)
 	}
 	m.Extra = append(m.Extra, opt)
 }
@@ -240,6 +257,38 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		qo.respCookie = hex.EncodeToString(full[:])
 	}
 
+	// ECS option processing (RFC 7871). Pinned here — after COOKIE, before
+	// the CHAOS / zone-transfer dispatch — so a handler-detectable malformed
+	// ECS option is FORMERR'd for every query that passed the earlier checks
+	// (AXFR/IXFR included), and the echo applies to every response assembled
+	// by attachOPT from this point on. When the flag is off the option is
+	// ignored entirely (no validation, no echo), matching BIND.
+	// ecsGeoIP, when valid, replaces the source IP for geo (country/ASN)
+	// rules only; ACL-style rules always evaluate the source IP.
+	var ecsGeoIP netip.Addr
+	if s.ECSEnabled && qo.ecs != nil {
+		class, addr := dnsutil.ClassifyECS(qo.ecs)
+		switch class {
+		case dnsutil.ECSValid:
+			ecsGeoIP = addr
+			// Echo with SCOPE = SOURCE PREFIX-LENGTH (conservative RFC 7871
+			// compliance; narrower-scope cache fragmentation over any risk of
+			// caching a geo-specialized answer too widely).
+			qo.respECS = dnsutil.EchoECS(qo.ecs, qo.ecs.SourceNetmask)
+		case dnsutil.ECSOptOut:
+			// Client opt-out: view selection stays on the source IP; echo
+			// preserves the query FAMILY with scope 0.
+			qo.respECS = dnsutil.EchoECS(qo.ecs, 0)
+		default:
+			// Malformed → FORMERR with OPT echo but no ECS option
+			// (qo.respECS is never set on this path). Deliberately unlogged,
+			// matching the malformed-COOKIE precedent: this path is
+			// client-triggerable at line rate and must stay cheap.
+			replyRcode(w, req, qo, dns.RcodeFormatError)
+			return
+		}
+	}
+
 	q := req.Question[0]
 	// qname is the lookup-fold form (lowercase + trailing dot) used for all
 	// zone matching, alias detection, and zone Lookup calls.
@@ -287,8 +336,13 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	// Determine view from client IP.
-	viewName := st.Matcher.Resolve(clientIP)
+	// Determine view: geo rules use the ECS-derived address when present,
+	// ACL rules always use the real source IP (anti view-spoofing).
+	geoIP := clientIP
+	if ecsGeoIP.IsValid() {
+		geoIP = ecsGeoIP
+	}
+	viewName := st.Matcher.Resolve(clientIP, geoIP)
 	if viewName == "" {
 		s.Logger.Sugar().Infow("no view matched client; replying REFUSED",
 			"client", clientIP.String(),
@@ -638,7 +692,9 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, qname string
 	}
 
 	// Determine which view this client falls into, then look up the zone.
-	viewName := st.Matcher.Resolve(srcIP)
+	// Both addresses are the transport source IP: zone transfers are
+	// ACL-style and never use an ECS-derived geo address.
+	viewName := st.Matcher.Resolve(srcIP, srcIP)
 	if viewName == "" {
 		s.Logger.Sugar().Infow("zone transfer: no view matched client; replying REFUSED",
 			"src", srcIP.String(),

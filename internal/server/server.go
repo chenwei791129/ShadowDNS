@@ -133,6 +133,13 @@ type Server struct {
 	// ephemeral TXT lookups are performed.
 	EphemeralStore *ephemeral.Store
 
+	// ECSEnabled turns on RFC 7871 EDNS Client Subnet processing: validation,
+	// geo-rule address override, and the response echo. When false (the
+	// default) the handler ignores any ECS option in queries and responses
+	// never carry one, matching BIND (which does not support ECS). Set once
+	// at startup from the --ecs-enable flag; not reloaded on SIGHUP.
+	ECSEnabled bool
+
 	// QueryLog enables BIND9-compatible per-query logging when the stored
 	// pointer is non-nil. A nil value disables all query logging (safe for
 	// tests and when no logging{} block is configured). The hot path guards
