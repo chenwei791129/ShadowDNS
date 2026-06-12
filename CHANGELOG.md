@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.20.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.19.0...v0.20.0) (2026-06-12)
+
+
+### Features
+
+* **dns:** add per-alias-group CNAME chain collapsing behind collapse_cname_chain ([a79e486](https://github.com/chenwei791129/ShadowDNS/commit/a79e486aaace606ef1346c8050a746dd539785ad))
+* **dns:** add RFC 7871 EDNS Client Subnet support behind --ecs-enable ([cbc62b4](https://github.com/chenwei791129/ShadowDNS/commit/cbc62b465f1b09c6c67831626c808dbb987366b1))
+
 ## [0.19.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.18.0...v0.19.0) (2026-06-11)
 
 
