@@ -1,886 +1,4 @@
-## ADDED Requirements
-
-### Requirement: Listen for DNS queries on UDP and TCP port 53
-
-The dns-server SHALL bind both UDP and TCP listeners on the configured address (default `0.0.0.0:53`) and serve DNS queries on both transports. The TCP listener SHALL remain required even when zone transfer is disabled, because TCP is the RFC 7766 fallback for responses larger than the UDP payload limit.
-
-#### Scenario: UDP query receives response
-
-- **WHEN** a client sends a valid DNS query over UDP on port 53
-- **THEN** the server responds over UDP within the same 5-tuple
-
-#### Scenario: TCP query receives response
-
-- **WHEN** a client sends a valid DNS query over TCP on port 53
-- **THEN** the server accepts the connection, reads the 2-byte length prefix, and writes a length-prefixed response
-
-#### Scenario: UDP response size SHALL NOT exceed the advertised EDNS0 buffer
-
-- **WHEN** a client sends a UDP query with an EDNS0 OPT record advertising a buffer size of N bytes
-- **THEN** the server's UDP response SHALL have a wire size (as produced by `dns.Msg.Pack()`) less than or equal to N bytes
-- **AND** when the untruncated response would exceed N bytes, the server SHALL drop trailing Answer-section RRs and set the TC (truncated) flag until the packed response fits within N bytes
-
-##### Example: Client advertises 4096, answer set would serialize to 6000 bytes
-
-- **GIVEN** a DNS query with EDNS0 UDPSize=4096 asking for TXT at an FQDN with enough RRs to serialize to 6000 bytes after compression
-- **WHEN** the server builds the reply
-- **THEN** the server SHALL pack the reply, observe 6000 > 4096, drop trailing Answer RRs one at a time and re-pack until the packed size ≤ 4096 bytes, and set TC=1 in the final packet
-
-#### Scenario: UDP response without EDNS0 falls back to 512-byte budget
-
-- **WHEN** a client sends a UDP query with no EDNS0 OPT record
-- **THEN** the server's UDP response SHALL have a packed wire size ≤ 512 bytes (RFC 1035 §2.3.4) and SHALL set TC=1 when RRs are dropped to meet that limit
-
-
-<!-- @trace
-source: fix-oversized-udp-responses
-updated: 2026-04-25
-code:
-  - internal/server/handler.go
-tests:
-  - test/integration/stress_shared_bucket_test.go
-  - internal/server/handler_test.go
-  - test/integration/compression_budget_test.go
--->
-
-### Requirement: Successful answer responses SHALL use DNS name compression
-
-The dns-server SHALL produce successful authoritative answer responses with DNS name compression enabled per RFC 1035 §4.1.4. This applies to both UDP and TCP transports. `dns.Msg.Compress` SHALL be set to `true` before the message is packed or written to the transport.
-
-#### Scenario: Reply with multiple RRs sharing an owner name uses compression pointers
-
-- **GIVEN** a query answered with two or more RRs at the same owner name (for example ephemeral TXT RRset at `_acme-challenge.<zone>`)
-- **WHEN** the server serializes the reply
-- **THEN** the second and subsequent occurrences of the owner name in the wire format SHALL be encoded as 2-byte compression pointers, not full labels
-
-##### Example: 48 TXT RRs at `_acme-challenge.example.com.` with 43-byte values
-
-- **GIVEN** 48 TXT RRs sharing owner name `_acme-challenge.example.com.`, each carrying a 43-byte base64url challenge value, TTL 0
-- **WHEN** the server packs an authoritative reply
-- **THEN** the packed wire size SHALL be under 3000 bytes (compressed), not around 4000 bytes (uncompressed), enabling fit within a 4096-byte EDNS0 UDP buffer without truncation
-
-
-<!-- @trace
-source: shadowdns-foundation
-updated: 2026-04-14
-code:
-  - cmd/shadowdns/main.go
-  - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
-  - internal/view/geoip_asn.go
-  - go.mod
-  - internal/config/zones.go
-  - internal/zone/zone.go
-  - internal/config/options.go
-  - internal/view/geoip_country.go
-  - .spectra.yaml
-  - internal/alias/detect.go
-  - internal/zone/classify.go
-  - testdata/integration/master.zones
-  - internal/alias/override.go
-  - internal/server/listener.go
-  - internal/transfer/notify.go
-  - internal/view/matcher.go
-  - internal/view/netmatch.go
-  - internal/transfer/axfr.go
-  - Makefile
-  - README.md
-  - internal/view/loader.go
-  - internal/config/match.go
-  - testdata/integration/README.md
-  - internal/dnsutil/dnsutil.go
-  - internal/zone/parser.go
-  - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
-  - docs/benchmark.md
-  - go.sum
-  - testdata/integration/aliases.yaml
-  - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
-  - docs/migration.md
-  - internal/config/aliases.go
-  - scripts/smoke.sh
-  - testdata/integration/geoip/.gitkeep
-  - internal/server/build.go
-  - internal/alias/rewrite.go
-  - internal/alias/soa.go
-  - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
-tests:
-  - internal/view/testhelper_test.go
-  - internal/view/geoip_country_test.go
-  - internal/dnsutil/dnsutil_test.go
-  - internal/zone/zone_test.go
-  - internal/transfer/axfr_test.go
-  - test/integration/backup_test.go
-  - internal/view/netmatch_test.go
-  - internal/view/geoip_asn_test.go
-  - test/integration/query_test.go
-  - internal/config/options_test.go
-  - internal/view/loader_test.go
-  - internal/zone/parser_test.go
-  - internal/zone/classify_test.go
-  - internal/config/aliases_test.go
-  - internal/alias/rewrite_test.go
-  - test/integration/negative_test.go
-  - internal/alias/detect_test.go
-  - internal/alias/override_test.go
-  - internal/server/server_test.go
-  - internal/view/matcher_test.go
-  - test/integration/axfr_test.go
-  - internal/config/zones_test.go
-  - test/integration/helpers_test.go
-  - internal/config/match_test.go
-  - internal/transfer/acl_test.go
-  - cmd/shadowdns/main_test.go
-  - internal/alias/soa_test.go
-  - internal/transfer/notify_test.go
--->
-
-
-<!-- @trace
-source: honor-listen-on
-updated: 2026-04-15
-code:
-  - internal/server/server.go
-  - internal/server/listenaddr.go
-  - internal/server/listener.go
-  - cmd/shadowdns/main.go
-  - README.md
-  - docs/migration.md
-tests:
-  - internal/server/addrset_test.go
-  - internal/server/listenaddr_test.go
-  - cmd/shadowdns/listenon_test.go
-  - test/integration/listenon_test.go
-  - internal/server/bindmany_test.go
--->
-
-
-<!-- @trace
-source: ephemeral-txt-api
-updated: 2026-04-22
-code:
-  - docs/ephemeral-api.md
-  - go.sum
-  - .release-please-manifest.json
-  - cmd/shadowdns/main.go
-  - internal/transfer/notify.go
-  - internal/config/zones.go
-  - Makefile
-  - scripts/smoke.sh
-  - internal/ephemeral/store.go
-  - go.mod
-  - docs/benchmark.md
-  - scripts/gen-container-testdata.go
-  - testdata/integration/master/example.com_view-other.fwd
-  - internal/server/server.go
-  - internal/server/listener.go
-  - cmd/shadowdns/pprof.go
-  - internal/view/loader.go
-  - internal/shadowdnscfg/config.go
-  - internal/zone/parser.go
-  - internal/server/handler.go
-  - internal/alias/override.go
-  - .github/workflows/release-please.yml
-  - CLAUDE.md
-  - internal/server/listenaddr.go
-  - internal/zone/classify.go
-  - CHANGELOG.md
-  - testdata/integration/master/example.com_view-th.fwd
-  - cmd/shadowdns/reload.go
-  - internal/transfer/axfr.go
-  - internal/zone/zone.go
-  - internal/config/options.go
-  - packaging/shadowdns.service
-  - internal/api/server.go
-  - packaging/shadowdns.yaml.example
-  - packaging/aliases.yaml.example
-  - packaging/named.conf.example
-  - internal/server/build.go
-  - internal/config/aliases.go
-  - scripts/test-deb.sh
-  - nfpm.yaml
-  - internal/server/fingerprint.go
-  - internal/logging/logger.go
-  - docs/migration.md
-  - README.md
-tests:
-  - cmd/shadowdns/main_ephemeral_test.go
-  - test/integration/notify_test.go
-  - internal/server/server_test.go
-  - test/integration/negative_test.go
-  - internal/transfer/axfr_test.go
-  - internal/ephemeral/store_test.go
-  - internal/zone/classify_test.go
-  - internal/zone/parser_test.go
-  - internal/config/aliases_test.go
-  - cmd/shadowdns/listenon_test.go
-  - cmd/shadowdns/pprof_test.go
-  - cmd/shadowdns/main_test.go
-  - internal/api/server_test.go
-  - internal/config/zones_test.go
-  - internal/server/fingerprint_test.go
-  - test/integration/axfr_test.go
-  - internal/logging/logger_test.go
-  - test/integration/helpers_test.go
-  - internal/view/loader_test.go
-  - test/integration/reload_diff_test.go
-  - test/integration/cname_following_test.go
-  - internal/shadowdnscfg/config_test.go
-  - internal/alias/override_test.go
-  - internal/server/handler_ephemeral_test.go
-  - internal/zone/zone_test.go
-  - internal/transfer/notify_test.go
-  - internal/server/listenaddr_test.go
-  - internal/server/build_test.go
-  - internal/config/options_test.go
-  - test/integration/listenon_test.go
-  - test/integration/wildcard_test.go
-  - test/integration/cname_synthesis_test.go
--->
-
-
-<!-- @trace
-source: ephemeral-txt-overrides-cname
-updated: 2026-04-22
-code:
-  - internal/config/aliases.go
-  - README.md
-  - scripts/test-deb.sh
-  - internal/shadowdnscfg/config.go
-  - testdata/integration/shadowdns.yaml
-  - CHANGELOG.md
-  - docs/ephemeral-api.md
-  - testdata/integration/master/example.com_view-th.fwd
-  - scripts/gen-container-testdata.go
-  - internal/server/build.go
-  - internal/alias/override.go
-  - .release-please-manifest.json
-  - internal/server/handler.go
-  - packaging/shadowdns.yaml.example
-  - scripts/smoke.sh
-  - docs/benchmark.md
-  - testdata/integration/aliases.yaml
-  - testdata/integration/master/example.com_view-other.fwd
-  - testdata/integration/README.md
-tests:
-  - internal/server/handler_ephemeral_test.go
-  - test/integration/cname_following_test.go
-  - internal/shadowdnscfg/config_test.go
-  - internal/alias/override_test.go
-  - test/integration/helpers_test.go
-  - test/integration/axfr_test.go
-  - test/integration/listenon_test.go
-  - internal/config/aliases_test.go
-  - test/integration/ephemeral_overrides_cname_test.go
-  - test/integration/reload_diff_test.go
-  - cmd/shadowdns/main_ephemeral_test.go
--->
-
-
-<!-- @trace
-source: ephemeral-fixed-response-ttl
-updated: 2026-04-24
-code:
-  - internal/ephemeral/store.go
-  - internal/server/handler.go
-tests:
-  - test/integration/ephemeral_overrides_cname_test.go
-  - internal/server/handler_ephemeral_test.go
-  - internal/ephemeral/store_test.go
--->
-
-
-<!-- @trace
-source: fix-oversized-udp-responses
-updated: 2026-04-25
-code:
-  - internal/server/handler.go
-tests:
-  - test/integration/stress_shared_bucket_test.go
-  - internal/server/handler_test.go
-  - test/integration/compression_budget_test.go
--->
-
-### Requirement: Operate in authoritative-only mode
-
-The dns-server SHALL set `AA` (authoritative answer) flag in responses for queries matching a loaded zone and SHALL NOT perform recursion regardless of the query's RD (recursion desired) flag. The RA (recursion available) flag SHALL be set to 0.
-
-#### Scenario: AA flag is set on authoritative answer
-
-- **WHEN** the server answers a query for a name within a loaded zone
-- **THEN** the response header has `AA=1`
-
-#### Scenario: RA flag is always 0
-
-- **WHEN** any response is produced
-- **THEN** the response header has `RA=0`
-
-#### Scenario: Recursion-desired query is not recursed
-
-- **WHEN** a query arrives with `RD=1` for a name outside all loaded zones
-- **THEN** the server responds REFUSED or the appropriate non-recursive error AND does not initiate any outbound DNS query
-
-
-<!-- @trace
-source: shadowdns-foundation
-updated: 2026-04-14
-code:
-  - cmd/shadowdns/main.go
-  - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
-  - internal/view/geoip_asn.go
-  - go.mod
-  - internal/config/zones.go
-  - internal/zone/zone.go
-  - internal/config/options.go
-  - internal/view/geoip_country.go
-  - .spectra.yaml
-  - internal/alias/detect.go
-  - internal/zone/classify.go
-  - testdata/integration/master.zones
-  - internal/alias/override.go
-  - internal/server/listener.go
-  - internal/transfer/notify.go
-  - internal/view/matcher.go
-  - internal/view/netmatch.go
-  - internal/transfer/axfr.go
-  - Makefile
-  - README.md
-  - internal/view/loader.go
-  - internal/config/match.go
-  - testdata/integration/README.md
-  - internal/dnsutil/dnsutil.go
-  - internal/zone/parser.go
-  - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
-  - docs/benchmark.md
-  - go.sum
-  - testdata/integration/aliases.yaml
-  - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
-  - docs/migration.md
-  - internal/config/aliases.go
-  - scripts/smoke.sh
-  - testdata/integration/geoip/.gitkeep
-  - internal/server/build.go
-  - internal/alias/rewrite.go
-  - internal/alias/soa.go
-  - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
-tests:
-  - internal/view/testhelper_test.go
-  - internal/view/geoip_country_test.go
-  - internal/dnsutil/dnsutil_test.go
-  - internal/zone/zone_test.go
-  - internal/transfer/axfr_test.go
-  - test/integration/backup_test.go
-  - internal/view/netmatch_test.go
-  - internal/view/geoip_asn_test.go
-  - test/integration/query_test.go
-  - internal/config/options_test.go
-  - internal/view/loader_test.go
-  - internal/zone/parser_test.go
-  - internal/zone/classify_test.go
-  - internal/config/aliases_test.go
-  - internal/alias/rewrite_test.go
-  - test/integration/negative_test.go
-  - internal/alias/detect_test.go
-  - internal/alias/override_test.go
-  - internal/server/server_test.go
-  - internal/view/matcher_test.go
-  - test/integration/axfr_test.go
-  - internal/config/zones_test.go
-  - test/integration/helpers_test.go
-  - internal/config/match_test.go
-  - internal/transfer/acl_test.go
-  - cmd/shadowdns/main_test.go
-  - internal/alias/soa_test.go
-  - internal/transfer/notify_test.go
--->
-
-### Requirement: Answer queries using view, alias, and zone data
-
-For every query, the dns-server SHALL (a) determine the view via the view-matcher using the client source IP, (b) identify the matched zone and any alias mapping via the alias-resolver, (c) look up records in the selected view's zone data, (d) apply in-bailiwick rewrite rules for backup zones, and (e) produce a response.
-
-#### Scenario: Same query produces different answers per view
-
-- **WHEN** two clients in different countries resolve to different views AND each view's zone data for `example.com A` differs
-- **THEN** each client receives the answer from its respective view
-
-#### Scenario: Backup-zone query uses alias-resolver
-
-- **WHEN** a client queries `www.backup.com A` where `backup.com` is a backup of `root.com`
-- **THEN** the server returns an A record with owner `www.backup.com.` whose RDATA comes from `www.root.com.` in the selected view
-
-
-<!-- @trace
-source: shadowdns-foundation
-updated: 2026-04-14
-code:
-  - cmd/shadowdns/main.go
-  - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
-  - internal/view/geoip_asn.go
-  - go.mod
-  - internal/config/zones.go
-  - internal/zone/zone.go
-  - internal/config/options.go
-  - internal/view/geoip_country.go
-  - .spectra.yaml
-  - internal/alias/detect.go
-  - internal/zone/classify.go
-  - testdata/integration/master.zones
-  - internal/alias/override.go
-  - internal/server/listener.go
-  - internal/transfer/notify.go
-  - internal/view/matcher.go
-  - internal/view/netmatch.go
-  - internal/transfer/axfr.go
-  - Makefile
-  - README.md
-  - internal/view/loader.go
-  - internal/config/match.go
-  - testdata/integration/README.md
-  - internal/dnsutil/dnsutil.go
-  - internal/zone/parser.go
-  - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
-  - docs/benchmark.md
-  - go.sum
-  - testdata/integration/aliases.yaml
-  - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
-  - docs/migration.md
-  - internal/config/aliases.go
-  - scripts/smoke.sh
-  - testdata/integration/geoip/.gitkeep
-  - internal/server/build.go
-  - internal/alias/rewrite.go
-  - internal/alias/soa.go
-  - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
-tests:
-  - internal/view/testhelper_test.go
-  - internal/view/geoip_country_test.go
-  - internal/dnsutil/dnsutil_test.go
-  - internal/zone/zone_test.go
-  - internal/transfer/axfr_test.go
-  - test/integration/backup_test.go
-  - internal/view/netmatch_test.go
-  - internal/view/geoip_asn_test.go
-  - test/integration/query_test.go
-  - internal/config/options_test.go
-  - internal/view/loader_test.go
-  - internal/zone/parser_test.go
-  - internal/zone/classify_test.go
-  - internal/config/aliases_test.go
-  - internal/alias/rewrite_test.go
-  - test/integration/negative_test.go
-  - internal/alias/detect_test.go
-  - internal/alias/override_test.go
-  - internal/server/server_test.go
-  - internal/view/matcher_test.go
-  - test/integration/axfr_test.go
-  - internal/config/zones_test.go
-  - test/integration/helpers_test.go
-  - internal/config/match_test.go
-  - internal/transfer/acl_test.go
-  - cmd/shadowdns/main_test.go
-  - internal/alias/soa_test.go
-  - internal/transfer/notify_test.go
--->
-
-### Requirement: Produce SOA in authority section for NXDOMAIN and NODATA
-
-When the query target falls within a loaded zone but the queried name does not exist (NXDOMAIN) or the queried name exists but has no records of the requested type (NODATA), the dns-server SHALL include the zone's SOA record in the authority section of the response. The TTL of the SOA record in the authority section SHALL be the minimum of the zone's SOA TTL and the zone's SOA minimum field, enabling correct negative caching per RFC 2308.
-
-#### Scenario: NXDOMAIN includes SOA
-
-- **WHEN** a query for `nonexistent.root.com. A` is received and no matching name exists in the zone
-- **THEN** the response has `RCODE=NXDOMAIN`, empty answer section, and an SOA record in the authority section
-
-#### Scenario: NODATA includes SOA
-
-- **WHEN** `www.root.com. AAAA` is queried, `www.root.com.` has an A record but no AAAA record
-- **THEN** the response has `RCODE=NOERROR`, empty answer section, and an SOA record in the authority section
-
-#### Scenario: Backup zone NXDOMAIN includes rewritten SOA
-
-- **WHEN** a query for `nonexistent.backup.com. A` is received
-- **THEN** the response authority section contains a SOA record owned by `backup.com.` with MNAME/RNAME rewritten by in-bailiwick rules
-
-
-<!-- @trace
-source: shadowdns-foundation
-updated: 2026-04-14
-code:
-  - cmd/shadowdns/main.go
-  - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
-  - internal/view/geoip_asn.go
-  - go.mod
-  - internal/config/zones.go
-  - internal/zone/zone.go
-  - internal/config/options.go
-  - internal/view/geoip_country.go
-  - .spectra.yaml
-  - internal/alias/detect.go
-  - internal/zone/classify.go
-  - testdata/integration/master.zones
-  - internal/alias/override.go
-  - internal/server/listener.go
-  - internal/transfer/notify.go
-  - internal/view/matcher.go
-  - internal/view/netmatch.go
-  - internal/transfer/axfr.go
-  - Makefile
-  - README.md
-  - internal/view/loader.go
-  - internal/config/match.go
-  - testdata/integration/README.md
-  - internal/dnsutil/dnsutil.go
-  - internal/zone/parser.go
-  - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
-  - docs/benchmark.md
-  - go.sum
-  - testdata/integration/aliases.yaml
-  - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
-  - docs/migration.md
-  - internal/config/aliases.go
-  - scripts/smoke.sh
-  - testdata/integration/geoip/.gitkeep
-  - internal/server/build.go
-  - internal/alias/rewrite.go
-  - internal/alias/soa.go
-  - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
-tests:
-  - internal/view/testhelper_test.go
-  - internal/view/geoip_country_test.go
-  - internal/dnsutil/dnsutil_test.go
-  - internal/zone/zone_test.go
-  - internal/transfer/axfr_test.go
-  - test/integration/backup_test.go
-  - internal/view/netmatch_test.go
-  - internal/view/geoip_asn_test.go
-  - test/integration/query_test.go
-  - internal/config/options_test.go
-  - internal/view/loader_test.go
-  - internal/zone/parser_test.go
-  - internal/zone/classify_test.go
-  - internal/config/aliases_test.go
-  - internal/alias/rewrite_test.go
-  - test/integration/negative_test.go
-  - internal/alias/detect_test.go
-  - internal/alias/override_test.go
-  - internal/server/server_test.go
-  - internal/view/matcher_test.go
-  - test/integration/axfr_test.go
-  - internal/config/zones_test.go
-  - test/integration/helpers_test.go
-  - internal/config/match_test.go
-  - internal/transfer/acl_test.go
-  - cmd/shadowdns/main_test.go
-  - internal/alias/soa_test.go
-  - internal/transfer/notify_test.go
--->
-
-### Requirement: Serve the zone SOA on explicit SOA query
-
-When a client explicitly queries a zone's apex SOA record, the dns-server SHALL return the SOA in the answer section with `RCODE=NOERROR` and `AA=1`.
-
-#### Scenario: Explicit SOA query on root zone
-
-- **WHEN** a client queries `root.com. SOA`
-- **THEN** the response answer section contains the zone SOA record
-
-#### Scenario: Explicit SOA query on backup zone
-
-- **WHEN** a client queries `backup.com. SOA`
-- **THEN** the response answer section contains an SOA whose serial is inherited from root and whose owner/MNAME/RNAME are rewritten
-
-
-<!-- @trace
-source: shadowdns-foundation
-updated: 2026-04-14
-code:
-  - cmd/shadowdns/main.go
-  - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
-  - internal/view/geoip_asn.go
-  - go.mod
-  - internal/config/zones.go
-  - internal/zone/zone.go
-  - internal/config/options.go
-  - internal/view/geoip_country.go
-  - .spectra.yaml
-  - internal/alias/detect.go
-  - internal/zone/classify.go
-  - testdata/integration/master.zones
-  - internal/alias/override.go
-  - internal/server/listener.go
-  - internal/transfer/notify.go
-  - internal/view/matcher.go
-  - internal/view/netmatch.go
-  - internal/transfer/axfr.go
-  - Makefile
-  - README.md
-  - internal/view/loader.go
-  - internal/config/match.go
-  - testdata/integration/README.md
-  - internal/dnsutil/dnsutil.go
-  - internal/zone/parser.go
-  - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
-  - docs/benchmark.md
-  - go.sum
-  - testdata/integration/aliases.yaml
-  - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
-  - docs/migration.md
-  - internal/config/aliases.go
-  - scripts/smoke.sh
-  - testdata/integration/geoip/.gitkeep
-  - internal/server/build.go
-  - internal/alias/rewrite.go
-  - internal/alias/soa.go
-  - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
-tests:
-  - internal/view/testhelper_test.go
-  - internal/view/geoip_country_test.go
-  - internal/dnsutil/dnsutil_test.go
-  - internal/zone/zone_test.go
-  - internal/transfer/axfr_test.go
-  - test/integration/backup_test.go
-  - internal/view/netmatch_test.go
-  - internal/view/geoip_asn_test.go
-  - test/integration/query_test.go
-  - internal/config/options_test.go
-  - internal/view/loader_test.go
-  - internal/zone/parser_test.go
-  - internal/zone/classify_test.go
-  - internal/config/aliases_test.go
-  - internal/alias/rewrite_test.go
-  - test/integration/negative_test.go
-  - internal/alias/detect_test.go
-  - internal/alias/override_test.go
-  - internal/server/server_test.go
-  - internal/view/matcher_test.go
-  - test/integration/axfr_test.go
-  - internal/config/zones_test.go
-  - test/integration/helpers_test.go
-  - internal/config/match_test.go
-  - internal/transfer/acl_test.go
-  - cmd/shadowdns/main_test.go
-  - internal/alias/soa_test.go
-  - internal/transfer/notify_test.go
--->
-
-### Requirement: Hide server identity
-
-The dns-server SHALL NOT reveal its software name or host identity in responses. Queries for `version.bind. CHAOS TXT` SHALL return REFUSED or an empty TXT response; queries for `hostname.bind. CHAOS TXT` and `id.server. CHAOS TXT` SHALL behave identically.
-
-#### Scenario: version.bind query is refused
-
-- **WHEN** a client queries `version.bind. CH TXT`
-- **THEN** the response has `RCODE=REFUSED` (or empty TXT with RCODE=NOERROR) AND contains no ShadowDNS version string
-
-#### Scenario: hostname.bind query is refused
-
-- **WHEN** a client queries `hostname.bind. CH TXT`
-- **THEN** the response does not contain the host's hostname
-
-
-<!-- @trace
-source: shadowdns-foundation
-updated: 2026-04-14
-code:
-  - cmd/shadowdns/main.go
-  - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
-  - internal/view/geoip_asn.go
-  - go.mod
-  - internal/config/zones.go
-  - internal/zone/zone.go
-  - internal/config/options.go
-  - internal/view/geoip_country.go
-  - .spectra.yaml
-  - internal/alias/detect.go
-  - internal/zone/classify.go
-  - testdata/integration/master.zones
-  - internal/alias/override.go
-  - internal/server/listener.go
-  - internal/transfer/notify.go
-  - internal/view/matcher.go
-  - internal/view/netmatch.go
-  - internal/transfer/axfr.go
-  - Makefile
-  - README.md
-  - internal/view/loader.go
-  - internal/config/match.go
-  - testdata/integration/README.md
-  - internal/dnsutil/dnsutil.go
-  - internal/zone/parser.go
-  - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
-  - docs/benchmark.md
-  - go.sum
-  - testdata/integration/aliases.yaml
-  - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
-  - docs/migration.md
-  - internal/config/aliases.go
-  - scripts/smoke.sh
-  - testdata/integration/geoip/.gitkeep
-  - internal/server/build.go
-  - internal/alias/rewrite.go
-  - internal/alias/soa.go
-  - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
-tests:
-  - internal/view/testhelper_test.go
-  - internal/view/geoip_country_test.go
-  - internal/dnsutil/dnsutil_test.go
-  - internal/zone/zone_test.go
-  - internal/transfer/axfr_test.go
-  - test/integration/backup_test.go
-  - internal/view/netmatch_test.go
-  - internal/view/geoip_asn_test.go
-  - test/integration/query_test.go
-  - internal/config/options_test.go
-  - internal/view/loader_test.go
-  - internal/zone/parser_test.go
-  - internal/zone/classify_test.go
-  - internal/config/aliases_test.go
-  - internal/alias/rewrite_test.go
-  - test/integration/negative_test.go
-  - internal/alias/detect_test.go
-  - internal/alias/override_test.go
-  - internal/server/server_test.go
-  - internal/view/matcher_test.go
-  - test/integration/axfr_test.go
-  - internal/config/zones_test.go
-  - test/integration/helpers_test.go
-  - internal/config/match_test.go
-  - internal/transfer/acl_test.go
-  - cmd/shadowdns/main_test.go
-  - internal/alias/soa_test.go
-  - internal/transfer/notify_test.go
--->
-
-### Requirement: Return minimal responses by default
-
-The dns-server SHALL operate in minimal-responses mode: additional-section glue records SHALL NOT be added automatically for NS or MX answers unless required for correctness (e.g., glue for in-bailiwick NS targets when serving a referral). The authority section SHALL be populated only for NXDOMAIN/NODATA (SOA) and delegations (NS).
-
-#### Scenario: Plain A query has empty authority and additional sections
-
-- **WHEN** a query for `www.root.com. A` is successfully answered
-- **THEN** the response answer section contains the A record AND the authority and additional sections are empty
-
-
-<!-- @trace
-source: shadowdns-foundation
-updated: 2026-04-14
-code:
-  - cmd/shadowdns/main.go
-  - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
-  - internal/view/geoip_asn.go
-  - go.mod
-  - internal/config/zones.go
-  - internal/zone/zone.go
-  - internal/config/options.go
-  - internal/view/geoip_country.go
-  - .spectra.yaml
-  - internal/alias/detect.go
-  - internal/zone/classify.go
-  - testdata/integration/master.zones
-  - internal/alias/override.go
-  - internal/server/listener.go
-  - internal/transfer/notify.go
-  - internal/view/matcher.go
-  - internal/view/netmatch.go
-  - internal/transfer/axfr.go
-  - Makefile
-  - README.md
-  - internal/view/loader.go
-  - internal/config/match.go
-  - testdata/integration/README.md
-  - internal/dnsutil/dnsutil.go
-  - internal/zone/parser.go
-  - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
-  - docs/benchmark.md
-  - go.sum
-  - testdata/integration/aliases.yaml
-  - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
-  - docs/migration.md
-  - internal/config/aliases.go
-  - scripts/smoke.sh
-  - testdata/integration/geoip/.gitkeep
-  - internal/server/build.go
-  - internal/alias/rewrite.go
-  - internal/alias/soa.go
-  - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
-tests:
-  - internal/view/testhelper_test.go
-  - internal/view/geoip_country_test.go
-  - internal/dnsutil/dnsutil_test.go
-  - internal/zone/zone_test.go
-  - internal/transfer/axfr_test.go
-  - test/integration/backup_test.go
-  - internal/view/netmatch_test.go
-  - internal/view/geoip_asn_test.go
-  - test/integration/query_test.go
-  - internal/config/options_test.go
-  - internal/view/loader_test.go
-  - internal/zone/parser_test.go
-  - internal/zone/classify_test.go
-  - internal/config/aliases_test.go
-  - internal/alias/rewrite_test.go
-  - test/integration/negative_test.go
-  - internal/alias/detect_test.go
-  - internal/alias/override_test.go
-  - internal/server/server_test.go
-  - internal/view/matcher_test.go
-  - test/integration/axfr_test.go
-  - internal/config/zones_test.go
-  - test/integration/helpers_test.go
-  - internal/config/match_test.go
-  - internal/transfer/acl_test.go
-  - cmd/shadowdns/main_test.go
-  - internal/alias/soa_test.go
-  - internal/transfer/notify_test.go
--->
-
-### Requirement: Handle malformed or unsupported queries without crashing
-
-The dns-server SHALL return `RCODE=FORMERR` for queries that cannot be parsed, `RCODE=NOTIMP` for unsupported opcodes (e.g., UPDATE), and `RCODE=REFUSED` for queries outside any loaded zone. It SHALL NOT panic or terminate the process on any malformed input.
-
-#### Scenario: Unparseable query returns FORMERR
-
-- **WHEN** a UDP packet is received that is not a valid DNS message
-- **THEN** the server returns a DNS response with `RCODE=FORMERR` if the header is parseable, or drops the packet silently if it is not
-
-#### Scenario: UPDATE opcode returns NOTIMP
-
-- **WHEN** a client sends a DNS UPDATE (opcode 5) message
-- **THEN** the server returns `RCODE=NOTIMP`
-
-#### Scenario: Out-of-zone query returns REFUSED
-
-- **WHEN** a client queries a name outside every loaded zone
-- **THEN** the server returns `RCODE=REFUSED`
-
 ## Requirements
-
 <!-- @trace
 source: shadowdns-foundation
 updated: 2026-04-14
@@ -988,6 +106,17 @@ The dns-server SHALL bind both UDP and TCP listeners on the configured address (
 
 - **WHEN** a client sends a UDP query with no EDNS0 OPT record
 - **THEN** the server's UDP response SHALL have a packed wire size ≤ 512 bytes (RFC 1035 §2.3.4) and SHALL set TC=1 when RRs are dropped to meet that limit
+
+<!-- @trace
+source: fix-oversized-udp-responses
+updated: 2026-04-25
+code:
+  - internal/server/handler.go
+tests:
+  - test/integration/stress_shared_bucket_test.go
+  - internal/server/handler_test.go
+  - test/integration/compression_budget_test.go
+-->
 
 ---
 ### Requirement: Derive listen address set from named.conf listen-on
@@ -1099,7 +228,6 @@ SIGHUP reload SHALL NOT rebind listeners even if the resolved listen-address set
 - **WHEN** the server is running with listeners bound for `listen-on-v6 { 2001:db8::1; };` AND named.conf is edited to `listen-on-v6 { 2001:db8::2; };` AND SIGHUP is sent
 - **THEN** the server continues serving on `[2001:db8::1]:53` only AND logs an INFO message stating that listen-address changes require restart
 
-
 <!-- @trace
 source: add-ipv6-listener
 updated: 2026-06-09
@@ -1141,7 +269,6 @@ When the WARN is caused by `EADDRINUSE` on a loopback address in `127.0.0.0/8` (
 - **WHEN** every address in the resolved listen-address set fails to bind
 - **THEN** the server returns a fatal error including the number of attempted addresses AND the process exits with a non-zero status
 
-
 <!-- @trace
 source: honor-listen-on
 updated: 2026-04-15
@@ -1180,6 +307,83 @@ The dns-server SHALL set `AA` (authoritative answer) flag in responses for queri
 - **WHEN** a query arrives with `RD=1` for a name outside all loaded zones
 - **THEN** the server responds REFUSED or the appropriate non-recursive error AND does not initiate any outbound DNS query
 
+<!-- @trace
+source: shadowdns-foundation
+updated: 2026-04-14
+code:
+  - cmd/shadowdns/main.go
+  - testdata/integration/named.conf
+  - testdata/integration/master/example.com_view-th.fwd
+  - internal/view/geoip_asn.go
+  - go.mod
+  - internal/config/zones.go
+  - internal/zone/zone.go
+  - internal/config/options.go
+  - internal/view/geoip_country.go
+  - .spectra.yaml
+  - internal/alias/detect.go
+  - internal/zone/classify.go
+  - testdata/integration/master.zones
+  - internal/alias/override.go
+  - internal/server/listener.go
+  - internal/transfer/notify.go
+  - internal/view/matcher.go
+  - internal/view/netmatch.go
+  - internal/transfer/axfr.go
+  - Makefile
+  - README.md
+  - internal/view/loader.go
+  - internal/config/match.go
+  - testdata/integration/README.md
+  - internal/dnsutil/dnsutil.go
+  - internal/zone/parser.go
+  - internal/transfer/acl.go
+  - testdata/integration/master/example.com_view-other.fwd
+  - docs/benchmark.md
+  - go.sum
+  - testdata/integration/aliases.yaml
+  - internal/server/server.go
+  - testdata/integration/master/backup.example_view-th.fwd
+  - docs/migration.md
+  - internal/config/aliases.go
+  - scripts/smoke.sh
+  - testdata/integration/geoip/.gitkeep
+  - internal/server/build.go
+  - internal/alias/rewrite.go
+  - internal/alias/soa.go
+  - internal/server/handler.go
+  - testdata/integration/master/backup.example_view-other.fwd
+tests:
+  - internal/view/testhelper_test.go
+  - internal/view/geoip_country_test.go
+  - internal/dnsutil/dnsutil_test.go
+  - internal/zone/zone_test.go
+  - internal/transfer/axfr_test.go
+  - test/integration/backup_test.go
+  - internal/view/netmatch_test.go
+  - internal/view/geoip_asn_test.go
+  - test/integration/query_test.go
+  - internal/config/options_test.go
+  - internal/view/loader_test.go
+  - internal/zone/parser_test.go
+  - internal/zone/classify_test.go
+  - internal/config/aliases_test.go
+  - internal/alias/rewrite_test.go
+  - test/integration/negative_test.go
+  - internal/alias/detect_test.go
+  - internal/alias/override_test.go
+  - internal/server/server_test.go
+  - internal/view/matcher_test.go
+  - test/integration/axfr_test.go
+  - internal/config/zones_test.go
+  - test/integration/helpers_test.go
+  - internal/config/match_test.go
+  - internal/transfer/acl_test.go
+  - cmd/shadowdns/main_test.go
+  - internal/alias/soa_test.go
+  - internal/transfer/notify_test.go
+-->
+
 ---
 ### Requirement: Answer queries using view, alias, and zone data
 
@@ -1194,6 +398,83 @@ For every query, the dns-server SHALL (a) determine the view via the view-matche
 
 - **WHEN** a client queries `www.backup.com A` where `backup.com` is a backup of `root.com`
 - **THEN** the server returns an A record with owner `www.backup.com.` whose RDATA comes from `www.root.com.` in the selected view
+
+<!-- @trace
+source: shadowdns-foundation
+updated: 2026-04-14
+code:
+  - cmd/shadowdns/main.go
+  - testdata/integration/named.conf
+  - testdata/integration/master/example.com_view-th.fwd
+  - internal/view/geoip_asn.go
+  - go.mod
+  - internal/config/zones.go
+  - internal/zone/zone.go
+  - internal/config/options.go
+  - internal/view/geoip_country.go
+  - .spectra.yaml
+  - internal/alias/detect.go
+  - internal/zone/classify.go
+  - testdata/integration/master.zones
+  - internal/alias/override.go
+  - internal/server/listener.go
+  - internal/transfer/notify.go
+  - internal/view/matcher.go
+  - internal/view/netmatch.go
+  - internal/transfer/axfr.go
+  - Makefile
+  - README.md
+  - internal/view/loader.go
+  - internal/config/match.go
+  - testdata/integration/README.md
+  - internal/dnsutil/dnsutil.go
+  - internal/zone/parser.go
+  - internal/transfer/acl.go
+  - testdata/integration/master/example.com_view-other.fwd
+  - docs/benchmark.md
+  - go.sum
+  - testdata/integration/aliases.yaml
+  - internal/server/server.go
+  - testdata/integration/master/backup.example_view-th.fwd
+  - docs/migration.md
+  - internal/config/aliases.go
+  - scripts/smoke.sh
+  - testdata/integration/geoip/.gitkeep
+  - internal/server/build.go
+  - internal/alias/rewrite.go
+  - internal/alias/soa.go
+  - internal/server/handler.go
+  - testdata/integration/master/backup.example_view-other.fwd
+tests:
+  - internal/view/testhelper_test.go
+  - internal/view/geoip_country_test.go
+  - internal/dnsutil/dnsutil_test.go
+  - internal/zone/zone_test.go
+  - internal/transfer/axfr_test.go
+  - test/integration/backup_test.go
+  - internal/view/netmatch_test.go
+  - internal/view/geoip_asn_test.go
+  - test/integration/query_test.go
+  - internal/config/options_test.go
+  - internal/view/loader_test.go
+  - internal/zone/parser_test.go
+  - internal/zone/classify_test.go
+  - internal/config/aliases_test.go
+  - internal/alias/rewrite_test.go
+  - test/integration/negative_test.go
+  - internal/alias/detect_test.go
+  - internal/alias/override_test.go
+  - internal/server/server_test.go
+  - internal/view/matcher_test.go
+  - test/integration/axfr_test.go
+  - internal/config/zones_test.go
+  - test/integration/helpers_test.go
+  - internal/config/match_test.go
+  - internal/transfer/acl_test.go
+  - cmd/shadowdns/main_test.go
+  - internal/alias/soa_test.go
+  - internal/transfer/notify_test.go
+-->
 
 ---
 ### Requirement: Produce SOA in authority section for NXDOMAIN and NODATA
@@ -1215,6 +496,83 @@ When the query target falls within a loaded zone but the queried name does not e
 - **WHEN** a query for `nonexistent.backup.com. A` is received
 - **THEN** the response authority section contains a SOA record owned by `backup.com.` with MNAME/RNAME rewritten by in-bailiwick rules
 
+<!-- @trace
+source: shadowdns-foundation
+updated: 2026-04-14
+code:
+  - cmd/shadowdns/main.go
+  - testdata/integration/named.conf
+  - testdata/integration/master/example.com_view-th.fwd
+  - internal/view/geoip_asn.go
+  - go.mod
+  - internal/config/zones.go
+  - internal/zone/zone.go
+  - internal/config/options.go
+  - internal/view/geoip_country.go
+  - .spectra.yaml
+  - internal/alias/detect.go
+  - internal/zone/classify.go
+  - testdata/integration/master.zones
+  - internal/alias/override.go
+  - internal/server/listener.go
+  - internal/transfer/notify.go
+  - internal/view/matcher.go
+  - internal/view/netmatch.go
+  - internal/transfer/axfr.go
+  - Makefile
+  - README.md
+  - internal/view/loader.go
+  - internal/config/match.go
+  - testdata/integration/README.md
+  - internal/dnsutil/dnsutil.go
+  - internal/zone/parser.go
+  - internal/transfer/acl.go
+  - testdata/integration/master/example.com_view-other.fwd
+  - docs/benchmark.md
+  - go.sum
+  - testdata/integration/aliases.yaml
+  - internal/server/server.go
+  - testdata/integration/master/backup.example_view-th.fwd
+  - docs/migration.md
+  - internal/config/aliases.go
+  - scripts/smoke.sh
+  - testdata/integration/geoip/.gitkeep
+  - internal/server/build.go
+  - internal/alias/rewrite.go
+  - internal/alias/soa.go
+  - internal/server/handler.go
+  - testdata/integration/master/backup.example_view-other.fwd
+tests:
+  - internal/view/testhelper_test.go
+  - internal/view/geoip_country_test.go
+  - internal/dnsutil/dnsutil_test.go
+  - internal/zone/zone_test.go
+  - internal/transfer/axfr_test.go
+  - test/integration/backup_test.go
+  - internal/view/netmatch_test.go
+  - internal/view/geoip_asn_test.go
+  - test/integration/query_test.go
+  - internal/config/options_test.go
+  - internal/view/loader_test.go
+  - internal/zone/parser_test.go
+  - internal/zone/classify_test.go
+  - internal/config/aliases_test.go
+  - internal/alias/rewrite_test.go
+  - test/integration/negative_test.go
+  - internal/alias/detect_test.go
+  - internal/alias/override_test.go
+  - internal/server/server_test.go
+  - internal/view/matcher_test.go
+  - test/integration/axfr_test.go
+  - internal/config/zones_test.go
+  - test/integration/helpers_test.go
+  - internal/config/match_test.go
+  - internal/transfer/acl_test.go
+  - cmd/shadowdns/main_test.go
+  - internal/alias/soa_test.go
+  - internal/transfer/notify_test.go
+-->
+
 ---
 ### Requirement: Serve the zone SOA on explicit SOA query
 
@@ -1229,6 +587,83 @@ When a client explicitly queries a zone's apex SOA record, the dns-server SHALL 
 
 - **WHEN** a client queries `backup.com. SOA`
 - **THEN** the response answer section contains an SOA whose serial is inherited from root and whose owner/MNAME/RNAME are rewritten
+
+<!-- @trace
+source: shadowdns-foundation
+updated: 2026-04-14
+code:
+  - cmd/shadowdns/main.go
+  - testdata/integration/named.conf
+  - testdata/integration/master/example.com_view-th.fwd
+  - internal/view/geoip_asn.go
+  - go.mod
+  - internal/config/zones.go
+  - internal/zone/zone.go
+  - internal/config/options.go
+  - internal/view/geoip_country.go
+  - .spectra.yaml
+  - internal/alias/detect.go
+  - internal/zone/classify.go
+  - testdata/integration/master.zones
+  - internal/alias/override.go
+  - internal/server/listener.go
+  - internal/transfer/notify.go
+  - internal/view/matcher.go
+  - internal/view/netmatch.go
+  - internal/transfer/axfr.go
+  - Makefile
+  - README.md
+  - internal/view/loader.go
+  - internal/config/match.go
+  - testdata/integration/README.md
+  - internal/dnsutil/dnsutil.go
+  - internal/zone/parser.go
+  - internal/transfer/acl.go
+  - testdata/integration/master/example.com_view-other.fwd
+  - docs/benchmark.md
+  - go.sum
+  - testdata/integration/aliases.yaml
+  - internal/server/server.go
+  - testdata/integration/master/backup.example_view-th.fwd
+  - docs/migration.md
+  - internal/config/aliases.go
+  - scripts/smoke.sh
+  - testdata/integration/geoip/.gitkeep
+  - internal/server/build.go
+  - internal/alias/rewrite.go
+  - internal/alias/soa.go
+  - internal/server/handler.go
+  - testdata/integration/master/backup.example_view-other.fwd
+tests:
+  - internal/view/testhelper_test.go
+  - internal/view/geoip_country_test.go
+  - internal/dnsutil/dnsutil_test.go
+  - internal/zone/zone_test.go
+  - internal/transfer/axfr_test.go
+  - test/integration/backup_test.go
+  - internal/view/netmatch_test.go
+  - internal/view/geoip_asn_test.go
+  - test/integration/query_test.go
+  - internal/config/options_test.go
+  - internal/view/loader_test.go
+  - internal/zone/parser_test.go
+  - internal/zone/classify_test.go
+  - internal/config/aliases_test.go
+  - internal/alias/rewrite_test.go
+  - test/integration/negative_test.go
+  - internal/alias/detect_test.go
+  - internal/alias/override_test.go
+  - internal/server/server_test.go
+  - internal/view/matcher_test.go
+  - test/integration/axfr_test.go
+  - internal/config/zones_test.go
+  - test/integration/helpers_test.go
+  - internal/config/match_test.go
+  - internal/transfer/acl_test.go
+  - cmd/shadowdns/main_test.go
+  - internal/alias/soa_test.go
+  - internal/transfer/notify_test.go
+-->
 
 ---
 ### Requirement: Hide server identity
@@ -1245,6 +680,83 @@ The dns-server SHALL NOT reveal its software name or host identity in responses.
 - **WHEN** a client queries `hostname.bind. CH TXT`
 - **THEN** the response does not contain the host's hostname
 
+<!-- @trace
+source: shadowdns-foundation
+updated: 2026-04-14
+code:
+  - cmd/shadowdns/main.go
+  - testdata/integration/named.conf
+  - testdata/integration/master/example.com_view-th.fwd
+  - internal/view/geoip_asn.go
+  - go.mod
+  - internal/config/zones.go
+  - internal/zone/zone.go
+  - internal/config/options.go
+  - internal/view/geoip_country.go
+  - .spectra.yaml
+  - internal/alias/detect.go
+  - internal/zone/classify.go
+  - testdata/integration/master.zones
+  - internal/alias/override.go
+  - internal/server/listener.go
+  - internal/transfer/notify.go
+  - internal/view/matcher.go
+  - internal/view/netmatch.go
+  - internal/transfer/axfr.go
+  - Makefile
+  - README.md
+  - internal/view/loader.go
+  - internal/config/match.go
+  - testdata/integration/README.md
+  - internal/dnsutil/dnsutil.go
+  - internal/zone/parser.go
+  - internal/transfer/acl.go
+  - testdata/integration/master/example.com_view-other.fwd
+  - docs/benchmark.md
+  - go.sum
+  - testdata/integration/aliases.yaml
+  - internal/server/server.go
+  - testdata/integration/master/backup.example_view-th.fwd
+  - docs/migration.md
+  - internal/config/aliases.go
+  - scripts/smoke.sh
+  - testdata/integration/geoip/.gitkeep
+  - internal/server/build.go
+  - internal/alias/rewrite.go
+  - internal/alias/soa.go
+  - internal/server/handler.go
+  - testdata/integration/master/backup.example_view-other.fwd
+tests:
+  - internal/view/testhelper_test.go
+  - internal/view/geoip_country_test.go
+  - internal/dnsutil/dnsutil_test.go
+  - internal/zone/zone_test.go
+  - internal/transfer/axfr_test.go
+  - test/integration/backup_test.go
+  - internal/view/netmatch_test.go
+  - internal/view/geoip_asn_test.go
+  - test/integration/query_test.go
+  - internal/config/options_test.go
+  - internal/view/loader_test.go
+  - internal/zone/parser_test.go
+  - internal/zone/classify_test.go
+  - internal/config/aliases_test.go
+  - internal/alias/rewrite_test.go
+  - test/integration/negative_test.go
+  - internal/alias/detect_test.go
+  - internal/alias/override_test.go
+  - internal/server/server_test.go
+  - internal/view/matcher_test.go
+  - test/integration/axfr_test.go
+  - internal/config/zones_test.go
+  - test/integration/helpers_test.go
+  - internal/config/match_test.go
+  - internal/transfer/acl_test.go
+  - cmd/shadowdns/main_test.go
+  - internal/alias/soa_test.go
+  - internal/transfer/notify_test.go
+-->
+
 ---
 ### Requirement: Return minimal responses by default
 
@@ -1254,6 +766,83 @@ The dns-server SHALL operate in minimal-responses mode: additional-section glue 
 
 - **WHEN** a query for `www.root.com. A` is successfully answered
 - **THEN** the response answer section contains the A record AND the authority and additional sections are empty
+
+<!-- @trace
+source: shadowdns-foundation
+updated: 2026-04-14
+code:
+  - cmd/shadowdns/main.go
+  - testdata/integration/named.conf
+  - testdata/integration/master/example.com_view-th.fwd
+  - internal/view/geoip_asn.go
+  - go.mod
+  - internal/config/zones.go
+  - internal/zone/zone.go
+  - internal/config/options.go
+  - internal/view/geoip_country.go
+  - .spectra.yaml
+  - internal/alias/detect.go
+  - internal/zone/classify.go
+  - testdata/integration/master.zones
+  - internal/alias/override.go
+  - internal/server/listener.go
+  - internal/transfer/notify.go
+  - internal/view/matcher.go
+  - internal/view/netmatch.go
+  - internal/transfer/axfr.go
+  - Makefile
+  - README.md
+  - internal/view/loader.go
+  - internal/config/match.go
+  - testdata/integration/README.md
+  - internal/dnsutil/dnsutil.go
+  - internal/zone/parser.go
+  - internal/transfer/acl.go
+  - testdata/integration/master/example.com_view-other.fwd
+  - docs/benchmark.md
+  - go.sum
+  - testdata/integration/aliases.yaml
+  - internal/server/server.go
+  - testdata/integration/master/backup.example_view-th.fwd
+  - docs/migration.md
+  - internal/config/aliases.go
+  - scripts/smoke.sh
+  - testdata/integration/geoip/.gitkeep
+  - internal/server/build.go
+  - internal/alias/rewrite.go
+  - internal/alias/soa.go
+  - internal/server/handler.go
+  - testdata/integration/master/backup.example_view-other.fwd
+tests:
+  - internal/view/testhelper_test.go
+  - internal/view/geoip_country_test.go
+  - internal/dnsutil/dnsutil_test.go
+  - internal/zone/zone_test.go
+  - internal/transfer/axfr_test.go
+  - test/integration/backup_test.go
+  - internal/view/netmatch_test.go
+  - internal/view/geoip_asn_test.go
+  - test/integration/query_test.go
+  - internal/config/options_test.go
+  - internal/view/loader_test.go
+  - internal/zone/parser_test.go
+  - internal/zone/classify_test.go
+  - internal/config/aliases_test.go
+  - internal/alias/rewrite_test.go
+  - test/integration/negative_test.go
+  - internal/alias/detect_test.go
+  - internal/alias/override_test.go
+  - internal/server/server_test.go
+  - internal/view/matcher_test.go
+  - test/integration/axfr_test.go
+  - internal/config/zones_test.go
+  - test/integration/helpers_test.go
+  - internal/config/match_test.go
+  - internal/transfer/acl_test.go
+  - cmd/shadowdns/main_test.go
+  - internal/alias/soa_test.go
+  - internal/transfer/notify_test.go
+-->
 
 ---
 ### Requirement: Handle malformed or unsupported queries without crashing
@@ -1373,7 +962,6 @@ When both a CNAME record and other record types coexist at the same name (a conf
 | CNAME | CNAME + TXT + A | the apex CNAME record | explicit CNAME query, no following |
 | A | CNAME + TXT + A | the static apex A record | exact-match wins; CNAME not followed |
 | AAAA | CNAME + TXT + A (no AAAA) | apex CNAME + target's AAAA chain | no exact AAAA → CNAME synthesis triggers |
-
 
 <!-- @trace
 source: apex-cname-txt-coexist
@@ -1506,6 +1094,244 @@ The dns-server SHALL produce successful authoritative answer responses with DNS 
 - **WHEN** the server packs an authoritative reply
 - **THEN** the packed wire size SHALL be under 3000 bytes (compressed), not around 4000 bytes (uncompressed), enabling fit within a 4096-byte EDNS0 UDP buffer without truncation
 
+<!-- @trace
+source: shadowdns-foundation
+updated: 2026-04-14
+code:
+  - cmd/shadowdns/main.go
+  - testdata/integration/named.conf
+  - testdata/integration/master/example.com_view-th.fwd
+  - internal/view/geoip_asn.go
+  - go.mod
+  - internal/config/zones.go
+  - internal/zone/zone.go
+  - internal/config/options.go
+  - internal/view/geoip_country.go
+  - .spectra.yaml
+  - internal/alias/detect.go
+  - internal/zone/classify.go
+  - testdata/integration/master.zones
+  - internal/alias/override.go
+  - internal/server/listener.go
+  - internal/transfer/notify.go
+  - internal/view/matcher.go
+  - internal/view/netmatch.go
+  - internal/transfer/axfr.go
+  - Makefile
+  - README.md
+  - internal/view/loader.go
+  - internal/config/match.go
+  - testdata/integration/README.md
+  - internal/dnsutil/dnsutil.go
+  - internal/zone/parser.go
+  - internal/transfer/acl.go
+  - testdata/integration/master/example.com_view-other.fwd
+  - docs/benchmark.md
+  - go.sum
+  - testdata/integration/aliases.yaml
+  - internal/server/server.go
+  - testdata/integration/master/backup.example_view-th.fwd
+  - docs/migration.md
+  - internal/config/aliases.go
+  - scripts/smoke.sh
+  - testdata/integration/geoip/.gitkeep
+  - internal/server/build.go
+  - internal/alias/rewrite.go
+  - internal/alias/soa.go
+  - internal/server/handler.go
+  - testdata/integration/master/backup.example_view-other.fwd
+tests:
+  - internal/view/testhelper_test.go
+  - internal/view/geoip_country_test.go
+  - internal/dnsutil/dnsutil_test.go
+  - internal/zone/zone_test.go
+  - internal/transfer/axfr_test.go
+  - test/integration/backup_test.go
+  - internal/view/netmatch_test.go
+  - internal/view/geoip_asn_test.go
+  - test/integration/query_test.go
+  - internal/config/options_test.go
+  - internal/view/loader_test.go
+  - internal/zone/parser_test.go
+  - internal/zone/classify_test.go
+  - internal/config/aliases_test.go
+  - internal/alias/rewrite_test.go
+  - test/integration/negative_test.go
+  - internal/alias/detect_test.go
+  - internal/alias/override_test.go
+  - internal/server/server_test.go
+  - internal/view/matcher_test.go
+  - test/integration/axfr_test.go
+  - internal/config/zones_test.go
+  - test/integration/helpers_test.go
+  - internal/config/match_test.go
+  - internal/transfer/acl_test.go
+  - cmd/shadowdns/main_test.go
+  - internal/alias/soa_test.go
+  - internal/transfer/notify_test.go
+-->
+
+<!-- @trace
+source: honor-listen-on
+updated: 2026-04-15
+code:
+  - internal/server/server.go
+  - internal/server/listenaddr.go
+  - internal/server/listener.go
+  - cmd/shadowdns/main.go
+  - README.md
+  - docs/migration.md
+tests:
+  - internal/server/addrset_test.go
+  - internal/server/listenaddr_test.go
+  - cmd/shadowdns/listenon_test.go
+  - test/integration/listenon_test.go
+  - internal/server/bindmany_test.go
+-->
+
+<!-- @trace
+source: ephemeral-txt-api
+updated: 2026-04-22
+code:
+  - docs/ephemeral-api.md
+  - go.sum
+  - .release-please-manifest.json
+  - cmd/shadowdns/main.go
+  - internal/transfer/notify.go
+  - internal/config/zones.go
+  - Makefile
+  - scripts/smoke.sh
+  - internal/ephemeral/store.go
+  - go.mod
+  - docs/benchmark.md
+  - scripts/gen-container-testdata.go
+  - testdata/integration/master/example.com_view-other.fwd
+  - internal/server/server.go
+  - internal/server/listener.go
+  - cmd/shadowdns/pprof.go
+  - internal/view/loader.go
+  - internal/shadowdnscfg/config.go
+  - internal/zone/parser.go
+  - internal/server/handler.go
+  - internal/alias/override.go
+  - .github/workflows/release-please.yml
+  - CLAUDE.md
+  - internal/server/listenaddr.go
+  - internal/zone/classify.go
+  - CHANGELOG.md
+  - testdata/integration/master/example.com_view-th.fwd
+  - cmd/shadowdns/reload.go
+  - internal/transfer/axfr.go
+  - internal/zone/zone.go
+  - internal/config/options.go
+  - packaging/shadowdns.service
+  - internal/api/server.go
+  - packaging/shadowdns.yaml.example
+  - packaging/aliases.yaml.example
+  - packaging/named.conf.example
+  - internal/server/build.go
+  - internal/config/aliases.go
+  - scripts/test-deb.sh
+  - nfpm.yaml
+  - internal/server/fingerprint.go
+  - internal/logging/logger.go
+  - docs/migration.md
+  - README.md
+tests:
+  - cmd/shadowdns/main_ephemeral_test.go
+  - test/integration/notify_test.go
+  - internal/server/server_test.go
+  - test/integration/negative_test.go
+  - internal/transfer/axfr_test.go
+  - internal/ephemeral/store_test.go
+  - internal/zone/classify_test.go
+  - internal/zone/parser_test.go
+  - internal/config/aliases_test.go
+  - cmd/shadowdns/listenon_test.go
+  - cmd/shadowdns/pprof_test.go
+  - cmd/shadowdns/main_test.go
+  - internal/api/server_test.go
+  - internal/config/zones_test.go
+  - internal/server/fingerprint_test.go
+  - test/integration/axfr_test.go
+  - internal/logging/logger_test.go
+  - test/integration/helpers_test.go
+  - internal/view/loader_test.go
+  - test/integration/reload_diff_test.go
+  - test/integration/cname_following_test.go
+  - internal/shadowdnscfg/config_test.go
+  - internal/alias/override_test.go
+  - internal/server/handler_ephemeral_test.go
+  - internal/zone/zone_test.go
+  - internal/transfer/notify_test.go
+  - internal/server/listenaddr_test.go
+  - internal/server/build_test.go
+  - internal/config/options_test.go
+  - test/integration/listenon_test.go
+  - test/integration/wildcard_test.go
+  - test/integration/cname_synthesis_test.go
+-->
+
+<!-- @trace
+source: ephemeral-txt-overrides-cname
+updated: 2026-04-22
+code:
+  - internal/config/aliases.go
+  - README.md
+  - scripts/test-deb.sh
+  - internal/shadowdnscfg/config.go
+  - testdata/integration/shadowdns.yaml
+  - CHANGELOG.md
+  - docs/ephemeral-api.md
+  - testdata/integration/master/example.com_view-th.fwd
+  - scripts/gen-container-testdata.go
+  - internal/server/build.go
+  - internal/alias/override.go
+  - .release-please-manifest.json
+  - internal/server/handler.go
+  - packaging/shadowdns.yaml.example
+  - scripts/smoke.sh
+  - docs/benchmark.md
+  - testdata/integration/aliases.yaml
+  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/README.md
+tests:
+  - internal/server/handler_ephemeral_test.go
+  - test/integration/cname_following_test.go
+  - internal/shadowdnscfg/config_test.go
+  - internal/alias/override_test.go
+  - test/integration/helpers_test.go
+  - test/integration/axfr_test.go
+  - test/integration/listenon_test.go
+  - internal/config/aliases_test.go
+  - test/integration/ephemeral_overrides_cname_test.go
+  - test/integration/reload_diff_test.go
+  - cmd/shadowdns/main_ephemeral_test.go
+-->
+
+<!-- @trace
+source: ephemeral-fixed-response-ttl
+updated: 2026-04-24
+code:
+  - internal/ephemeral/store.go
+  - internal/server/handler.go
+tests:
+  - test/integration/ephemeral_overrides_cname_test.go
+  - internal/server/handler_ephemeral_test.go
+  - internal/ephemeral/store_test.go
+-->
+
+<!-- @trace
+source: fix-oversized-udp-responses
+updated: 2026-04-25
+code:
+  - internal/server/handler.go
+tests:
+  - test/integration/stress_shared_bucket_test.go
+  - internal/server/handler_test.go
+  - test/integration/compression_budget_test.go
+-->
+
 ---
 ### Requirement: Preserve query case in the response Question section
 
@@ -1525,7 +1351,6 @@ The dns-server SHALL copy the Question section of the request into the response 
 
 - **WHEN** a client sends a query for `WWW.EXAMPLE.COM.`
 - **THEN** the response's Question section contains `WWW.EXAMPLE.COM.` byte-for-byte
-
 
 <!-- @trace
 source: preserve-dns-name-case-in-responses
@@ -1597,7 +1422,6 @@ When a query contains an EDNS0 OPT record, every query response path (successful
 - **WHEN** a client sends the same EDNS0 query over TCP instead of UDP
 - **THEN** the response SHALL contain the same OPT record (version 0, UDP payload size 1232) as the UDP response, and the response SHALL NOT be truncated regardless of its size
 
-
 <!-- @trace
 source: add-dns-cookies
 updated: 2026-06-08
@@ -1632,7 +1456,6 @@ When a query carries an EDNS0 OPT record with a version greater than 0, the dns-
 - **WHEN** a client sends a query with an EDNS0 OPT record of version 1 that also contains a malformed 7-byte COOKIE option
 - **THEN** the response SHALL be BADVERS (not FORMERR) and SHALL NOT contain a COOKIE option
 
-
 <!-- @trace
 source: add-dns-cookies
 updated: 2026-06-08
@@ -1666,7 +1489,6 @@ The OPT record SHALL be included in the packed wire size measured against the UD
 source: add-dns-cookies
 updated: 2026-06-08
 -->
-
 
 <!-- @trace
 source: add-dns-cookies

@@ -1,4 +1,4 @@
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Serve AXFR over TCP for loaded zones
 
@@ -13,7 +13,6 @@ The zone-transfer subsystem SHALL answer AXFR queries (QTYPE=252, QCLASS=IN) rec
 
 - **WHEN** a client sends an AXFR query over UDP
 - **THEN** the server returns `RCODE=REFUSED`
-
 
 <!-- @trace
 source: shadowdns-foundation
@@ -105,7 +104,6 @@ When a client requests AXFR for a backup zone, the zone-transfer subsystem SHALL
 
 - **WHEN** `backup.com` has an override `backup.com. TXT "google-site-verification=..."`
 - **THEN** the AXFR stream contains the override TXT record AND does not contain the corresponding root zone TXT record rewritten
-
 
 <!-- @trace
 source: shadowdns-foundation
@@ -202,7 +200,6 @@ The zone-transfer subsystem SHALL consult the `allow-transfer` ACL declared in `
 
 - **WHEN** the ACL is empty or not declared
 - **THEN** every AXFR request returns `RCODE=REFUSED`
-
 
 <!-- @trace
 source: shadowdns-foundation
@@ -362,7 +359,6 @@ Cross-view deduplication of NOTIFY sends SHALL be keyed by the tuple `(zone-orig
 - **WHEN** `--no-notify` is NOT passed and `named.conf` previously contained `options { notify no; };` is edited to `options { notify yes; };` and SIGHUP is delivered
 - **THEN** after the reload completes, the next NOTIFY-triggering event sends NOTIFY per the enabled-default rules
 
-
 <!-- @trace
 source: shadowdns-foundation
 updated: 2026-04-14
@@ -440,7 +436,6 @@ tests:
   - internal/transfer/notify_test.go
 -->
 
-
 <!-- @trace
 source: notify-toggle
 updated: 2026-04-15
@@ -456,7 +451,6 @@ tests:
   - cmd/shadowdns/main_test.go
   - test/integration/notify_test.go
 -->
-
 
 <!-- @trace
 source: notify-glue-resolution
@@ -591,7 +585,6 @@ The zone-transfer subsystem SHALL NOT implement incremental transfer. On receivi
 - **WHEN** a slave sends `IXFR example.com. IN` with a SOA serial
 - **THEN** the server responds with the same stream format as AXFR (SOA, records, SOA)
 
-
 <!-- @trace
 source: shadowdns-foundation
 updated: 2026-04-14
@@ -677,8 +670,6 @@ The zone-transfer subsystem SHALL return `RCODE=REFUSED` for any zone-transfer-c
 
 - **WHEN** a permitted client requests `AXFR unknown.example. IN` and no zone `unknown.example.` is loaded
 - **THEN** the server returns `RCODE=REFUSED`
-
-## Requirements
 
 <!-- @trace
 source: shadowdns-foundation
