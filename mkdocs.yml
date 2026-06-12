@@ -85,10 +85,10 @@ plugins:
             CLI Reference: CLI 參考
             Feature Guides: 功能指南
             How Zone Aliasing Works: Zone Aliasing 原理
+            CNAME Chain Collapsing: CNAME 鏈收合
             Operations: 維運
             Migrating from BIND: 從 BIND 遷移
             Startup Performance Benchmark: 啟動效能基準
-            Design Surveys: 設計調查
 
 markdown_extensions:
   - admonition
@@ -121,10 +121,9 @@ nav:
       - CLI Reference: reference/cli.md
   - Feature Guides:
       - How Zone Aliasing Works: guides/zone-aliasing.md
+      - CNAME Chain Collapsing: guides/cname-chain-collapsing.md
       - EDNS Client Subnet (ECS): guides/ecs.md
       - Ephemeral TXT API: ephemeral-api.md
   - Operations:
       - Migrating from BIND: migration.md
       - Startup Performance Benchmark: benchmark.md
-  - Design Surveys:
-      - CNAME Flattening: cname-flattening-implementation-survey.md

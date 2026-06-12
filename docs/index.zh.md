@@ -48,6 +48,7 @@ ShadowDNS 透過 zone aliasing 消除這項浪費：
 | Query logging（BIND 格式）         | Yes           | Yes        |
 | CNAME Flattening（外部 target）    | No            | No         |
 | In-bailiwick CNAME Flattening      | No            | Planned    |
+| 回應端 CNAME 鏈收合                 | No            | Yes（per alias group opt-in，預設關閉） |
 | Dynamic Update                     | Yes           | No         |
 | Recursion                          | 可設定        | 永遠關閉   |
 

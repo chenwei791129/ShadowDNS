@@ -7,10 +7,14 @@
 
 aliases:
   example.com:
-    - backup.example.com
-    - mirror.example.com
+    members:
+      - backup.example.com
+      - mirror.example.com
   example.org:
-    - backup.example.org
+    members:
+      - backup.example.org
+    rewrite_rdata_labels: true
+    collapse_cname_chain: true
 
 ephemeral_api:
   listen: "127.0.0.1:8053"
@@ -20,9 +24,18 @@ ephemeral_api:
   # token: "optional-bearer-token"
 ```
 
+## aliases 欄位
+
+`aliases` 下的每個 key 是一個 root domain，value 是一個物件：
+
+| 欄位 | 必填 | 說明 |
+|------|------|------|
+| `members` | 是（不可為空） | 此 root 服務的備援網域清單，查詢以改寫方式對應到 root |
+| `rewrite_rdata_labels` | 否（預設 `false`） | 設為 `true` 時，RDATA 名稱欄位（CNAME/SRV target、NS、MX、PTR、SOA 名稱）套用 label-anywhere 改寫——值內出現的 root label 序列全數替換為備援 origin，而不只是 in-bailiwick 後綴。適用於以 templated CDN 式 target 將 root origin 嵌在中間 label 的 zone |
+| `collapse_cname_chain` | 否（預設 `false`） | 設為 `true` 時，此 root 與其所有成員的回應會收合 zone 內 CNAME 鏈——見 [CNAME 鏈收合](../guides/cname-chain-collapsing.md) |
+
 ## aliases 規則
 
-- 每個 key 是一個 root domain，value 是它的備援網域清單。
 - 同一個備援網域在所有 root 之間（正規化後）最多只能出現一次。
 - 備援網域不可等於它的 root（self-alias 會被拒絕）。
 - 沒有列在這裡的網域視為獨立的 root zone，完整載入記憶體。

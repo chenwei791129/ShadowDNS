@@ -7,10 +7,14 @@
 
 aliases:
   example.com:
-    - backup.example.com
-    - mirror.example.com
+    members:
+      - backup.example.com
+      - mirror.example.com
   example.org:
-    - backup.example.org
+    members:
+      - backup.example.org
+    rewrite_rdata_labels: true
+    collapse_cname_chain: true
 
 ephemeral_api:
   listen: "127.0.0.1:8053"
@@ -20,9 +24,18 @@ ephemeral_api:
   # token: "optional-bearer-token"
 ```
 
+## aliases fields
+
+Each key under `aliases` is a root domain; the value is an object:
+
+| Field | Required | Description |
+|------|------|------|
+| `members` | Yes (must be non-empty) | List of backup domains served by rewriting queries to this root |
+| `rewrite_rdata_labels` | No (default `false`) | When `true`, RDATA name fields (CNAME/SRV targets, NS, MX, PTR, SOA names) get a label-anywhere rewrite — every root-label sequence inside the value is replaced with the backup origin, not just the in-bailiwick suffix. For zones using templated CDN-style targets that embed the root origin as a middle label |
+| `collapse_cname_chain` | No (default `false`) | When `true`, in-zone CNAME chains are collapsed in responses for this root and all of its members — see [CNAME Chain Collapsing](../guides/cname-chain-collapsing.md) |
+
 ## aliases rules
 
-- Each key is a root domain; the value is its list of backup domains.
 - A given backup domain may appear at most once across all roots (after normalization).
 - A backup domain must not equal its root (self-aliases are rejected).
 - Domains not listed here are treated as independent root zones, fully loaded into memory.

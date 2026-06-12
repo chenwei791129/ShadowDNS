@@ -48,6 +48,7 @@ In the reference deployment, memory usage is reduced by about **80%** compared w
 | Query logging (BIND format)        | Yes           | Yes        |
 | CNAME Flattening (external targets) | No           | No         |
 | In-bailiwick CNAME Flattening      | No            | Planned    |
+| CNAME chain collapsing in responses | No           | Yes (opt-in per alias group, default off) |
 | Dynamic Update                     | Yes           | No         |
 | Recursion                          | Configurable  | Always off |
 
