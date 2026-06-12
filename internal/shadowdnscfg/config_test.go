@@ -530,6 +530,60 @@ aliases:
 	}
 }
 
+// ---------- aliases object form (collapse_cname_chain) ----------
+
+func TestLoad_AliasesCollapseFlagTrue(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  root.com:
+    members:
+      - backup.com
+    collapse_cname_chain: true
+`)
+	cfg, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.CollapseFlags["root.com."] {
+		t.Errorf("CollapseFlags[root.com.] = false, want true")
+	}
+}
+
+func TestLoad_AliasesCollapseFlagOmittedDefaultsFalse(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  root.com:
+    members:
+      - backup.com
+`)
+	cfg, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CollapseFlags["root.com."] {
+		t.Errorf("CollapseFlags[root.com.] = true, want false (flag omitted)")
+	}
+}
+
+// The unknown-field error must list every accepted field so operators can
+// self-correct, including the new collapse_cname_chain.
+func TestLoad_AliasesObjectUnknownFieldErrorListsAllAllowedFields(t *testing.T) {
+	path := writeConfig(t, `
+aliases:
+  root.com:
+    members:
+      - backup.com
+    unknown_flag: true
+`)
+	_, err := Load(path, nil)
+	if err == nil {
+		t.Fatal("expected error for unknown field inside aliases object form")
+	}
+	if !strings.Contains(err.Error(), "members, rewrite_rdata_labels, collapse_cname_chain") {
+		t.Errorf("error %q should list the accepted fields members, rewrite_rdata_labels, collapse_cname_chain", err.Error())
+	}
+}
+
 // ---------- aliases case preservation ----------
 
 // Mixed-case backup names in YAML must be addressable via the lowercase fold

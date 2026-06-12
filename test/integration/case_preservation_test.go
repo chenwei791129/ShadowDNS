@@ -132,7 +132,7 @@ include "`+filepath.Join(tmpDir, "master.zones")+`";
 		t.Fatalf("LoadGeoIP: %v", err)
 	}
 
-	state, _, err := server.BuildState(cfg, sdCfg.Aliases, sdCfg.AliasFlags, sdCfg.BackupOriginalCase, nil, server.VerifyModeHash, country, asn, logger)
+	state, _, err := server.BuildState(cfg, sdCfg.Aliases, sdCfg.AliasFlags, sdCfg.CollapseFlags, sdCfg.BackupOriginalCase, nil, server.VerifyModeHash, country, asn, logger)
 	if err != nil {
 		_ = country.Close()
 		_ = asn.Close()

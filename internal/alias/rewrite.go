@@ -142,12 +142,25 @@ func RewriteRR(rr dns.RR, root, backup string, rewriteRDATALabels bool) dns.RR {
 
 	cp.Header().Name = RewriteName(cp.Header().Name, root, backup)
 
+	rewriteRDATANames(cp, root, backup, rewriteRDATALabels)
+
+	return cp
+}
+
+// rewriteRDATANames applies the selected rewrite rule (in-bailiwick by
+// default, label-anywhere when rewriteRDATALabels is true) to rr's RDATA
+// name fields in place. rr MUST be a private copy owned by the caller; the
+// owner name is not touched. This is the RDATA-only primitive shared by
+// RewriteRR and the collapse resolution entry points, which set the owner
+// themselves (to the backup-namespace on-wire qname) and would waste
+// RewriteRR's owner rewrite.
+func rewriteRDATANames(rr dns.RR, root, backup string, rewriteRDATALabels bool) {
 	rewriteValue := RewriteName
 	if rewriteRDATALabels {
 		rewriteValue = RewriteNameAnywhere
 	}
 
-	switch v := cp.(type) {
+	switch v := rr.(type) {
 	case *dns.CNAME:
 		v.Target = rewriteValue(v.Target, root, backup)
 	case *dns.NS:
@@ -164,6 +177,4 @@ func RewriteRR(rr dns.RR, root, backup string, rewriteRDATALabels bool) dns.RR {
 		// Numeric fields (Serial, Refresh, Retry, Expire, Minttl) are not touched.
 		// A, AAAA, TXT: RDATA not modified.
 	}
-
-	return cp
 }

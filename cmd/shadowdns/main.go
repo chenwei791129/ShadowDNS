@@ -213,7 +213,7 @@ func reload(
 	}()
 
 	prev := srv.CurrentState()
-	state, summary, err := server.BuildState(cfg, shadowCfg.Aliases, shadowCfg.AliasFlags, shadowCfg.BackupOriginalCase, prev, opts.ReloadVerify, newCountry, newASN, logger)
+	state, summary, err := server.BuildState(cfg, shadowCfg.Aliases, shadowCfg.AliasFlags, shadowCfg.CollapseFlags, shadowCfg.BackupOriginalCase, prev, opts.ReloadVerify, newCountry, newASN, logger)
 	if err != nil {
 		return fmt.Errorf("building server state: %w", err)
 	}
@@ -594,7 +594,7 @@ func run(ctx context.Context, opts runOptions) error {
 	geo := &geoipRuntime{country: country, asn: asn}
 	defer geo.closeAll(logger)
 
-	state, _, err := server.BuildState(cfg, shadowCfg.Aliases, shadowCfg.AliasFlags, shadowCfg.BackupOriginalCase, nil, opts.ReloadVerify, country, asn, logger)
+	state, _, err := server.BuildState(cfg, shadowCfg.Aliases, shadowCfg.AliasFlags, shadowCfg.CollapseFlags, shadowCfg.BackupOriginalCase, nil, opts.ReloadVerify, country, asn, logger)
 	if err != nil {
 		return fmt.Errorf("building server state: %w", err)
 	}

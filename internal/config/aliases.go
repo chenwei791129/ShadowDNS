@@ -21,20 +21,31 @@ type AliasMap map[string]string
 // (default behavior: in-bailiwick suffix-only rewrite).
 type AliasFlags map[string]bool
 
+// CollapseFlags is a root-origin → collapse_cname_chain lookup keyed on the
+// LookupKey fold of the root (FQDN with trailing dot). A missing key is
+// equivalent to false (default behavior: emit CNAME chains unchanged).
+// Unlike AliasFlags it is keyed by root, not backup: a query's matched root
+// zone covers both the root's own queries and every backup member's queries,
+// so backup inheritance falls out of the single root-keyed entry.
+type CollapseFlags map[string]bool
+
 // AliasGroup describes one root-keyed alias group: its backup members and
-// the per-group rewrite_rdata_labels flag. Members are pre-normalization
-// strings as supplied by the loader (yaml original case is preserved
-// byte-for-byte); BuildAliasMap derives the lookup-fold for the AliasMap
-// key without mutating Members.
+// the per-group rewrite_rdata_labels / collapse_cname_chain flags. Members
+// are pre-normalization strings as supplied by the loader (yaml original
+// case is preserved byte-for-byte); BuildAliasMap derives the lookup-fold
+// for the AliasMap key without mutating Members.
 type AliasGroup struct {
 	Members            []string
 	RewriteRDATALabels bool
+	CollapseCNAMEChain bool
 }
 
-// BuildAliasMap validates a root → AliasGroup map and emits two flat
+// BuildAliasMap validates a root → AliasGroup map and emits three flat
 // lookup tables for runtime use:
 //   - AliasMap: backup → root (canonicalized FQDNs)
 //   - AliasFlags: backup → group's RewriteRDATALabels flag
+//   - CollapseFlags: root → group's CollapseCNAMEChain flag (entries exist
+//     only for groups that enable it; missing key means disabled)
 //
 // Returns an error when:
 //   - any domain is empty or contains whitespace,
@@ -42,28 +53,29 @@ type AliasGroup struct {
 //     different roots,
 //   - an entry lists a backup equal to its root (self-alias).
 //
-// A root whose Members list is empty contributes nothing to either map but
+// A root whose Members list is empty contributes nothing to any map but
 // is not an error (matches the YAML "empty list is valid" semantics).
-func BuildAliasMap(raw map[string]AliasGroup) (AliasMap, AliasFlags, error) {
+func BuildAliasMap(raw map[string]AliasGroup) (AliasMap, AliasFlags, CollapseFlags, error) {
 	resultMap := make(AliasMap)
 	resultFlags := make(AliasFlags)
+	resultCollapse := make(CollapseFlags)
 
 	for root, group := range raw {
 		normRoot, err := normalizeDomain(root)
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid root domain %q: %w", root, err)
+			return nil, nil, nil, fmt.Errorf("invalid root domain %q: %w", root, err)
 		}
 
 		for _, backup := range group.Members {
 			normBackup, err := normalizeDomain(backup)
 			if err != nil {
-				return nil, nil, fmt.Errorf("invalid backup domain %q under root %q: %w", backup, root, err)
+				return nil, nil, nil, fmt.Errorf("invalid backup domain %q under root %q: %w", backup, root, err)
 			}
 			if normBackup == normRoot {
-				return nil, nil, fmt.Errorf("self-alias not allowed: %q is listed as a backup of itself", normRoot)
+				return nil, nil, nil, fmt.Errorf("self-alias not allowed: %q is listed as a backup of itself", normRoot)
 			}
 			if existingRoot, exists := resultMap[normBackup]; exists && existingRoot != normRoot {
-				return nil, nil, fmt.Errorf(
+				return nil, nil, nil, fmt.Errorf(
 					"backup domain %q is claimed by two roots: %q and %q",
 					normBackup, existingRoot, normRoot,
 				)
@@ -71,8 +83,11 @@ func BuildAliasMap(raw map[string]AliasGroup) (AliasMap, AliasFlags, error) {
 			resultMap[normBackup] = normRoot
 			resultFlags[normBackup] = group.RewriteRDATALabels
 		}
+		if group.CollapseCNAMEChain && len(group.Members) > 0 {
+			resultCollapse[normRoot] = true
+		}
 	}
-	return resultMap, resultFlags, nil
+	return resultMap, resultFlags, resultCollapse, nil
 }
 
 // normalizeDomain validates a domain name and returns its lookup-fold form

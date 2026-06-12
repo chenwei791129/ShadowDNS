@@ -28,6 +28,7 @@ import (
 type Config struct {
 	Aliases            config.AliasMap
 	AliasFlags         config.AliasFlags
+	CollapseFlags      config.CollapseFlags
 	BackupOriginalCase map[string]string
 	EphemeralAPI       *EphemeralAPIConfig
 }
@@ -56,13 +57,14 @@ type rawEphemeralAPI struct {
 }
 
 // rawAliasGroup is the per-key YAML shape for the aliases map. Each entry
-// MUST be a mapping with a non-empty `members` list and an optional
-// `rewrite_rdata_labels` bool (default false). Strict decoding rejects any
-// other YAML node type (sequence, bare string) and unknown fields inside
-// the mapping.
+// MUST be a mapping with a non-empty `members` list and optional
+// `rewrite_rdata_labels` / `collapse_cname_chain` bools (default false).
+// Strict decoding rejects any other YAML node type (sequence, bare string)
+// and unknown fields inside the mapping.
 type rawAliasGroup struct {
 	Members            []string `yaml:"members"`
 	RewriteRDATALabels bool     `yaml:"rewrite_rdata_labels"`
+	CollapseCNAMEChain bool     `yaml:"collapse_cname_chain"`
 }
 
 // UnmarshalYAML accepts only the mapping form for each alias entry. Any
@@ -70,16 +72,16 @@ type rawAliasGroup struct {
 // yields a type-mismatch error so misshapen configs fail loudly.
 func (g *rawAliasGroup) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind != yaml.MappingNode {
-		return fmt.Errorf("line %d: aliases entry must be an object with 'members' (non-empty list of backup domains) and optional 'rewrite_rdata_labels' (bool)", value.Line)
+		return fmt.Errorf("line %d: aliases entry must be an object with 'members' (non-empty list of backup domains) and optional 'rewrite_rdata_labels' / 'collapse_cname_chain' (bool)", value.Line)
 	}
 	// yaml.Node.Decode does not honor the parent decoder's KnownFields
 	// setting, so we walk the mapping content directly to reject unknown
 	// keys before decoding into g.
-	allowed := map[string]bool{"members": true, "rewrite_rdata_labels": true}
+	allowed := map[string]bool{"members": true, "rewrite_rdata_labels": true, "collapse_cname_chain": true}
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		keyNode := value.Content[i]
 		if !allowed[keyNode.Value] {
-			return fmt.Errorf("line %d: unknown alias field %q (expected one of: members, rewrite_rdata_labels)", keyNode.Line, keyNode.Value)
+			return fmt.Errorf("line %d: unknown alias field %q (expected one of: members, rewrite_rdata_labels, collapse_cname_chain)", keyNode.Line, keyNode.Value)
 		}
 	}
 	// Avoid recursing into this UnmarshalYAML by decoding into a distinct
@@ -133,15 +135,17 @@ func Load(path string, logger *zap.Logger) (*Config, error) {
 		groups[root] = config.AliasGroup{
 			Members:            g.Members,
 			RewriteRDATALabels: g.RewriteRDATALabels,
+			CollapseCNAMEChain: g.CollapseCNAMEChain,
 		}
 	}
 
-	aliasMap, aliasFlags, err := config.BuildAliasMap(groups)
+	aliasMap, aliasFlags, collapseFlags, err := config.BuildAliasMap(groups)
 	if err != nil {
 		return nil, fmt.Errorf("aliases: %w", err)
 	}
 	cfg.Aliases = aliasMap
 	cfg.AliasFlags = aliasFlags
+	cfg.CollapseFlags = collapseFlags
 
 	// Snapshot operator-authored backup case (FQDN form) keyed by the same
 	// lookup-fold used by Aliases / AliasFlags. The alias rewrite path reads

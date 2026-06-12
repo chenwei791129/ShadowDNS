@@ -76,7 +76,7 @@ func axfrServerWithACL(t *testing.T, aclEntries []string) (*server.Server, func(
 	}
 
 	// Build state normally to get zones loaded.
-	state, _, err := server.BuildState(cfg, aliases, nil, nil, nil, server.VerifyModeHash, country, asnDB, logger)
+	state, _, err := server.BuildState(cfg, aliases, nil, nil, nil, nil, server.VerifyModeHash, country, asnDB, logger)
 	if err != nil {
 		_ = country.Close()
 		_ = asnDB.Close()

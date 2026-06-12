@@ -1959,7 +1959,7 @@ func TestReload_FailedBuildDoesNotInvokeGC(t *testing.T) {
 		{Name: "bad.com", Type: "master", File: badFile},
 	})
 
-	initial, _, err := BuildState(cfg, config.AliasMap{}, nil, nil, nil, VerifyModeHash, nil, nil, nil)
+	initial, _, err := BuildState(cfg, config.AliasMap{}, nil, nil, nil, nil, VerifyModeHash, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("initial BuildState: %v", err)
 	}
@@ -1973,7 +1973,7 @@ func TestReload_FailedBuildDoesNotInvokeGC(t *testing.T) {
 		t.Fatalf("corrupt zone file: %v", err)
 	}
 
-	_, _, err = BuildState(cfg, config.AliasMap{}, nil, nil, &initial, VerifyModeHash, nil, nil, nil)
+	_, _, err = BuildState(cfg, config.AliasMap{}, nil, nil, nil, &initial, VerifyModeHash, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected BuildState to return an error after corruption; got nil")
 	}

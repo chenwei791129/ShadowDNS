@@ -142,11 +142,16 @@ func ResolveWildcard(qname string, qtype uint16, backupOrigin, backupOriginalCas
 		return nil
 	}
 
-	// Rewrite wildcard owners from "*.<zone>" to the rewritten root qname,
-	// preserving the on-wire case of the original qname's prefix. The suffix
-	// is the lookup-fold root origin; finalizeBackupRRs → RewriteRR will
-	// rewrite that suffix to backupOriginalCase, yielding a fully
-	// case-preserving owner.
+	return synthesizeWildcardRRs(wRRs, qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels)
+}
+
+// synthesizeWildcardRRs is the legacy wildcard-emission tail shared by
+// ResolveWildcard and ResolveWildcardCollapse: rewrite wildcard owners from
+// "*.<zone>" to the rewritten root qname, preserving the on-wire case of the
+// original qname's prefix, then finalize. The suffix is the lookup-fold root
+// origin; finalizeBackupRRs → RewriteRR will rewrite that suffix to
+// backupOriginalCase, yielding a fully case-preserving owner.
+func synthesizeWildcardRRs(wRRs []dns.RR, qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
 	wildcardOwner := RewriteName(qname, backupOrigin, rootZone.Origin)
 	rootRRs := make([]dns.RR, len(wRRs))
 	for i, rr := range wRRs {
@@ -156,6 +161,120 @@ func ResolveWildcard(qname string, qtype uint16, backupOrigin, backupOriginalCas
 	}
 
 	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOriginalCase, rewriteRDATALabels)
+}
+
+// ResolveExactCollapse mirrors ResolveExactNoCNAME under the unified collapse
+// rule. For every qtype except CNAME an exact hit involves no chain, so the
+// behavior is identical to ResolveExactNoCNAME (nodata is always false on
+// that path). For a direct CNAME-type query the stored CNAME is never
+// emitted: the chain is chased and collapsed, yielding either the
+// synthesized tail CNAME or NODATA.
+//
+// The returned nodata=true (with zero records) means the chain ended in-zone
+// without an answer; the caller MUST short-circuit to a negative reply
+// instead of consulting later stages (design D4).
+//
+// MUST NOT panic on any input.
+func ResolveExactCollapse(qname string, qtype uint16, backupOrigin, backupOriginalCase string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, bool) {
+	if rootZone == nil {
+		return nil, false
+	}
+	if qtype != dns.TypeCNAME {
+		return ResolveExactNoCNAME(qname, qtype, backupOrigin, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels), false
+	}
+	return collapseChainAt(qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels)
+}
+
+// ResolveCNAMEFallbackCollapse mirrors ResolveCNAMEFallback under the unified
+// collapse rule: the chain found at the rewritten qname is consumed instead
+// of emitted. See ResolveExactCollapse for the nodata contract.
+//
+// MUST NOT panic on any input.
+func ResolveCNAMEFallbackCollapse(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, bool) {
+	if rootZone == nil || qtype == dns.TypeCNAME {
+		return nil, false
+	}
+	return collapseChainAt(qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels)
+}
+
+// collapseChainAt is the chase pipeline shared by ResolveExactCollapse and
+// ResolveCNAMEFallbackCollapse: fold the qname, rewrite it into the root
+// namespace, look up the CNAME RRset there, and collapse the chain. Returns
+// (nil, false) when no CNAME exists at the rewritten name (stage miss).
+func collapseChainAt(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, bool) {
+	qnameFold := dnsutil.LookupKey(qname)
+	rootQName := RewriteQName(qnameFold, backupOrigin, rootZone.Origin)
+	initial := rootZone.Lookup(rootQName, dns.TypeCNAME)
+	if len(initial) == 0 {
+		return nil, false
+	}
+	return collapseBackupResult(rootZone.CollapseCNAME(initial, qtype), qname, rootZone, backupOriginalCase, rewriteRDATALabels)
+}
+
+// ResolveWildcardCollapse mirrors ResolveWildcard under the unified collapse
+// rule. A wildcard hit of the requested qtype involves no chain and emits the
+// same answer as ResolveWildcard (both call synthesizeWildcardRRs); a
+// wildcard CNAME start is chased and collapsed. The stored wildcard slice is
+// fed to the chase raw — the collapse only consumes RDATA and TTL, so the
+// owner pre-copy of the legacy path would be wasted. See ResolveExactCollapse
+// for the nodata contract.
+//
+// MUST NOT panic on any input.
+func ResolveWildcardCollapse(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, bool) {
+	if rootZone == nil {
+		return nil, false
+	}
+
+	qnameFold := dnsutil.LookupKey(qname)
+	rootQName := RewriteQName(qnameFold, backupOrigin, rootZone.Origin)
+
+	if qtype != dns.TypeCNAME {
+		if wRRs, wFound := rootZone.LookupWildcard(rootQName, qtype); wFound && len(wRRs) > 0 {
+			return synthesizeWildcardRRs(wRRs, qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels), false
+		}
+	}
+
+	wCNAMEs, _ := rootZone.LookupWildcard(rootQName, dns.TypeCNAME)
+	if len(wCNAMEs) == 0 {
+		return nil, false
+	}
+	return collapseBackupResult(rootZone.CollapseCNAME(wCNAMEs, qtype), qname, rootZone, backupOriginalCase, rewriteRDATALabels)
+}
+
+// collapseBackupResult assembles the backup-namespace response for a collapse
+// chase outcome (the single three-outcome assembly shared by the collapse
+// entry points above):
+//
+//   - Records: exactly one dns.Copy per terminal record; the owner (the
+//     backup-namespace on-wire qname) and chain-minimum TTL are written on
+//     the copy, and the RDATA name fields receive the same rewrite RewriteRR
+//     applies (rewriteRDATANames primitive).
+//   - Tail: one synthesized CNAME whose target gets the stored-CNAME-target
+//     treatment — label-anywhere when rewriteRDATALabels, in-bailiwick rule
+//     otherwise.
+//   - NoData: (nil, true).
+func collapseBackupResult(res zone.CollapseResult, qname string, rootZone *zone.Zone, backupOriginalCase string, rewriteRDATALabels bool) ([]dns.RR, bool) {
+	switch res.Outcome {
+	case zone.CollapseRecords:
+		out := make([]dns.RR, len(res.RRs))
+		for i, rr := range res.RRs {
+			cp := dns.Copy(rr)
+			cp.Header().Name = qname
+			cp.Header().Ttl = res.MinTTL
+			rewriteRDATANames(cp, rootZone.Origin, backupOriginalCase, rewriteRDATALabels)
+			out[i] = cp
+		}
+		return out, false
+	case zone.CollapseTail:
+		synth := &dns.CNAME{
+			Hdr:    dns.RR_Header{Name: qname, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: res.MinTTL},
+			Target: res.Target,
+		}
+		rewriteRDATANames(synth, rootZone.Origin, backupOriginalCase, rewriteRDATALabels)
+		return []dns.RR{synth}, false
+	default: // zone.CollapseNoData
+		return nil, true
+	}
 }
 
 // finalizeBackupRRs applies in-zone CNAME following (RFC 1034 §3.6.2) and

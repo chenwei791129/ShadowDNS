@@ -423,6 +423,11 @@ func (s *Server) handleRootQuery(
 
 	records := rootZone.Lookup(qname, qtype)
 	if len(records) > 0 {
+		// Collapse hook point 1: direct CNAME-type query hitting a stored
+		// CNAME (the exact match for every other qtype is untouched).
+		if qtype == dns.TypeCNAME && s.collapseRootCNAME(w, req, qo, rootZone, match, qname, qnameOrig, qtype, records, st) {
+			return
+		}
 		replyWithAnswer(w, req, qo, records)
 		return
 	}
@@ -441,6 +446,10 @@ func (s *Server) handleRootQuery(
 	// CNAME fallback per RFC 1034 §3.6.2.
 	if qtype != dns.TypeCNAME {
 		if cnames := rootZone.Lookup(qname, dns.TypeCNAME); len(cnames) > 0 {
+			// Collapse hook point 2.
+			if s.collapseRootCNAME(w, req, qo, rootZone, match, qname, qnameOrig, qtype, cnames, st) {
+				return
+			}
 			replyWithAnswer(w, req, qo, rootZone.FollowCNAME(nil, cnames, qtype))
 			return
 		}
@@ -450,17 +459,76 @@ func (s *Server) handleRootQuery(
 	// response preserves the client-supplied case.
 	wRRs, wFound := rootZone.LookupWildcard(qname, qtype)
 	if wFound && len(wRRs) > 0 {
+		// Collapse hook point 3: direct CNAME-type query hitting a wildcard
+		// CNAME. The stored wildcard slice is fed raw — the collapse only
+		// consumes RDATA and TTL, so the owner pre-copy would be wasted.
+		if qtype == dns.TypeCNAME && s.collapseRootCNAME(w, req, qo, rootZone, match, qname, qnameOrig, qtype, wRRs, st) {
+			return
+		}
 		replyWithAnswer(w, req, qo, rewriteWildcardOwner(wRRs, qnameOrig))
 		return
 	}
 	if qtype != dns.TypeCNAME {
 		if wCNAMEs, _ := rootZone.LookupWildcard(qname, dns.TypeCNAME); len(wCNAMEs) > 0 {
+			// Collapse hook point 4: same raw-slice rationale as point 3.
+			if s.collapseRootCNAME(w, req, qo, rootZone, match, qname, qnameOrig, qtype, wCNAMEs, st) {
+				return
+			}
 			replyWithAnswer(w, req, qo, rootZone.FollowCNAME(nil, rewriteWildcardOwner(wCNAMEs, qnameOrig), qtype))
 			return
 		}
 	}
 
 	s.negativeReply(w, req, qo, rootZone, nil, match, qname, rootZone.SOA)
+}
+
+// collapseRootCNAME is the single collapse helper behind the four root-path
+// hook points. It reads the per-root flag (only here, never in the query
+// prologue, so flag-off deployments and queries that never hit a CNAME pay
+// zero extra map reads), runs the zone-layer chase, and assembles the
+// three-outcome response. It returns true when it wrote a response; false
+// means collapsing is disabled and the caller continues on the legacy path.
+func (s *Server) collapseRootCNAME(
+	w dns.ResponseWriter,
+	req *dns.Msg,
+	qo queryOpt,
+	rootZone *zone.Zone,
+	match alias.Match,
+	qname, qnameOrig string,
+	qtype uint16,
+	initial []dns.RR,
+	st *ServerState,
+) bool {
+	if !st.CollapseFlags[match.RootZone] {
+		return false
+	}
+	res := rootZone.CollapseCNAME(initial, qtype)
+	switch res.Outcome {
+	case zone.CollapseRecords:
+		// Exactly one dns.Copy per terminal record: owner (on-wire qname
+		// case) and chain-minimum TTL are both written on the copy because
+		// res.RRs is the zone's stored slice.
+		answer := make([]dns.RR, len(res.RRs))
+		for i, rr := range res.RRs {
+			cp := dns.Copy(rr)
+			cp.Header().Name = qnameOrig
+			cp.Header().Ttl = res.MinTTL
+			answer[i] = cp
+		}
+		replyWithAnswer(w, req, qo, answer)
+	case zone.CollapseTail:
+		replyWithAnswer(w, req, qo, []dns.RR{&dns.CNAME{
+			Hdr:    dns.RR_Header{Name: qnameOrig, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: res.MinTTL},
+			Target: res.Target,
+		}})
+	default: // zone.CollapseNoData
+		// Short-circuit straight to the negative reply — never fall through
+		// to wildcard synthesis for the original qname (design D4; the qname
+		// demonstrably exists or is wildcard-covered, so RFC 4592 forbids
+		// synthesizing from another wildcard).
+		s.negativeReply(w, req, qo, rootZone, nil, match, qname, rootZone.SOA)
+	}
+	return true
 }
 
 // handleBackupQuery answers a query from a backup (alias) zone.
@@ -515,9 +583,32 @@ func (s *Server) handleBackupQuery(
 		return
 	}
 
+	// answeredCollapsed triages a collapse entry point's result: a
+	// chain-derived NODATA short-circuits to the negative reply (design D4 —
+	// never fall through to later stages or wildcard synthesis), records are
+	// the answer, and (nil, false) means stage miss.
+	answeredCollapsed := func(rrs []dns.RR, nodata bool) bool {
+		if nodata {
+			s.negativeReply(w, req, qo, rootZone, backupZone, match, qname, backupSOA)
+			return true
+		}
+		if len(rrs) > 0 {
+			replyWithAnswer(w, req, qo, rrs)
+			return true
+		}
+		return false
+	}
+
 	// Exact match (backup override + root exact), without CNAME fallback —
-	// so zone records win over the ephemeral overlay below.
-	if records := alias.ResolveExactNoCNAME(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels); len(records) > 0 {
+	// so zone records win over the ephemeral overlay below. The collapse
+	// flag (keyed by root origin; backup members inherit it unconditionally)
+	// only matters here for direct CNAME-type queries, so other qtypes skip
+	// the map read entirely.
+	if qtype == dns.TypeCNAME && st.CollapseFlags[match.RootZone] {
+		if answeredCollapsed(alias.ResolveExactCollapse(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels)) {
+			return
+		}
+	} else if records := alias.ResolveExactNoCNAME(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels); len(records) > 0 {
 		replyWithAnswer(w, req, qo, records)
 		return
 	}
@@ -530,15 +621,25 @@ func (s *Server) handleBackupQuery(
 		return
 	}
 
-	// CNAME fallback per RFC 1034 §3.6.2.
-	if records := alias.ResolveCNAMEFallback(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels); len(records) > 0 {
-		replyWithAnswer(w, req, qo, records)
-		return
-	}
+	// CNAME fallback per RFC 1034 §3.6.2, then wildcard synthesis.
+	if st.CollapseFlags[match.RootZone] {
+		rrs, nodata := alias.ResolveCNAMEFallbackCollapse(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels)
+		if !nodata && len(rrs) == 0 {
+			rrs, nodata = alias.ResolveWildcardCollapse(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels)
+		}
+		if answeredCollapsed(rrs, nodata) {
+			return
+		}
+	} else {
+		if records := alias.ResolveCNAMEFallback(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels); len(records) > 0 {
+			replyWithAnswer(w, req, qo, records)
+			return
+		}
 
-	if records := alias.ResolveWildcard(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels); len(records) > 0 {
-		replyWithAnswer(w, req, qo, records)
-		return
+		if records := alias.ResolveWildcard(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels); len(records) > 0 {
+			replyWithAnswer(w, req, qo, records)
+			return
+		}
 	}
 
 	s.negativeReply(w, req, qo, rootZone, backupZone, match, qname, backupSOA)

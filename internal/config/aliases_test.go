@@ -8,7 +8,7 @@ import (
 // BuildAliasMap: well-formed root → AliasGroup map is normalized into both
 // the backup→root map and the backup→flag map.
 func TestBuildAliasMap_WellFormed(t *testing.T) {
-	m, flags, err := BuildAliasMap(map[string]AliasGroup{
+	m, flags, _, err := BuildAliasMap(map[string]AliasGroup{
 		"root.com": {
 			Members:            []string{"backup.com", "mirror.com"},
 			RewriteRDATALabels: false,
@@ -36,7 +36,7 @@ func TestBuildAliasMap_WellFormed(t *testing.T) {
 
 // BuildAliasMap: RewriteRDATALabels=true is propagated to every member.
 func TestBuildAliasMap_RewriteFlagPropagated(t *testing.T) {
-	_, flags, err := BuildAliasMap(map[string]AliasGroup{
+	_, flags, _, err := BuildAliasMap(map[string]AliasGroup{
 		"root.com": {
 			Members:            []string{"backup.com", "mirror.com"},
 			RewriteRDATALabels: true,
@@ -55,7 +55,7 @@ func TestBuildAliasMap_RewriteFlagPropagated(t *testing.T) {
 
 // BuildAliasMap: groups with different flag values can coexist.
 func TestBuildAliasMap_MixedFlags(t *testing.T) {
-	_, flags, err := BuildAliasMap(map[string]AliasGroup{
+	_, flags, _, err := BuildAliasMap(map[string]AliasGroup{
 		"root-a.net": {
 			Members:            []string{"alias-a.net"},
 			RewriteRDATALabels: false,
@@ -78,7 +78,7 @@ func TestBuildAliasMap_MixedFlags(t *testing.T) {
 
 // BuildAliasMap: mixed case is normalized to lowercase.
 func TestBuildAliasMap_Normalization(t *testing.T) {
-	m, _, err := BuildAliasMap(map[string]AliasGroup{
+	m, _, _, err := BuildAliasMap(map[string]AliasGroup{
 		"Root.Com": {
 			Members: []string{"Backup.COM"},
 		},
@@ -93,7 +93,7 @@ func TestBuildAliasMap_Normalization(t *testing.T) {
 
 // BuildAliasMap: backup equal to root is rejected.
 func TestBuildAliasMap_SelfAlias(t *testing.T) {
-	_, _, err := BuildAliasMap(map[string]AliasGroup{
+	_, _, _, err := BuildAliasMap(map[string]AliasGroup{
 		"loop.com": {Members: []string{"loop.com"}},
 	})
 	if err == nil {
@@ -106,7 +106,7 @@ func TestBuildAliasMap_SelfAlias(t *testing.T) {
 
 // BuildAliasMap: same backup (after normalization) under two roots is rejected.
 func TestBuildAliasMap_DuplicateBackup(t *testing.T) {
-	_, _, err := BuildAliasMap(map[string]AliasGroup{
+	_, _, _, err := BuildAliasMap(map[string]AliasGroup{
 		"root1.com": {Members: []string{"Backup.com"}},
 		"root2.com": {Members: []string{"backup.com"}},
 	})
@@ -120,7 +120,7 @@ func TestBuildAliasMap_DuplicateBackup(t *testing.T) {
 
 // BuildAliasMap: empty backup label is rejected.
 func TestBuildAliasMap_EmptyMember(t *testing.T) {
-	_, _, err := BuildAliasMap(map[string]AliasGroup{
+	_, _, _, err := BuildAliasMap(map[string]AliasGroup{
 		"root.com": {Members: []string{""}},
 	})
 	if err == nil {
@@ -130,7 +130,7 @@ func TestBuildAliasMap_EmptyMember(t *testing.T) {
 
 // BuildAliasMap: empty root key is rejected.
 func TestBuildAliasMap_EmptyRoot(t *testing.T) {
-	_, _, err := BuildAliasMap(map[string]AliasGroup{
+	_, _, _, err := BuildAliasMap(map[string]AliasGroup{
 		"": {Members: []string{"backup.com"}},
 	})
 	if err == nil {
@@ -140,7 +140,7 @@ func TestBuildAliasMap_EmptyRoot(t *testing.T) {
 
 // BuildAliasMap: empty input yields empty maps with no error.
 func TestBuildAliasMap_EmptyMap(t *testing.T) {
-	m, flags, err := BuildAliasMap(nil)
+	m, flags, _, err := BuildAliasMap(nil)
 	if err != nil {
 		t.Fatalf("BuildAliasMap(nil): %v", err)
 	}
@@ -161,7 +161,7 @@ func TestBuildAliasMap_MembersOriginalCasePreserved(t *testing.T) {
 			Members: []string{"Example.Com", "MIRROR.com"},
 		},
 	}
-	if _, _, err := BuildAliasMap(groups); err != nil {
+	if _, _, _, err := BuildAliasMap(groups); err != nil {
 		t.Fatalf("BuildAliasMap: %v", err)
 	}
 	got := groups["Root.Com"].Members
@@ -181,7 +181,7 @@ func TestBuildAliasMap_MembersOriginalCasePreserved(t *testing.T) {
 // names in config. Both keys and values in the returned map are LookupKey
 // folds so callers index with dnsutil.LookupKey(qname).
 func TestBuildAliasMap_LookupViaLowercaseFold(t *testing.T) {
-	m, flags, err := BuildAliasMap(map[string]AliasGroup{
+	m, flags, _, err := BuildAliasMap(map[string]AliasGroup{
 		"Root.Com": {
 			Members:            []string{"Example.Com"},
 			RewriteRDATALabels: true,
@@ -200,7 +200,7 @@ func TestBuildAliasMap_LookupViaLowercaseFold(t *testing.T) {
 
 // BuildAliasMap: a root whose Members list is empty yields empty maps and no error.
 func TestBuildAliasMap_EmptyMembers(t *testing.T) {
-	m, flags, err := BuildAliasMap(map[string]AliasGroup{
+	m, flags, _, err := BuildAliasMap(map[string]AliasGroup{
 		"root.com": {Members: nil, RewriteRDATALabels: true},
 	})
 	if err != nil {
@@ -211,5 +211,61 @@ func TestBuildAliasMap_EmptyMembers(t *testing.T) {
 	}
 	if len(flags) != 0 {
 		t.Errorf("len(flags) = %d, want 0", len(flags))
+	}
+}
+
+// BuildAliasMap: the collapse lookup is keyed by the root origin's
+// lookup-fold FQDN (mixed-case root key folds to lowercase + trailing dot)
+// and carries the group's CollapseCNAMEChain setting.
+func TestBuildAliasMap_CollapseFlagKeyedByRootFold(t *testing.T) {
+	_, _, collapse, err := BuildAliasMap(map[string]AliasGroup{
+		"Root.COM": {
+			Members:            []string{"backup.com"},
+			CollapseCNAMEChain: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildAliasMap: %v", err)
+	}
+	if !collapse["root.com."] {
+		t.Errorf("collapse[root.com.] = false, want true")
+	}
+	if collapse["backup.com."] {
+		t.Errorf("collapse[backup.com.] = true, want false (lookup is keyed by root, not backup)")
+	}
+}
+
+// BuildAliasMap: a group that does not enable collapse contributes no entry
+// to the collapse lookup — a missing key means disabled.
+func TestBuildAliasMap_CollapseFlagAbsentMeansNoEntry(t *testing.T) {
+	_, _, collapse, err := BuildAliasMap(map[string]AliasGroup{
+		"root.com": {Members: []string{"backup.com"}},
+	})
+	if err != nil {
+		t.Fatalf("BuildAliasMap: %v", err)
+	}
+	if _, ok := collapse["root.com."]; ok {
+		t.Errorf("collapse[root.com.] entry exists, want no entry when the flag is not set")
+	}
+	if len(collapse) != 0 {
+		t.Errorf("len(collapse) = %d, want 0", len(collapse))
+	}
+}
+
+// BuildAliasMap: groups with different collapse settings coexist — only the
+// enabled root gains an entry.
+func TestBuildAliasMap_CollapseFlagMixedGroups(t *testing.T) {
+	_, _, collapse, err := BuildAliasMap(map[string]AliasGroup{
+		"root-a.net": {Members: []string{"alias-a.net"}, CollapseCNAMEChain: true},
+		"root-b.net": {Members: []string{"alias-b.net"}},
+	})
+	if err != nil {
+		t.Fatalf("BuildAliasMap: %v", err)
+	}
+	if !collapse["root-a.net."] {
+		t.Errorf("collapse[root-a.net.] = false, want true")
+	}
+	if _, ok := collapse["root-b.net."]; ok {
+		t.Errorf("collapse[root-b.net.] entry exists, want no entry")
 	}
 }

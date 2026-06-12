@@ -14,6 +14,7 @@
 # Each value MUST be an object with:
 #   members: <list of backup-domain strings, required, non-empty>
 #   rewrite_rdata_labels: <bool, optional, default false>
+#   collapse_cname_chain: <bool, optional, default false>
 #
 # rewrite_rdata_labels:
 #   When true, RDATA name fields (CNAME target, NS, MX, SRV target, PTR,
@@ -24,6 +25,17 @@
 #   label (e.g. "host.<root>.cdn.example.net."). When false (default),
 #   only the in-bailiwick suffix is rewritten — matching the conservative
 #   DNS standard behavior.
+#
+# collapse_cname_chain:
+#   When true, responses for this root zone and all of its backup members
+#   consume in-zone CNAME chains instead of emitting them: a chain ending
+#   at records of the queried type returns only those final records
+#   (owner = query name, TTL = chain minimum); a chain leaving the zone
+#   returns a single synthesized CNAME pointing at the first external
+#   target; a chain ending without the queried type returns NODATA.
+#   Intermediate chain names (internal load balancers, pools) never appear
+#   in answers. Zone transfers (AXFR) are not affected. When false
+#   (default), full chains are emitted exactly as BIND does.
 #
 # Rules:
 #   - A backup domain may only appear once across all roots (duplicates rejected).
@@ -38,11 +50,14 @@ aliases:
       - backup-example.com
       - mirror-example.com
 
-  # Explicit per-group flag for templated-CNAME (CDN-style) aliases.
+  # Explicit per-group flags: label-anywhere RDATA rewrite for
+  # templated-CNAME (CDN-style) aliases, and CNAME chain collapsing to hide
+  # in-zone intermediate names from responses.
   another-root.org:
     members:
       - backup-another.org
     rewrite_rdata_labels: true
+    # collapse_cname_chain: true
 
   service.example.net:
     members:

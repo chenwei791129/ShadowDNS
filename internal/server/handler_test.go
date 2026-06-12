@@ -474,6 +474,281 @@ func TestBackupAlias_WildcardMixedCaseQuery_OwnerPreservesCase(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// CNAME chain collapsing — root query path (design D4/D5/D6)
+// ---------------------------------------------------------------------------
+
+func makeAAAARecord(name, ip string, ttl uint32) *dns.AAAA {
+	return &dns.AAAA{
+		Hdr:  dns.RR_Header{Name: name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl},
+		AAAA: net.ParseIP(ip),
+	}
+}
+
+// newCollapseRootServer starts a server whose single root zone example.com.
+// holds rrs and has collapse_cname_chain enabled.
+func newCollapseRootServer(t *testing.T, rrs ...dns.RR) (string, func()) {
+	t.Helper()
+	rootZ := buildRootZone("example.com.", rrs...)
+	srv := NewServer(ServerState{
+		Matcher:       makeAnyMatcher("default"),
+		ZoneOrigins:   map[string][]string{"default": {"example.com."}},
+		RootZones:     map[string]map[string]*zone.Zone{"default": {"example.com.": rootZ}},
+		BackupZones:   map[string]map[string]*zone.Zone{},
+		Aliases:       config.AliasMap{},
+		CollapseFlags: config.CollapseFlags{"example.com.": true},
+	}, nil)
+	udpAddr, _, cancel := startTestServer(t, srv)
+	return udpAddr, cancel
+}
+
+// collapseChainRecords returns the spec's canonical multi-hop chain:
+// www 300 CNAME lb, lb 60 CNAME pool-a, pool-a 600 A 192.0.2.10.
+func collapseChainRecords() []dns.RR {
+	return []dns.RR{
+		makeCNAMERecord("www.example.com.", "lb.example.com.", 300),
+		makeCNAMERecord("lb.example.com.", "pool-a.example.com.", 60),
+		makeARecord("pool-a.example.com.", "192.0.2.10", 600),
+	}
+}
+
+// (a) A multi-hop in-zone chain collapses to exactly the terminal record:
+// owner echoes the on-wire qname, TTL is the chain minimum, no CNAME appears.
+func TestRootCollapse_MultiHopChainToSingleRecord(t *testing.T) {
+	const queryOnWire = "WwW.ExAmPle.Com."
+	udpAddr, cancel := newCollapseRootServer(t, collapseChainRecords()...)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, queryOnWire, dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected exactly 1 answer, got %d: %v", len(resp.Answer), resp.Answer)
+	}
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("Answer[0]: got %T, want *dns.A", resp.Answer[0])
+	}
+	if got := a.Hdr.Name; got != queryOnWire {
+		t.Errorf("owner = %q, want on-wire qname %q", got, queryOnWire)
+	}
+	if a.Hdr.Ttl != 60 {
+		t.Errorf("TTL = %d, want 60 (chain minimum of 300,60,600)", a.Hdr.Ttl)
+	}
+	if a.A.String() != "192.0.2.10" {
+		t.Errorf("A = %s, want 192.0.2.10", a.A)
+	}
+}
+
+// (b) An out-of-zone tail collapses to one synthesized CNAME; the consumed
+// intermediate names appear nowhere in the response.
+func TestRootCollapse_OutOfZoneTailSynthesizesCNAME(t *testing.T) {
+	udpAddr, cancel := newCollapseRootServer(t,
+		makeCNAMERecord("www.example.com.", "lb.example.com.", 300),
+		makeCNAMERecord("lb.example.com.", "pool-a.example.com.", 60),
+		makeCNAMERecord("pool-a.example.com.", "cdn.external-vendor.example.org.", 600),
+	)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "www.example.com.", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected exactly 1 answer, got %d: %v", len(resp.Answer), resp.Answer)
+	}
+	cn, ok := resp.Answer[0].(*dns.CNAME)
+	if !ok {
+		t.Fatalf("Answer[0]: got %T, want *dns.CNAME", resp.Answer[0])
+	}
+	if cn.Hdr.Name != "www.example.com." {
+		t.Errorf("owner = %q, want www.example.com.", cn.Hdr.Name)
+	}
+	if cn.Target != "cdn.external-vendor.example.org." {
+		t.Errorf("target = %q, want cdn.external-vendor.example.org.", cn.Target)
+	}
+	if cn.Hdr.Ttl != 60 {
+		t.Errorf("TTL = %d, want 60 (min of 300,60,600)", cn.Hdr.Ttl)
+	}
+	wire := resp.String()
+	for _, hidden := range []string{"lb.example.com.", "pool-a.example.com."} {
+		if strings.Contains(wire, hidden) {
+			t.Errorf("intermediate name %q leaked into the response:\n%s", hidden, wire)
+		}
+	}
+}
+
+// (c) AAAA over an A-only chain tail is NODATA (NOERROR + SOA in authority),
+// and a wildcard covering the original qname is NOT consulted — the collapse
+// NODATA short-circuits instead of falling through to wildcard synthesis
+// (spec scenario "Collapse NODATA does not trigger wildcard synthesis").
+func TestRootCollapse_NoDataShortCircuitsWildcardSynthesis(t *testing.T) {
+	udpAddr, cancel := newCollapseRootServer(t,
+		makeCNAMERecord("www.app.example.com.", "pool-a.example.com.", 300),
+		makeARecord("pool-a.example.com.", "192.0.2.10", 600),
+		makeAAAARecord("*.app.example.com.", "2001:db8::1", 300),
+	)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "www.app.example.com.", dns.TypeAAAA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR (NODATA), got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 0 {
+		t.Fatalf("expected zero answers (wildcard must not be consulted), got %d: %v", len(resp.Answer), resp.Answer)
+	}
+	if len(resp.Ns) != 1 {
+		t.Fatalf("expected SOA in authority section, got %d records", len(resp.Ns))
+	}
+	if _, ok := resp.Ns[0].(*dns.SOA); !ok {
+		t.Errorf("authority record: got %T, want *dns.SOA", resp.Ns[0])
+	}
+}
+
+// Plain AAAA NODATA over the canonical chain (implementation contract row 3).
+func TestRootCollapse_AAAAOverAOnlyTailIsNoData(t *testing.T) {
+	udpAddr, cancel := newCollapseRootServer(t, collapseChainRecords()...)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "www.example.com.", dns.TypeAAAA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR (NODATA), got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 0 {
+		t.Fatalf("expected zero answers, got %d: %v", len(resp.Answer), resp.Answer)
+	}
+	if len(resp.Ns) != 1 {
+		t.Fatalf("expected SOA in authority section, got %d records", len(resp.Ns))
+	}
+}
+
+// (d) Direct CNAME queries follow the unified rule: an in-zone chain ends
+// NODATA; an out-of-zone tail yields the synthesized CNAME.
+func TestRootCollapse_DirectCNAMEQuery(t *testing.T) {
+	t.Run("in-zone chain is NODATA", func(t *testing.T) {
+		udpAddr, cancel := newCollapseRootServer(t, collapseChainRecords()...)
+		defer cancel()
+
+		resp := query(t, "udp", udpAddr, "www.example.com.", dns.TypeCNAME)
+		if resp.Rcode != dns.RcodeSuccess {
+			t.Fatalf("expected NOERROR (NODATA), got %s", dns.RcodeToString[resp.Rcode])
+		}
+		if len(resp.Answer) != 0 {
+			t.Fatalf("expected zero answers (stored CNAME must not leak), got %d: %v", len(resp.Answer), resp.Answer)
+		}
+		if len(resp.Ns) != 1 {
+			t.Fatalf("expected SOA in authority section, got %d records", len(resp.Ns))
+		}
+	})
+
+	t.Run("out-of-zone tail synthesizes CNAME", func(t *testing.T) {
+		udpAddr, cancel := newCollapseRootServer(t,
+			makeCNAMERecord("www.example.com.", "lb.example.com.", 300),
+			makeCNAMERecord("lb.example.com.", "pool-a.example.com.", 60),
+			makeCNAMERecord("pool-a.example.com.", "cdn.external-vendor.example.org.", 600),
+		)
+		defer cancel()
+
+		resp := query(t, "udp", udpAddr, "www.example.com.", dns.TypeCNAME)
+		if resp.Rcode != dns.RcodeSuccess {
+			t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+		}
+		if len(resp.Answer) != 1 {
+			t.Fatalf("expected exactly 1 answer, got %d: %v", len(resp.Answer), resp.Answer)
+		}
+		cn, ok := resp.Answer[0].(*dns.CNAME)
+		if !ok {
+			t.Fatalf("Answer[0]: got %T, want *dns.CNAME", resp.Answer[0])
+		}
+		if cn.Target != "cdn.external-vendor.example.org." {
+			t.Errorf("target = %q, want cdn.external-vendor.example.org.", cn.Target)
+		}
+		if cn.Hdr.Ttl != 60 {
+			t.Errorf("TTL = %d, want 60", cn.Hdr.Ttl)
+		}
+	})
+}
+
+// (e) Intermediate chain names stay directly queryable and their responses
+// collapse under the same rule, with owner echoing the on-wire qname case.
+func TestRootCollapse_IntermediateNameAlsoCollapses(t *testing.T) {
+	const queryOnWire = "LB.example.COM."
+	udpAddr, cancel := newCollapseRootServer(t, collapseChainRecords()...)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, queryOnWire, dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected exactly 1 answer, got %d: %v", len(resp.Answer), resp.Answer)
+	}
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("Answer[0]: got %T, want *dns.A", resp.Answer[0])
+	}
+	if got := a.Hdr.Name; got != queryOnWire {
+		t.Errorf("owner = %q, want on-wire qname %q", got, queryOnWire)
+	}
+	if a.Hdr.Ttl != 60 {
+		t.Errorf("TTL = %d, want 60 (min of 60,600)", a.Hdr.Ttl)
+	}
+}
+
+// (f) A chain starting from a wildcard-synthesized CNAME collapses the same
+// way: single terminal record, owner = on-wire qname, chain-minimum TTL.
+func TestRootCollapse_WildcardCNAMEStart(t *testing.T) {
+	const queryOnWire = "AnYthing.example.com."
+	udpAddr, cancel := newCollapseRootServer(t,
+		makeCNAMERecord("*.example.com.", "pool-a.example.com.", 300),
+		makeARecord("pool-a.example.com.", "192.0.2.10", 600),
+	)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, queryOnWire, dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected exactly 1 answer, got %d: %v", len(resp.Answer), resp.Answer)
+	}
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("Answer[0]: got %T, want *dns.A", resp.Answer[0])
+	}
+	if got := a.Hdr.Name; got != queryOnWire {
+		t.Errorf("owner = %q, want on-wire qname %q", got, queryOnWire)
+	}
+	if a.Hdr.Ttl != 300 {
+		t.Errorf("TTL = %d, want 300 (min of 300,600)", a.Hdr.Ttl)
+	}
+}
+
+// (f') A direct CNAME query whose chain starts from a wildcard CNAME follows
+// the unified rule too (hook point 3: wildcard exact with qtype=CNAME): an
+// in-zone walk-to-end is NODATA, never the stored wildcard CNAME.
+func TestRootCollapse_WildcardDirectCNAMEQuery(t *testing.T) {
+	// The wildcard sits one label down so it does not also cover the chain
+	// tail (a wildcard covering its own tail loops and yields Tail per D3).
+	udpAddr, cancel := newCollapseRootServer(t,
+		makeCNAMERecord("*.w.example.com.", "pool-a.example.com.", 300),
+		makeARecord("pool-a.example.com.", "192.0.2.10", 600),
+	)
+	defer cancel()
+
+	resp := query(t, "udp", udpAddr, "foo.w.example.com.", dns.TypeCNAME)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR (NODATA), got %s", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 0 {
+		t.Fatalf("expected zero answers (wildcard CNAME must not leak), got %d: %v", len(resp.Answer), resp.Answer)
+	}
+	if len(resp.Ns) != 1 {
+		t.Fatalf("expected SOA in authority section, got %d records", len(resp.Ns))
+	}
+}
+
 // BenchmarkReplyWithAnswer_N48_Compressed records the Pack cost and wire size
 // for 48 shared-owner TXT RRs with DNS name compression enabled.
 func BenchmarkReplyWithAnswer_N48_Compressed(b *testing.B) {

@@ -33,6 +33,15 @@ type ServerState struct {
 	// label-anywhere rule. A missing key (or a nil map) is equivalent to
 	// false (in-bailiwick suffix-only rewrite).
 	AliasFlags config.AliasFlags
+	// CollapseFlags is keyed by root origin and reports whether CNAME chains
+	// in that root zone (and all of its backup zones, which inherit the root
+	// setting) are collapsed in responses. A missing key (or a nil map) is
+	// equivalent to false (emit chains unchanged). Handlers consult it via
+	// match.RootZone only at the collapse decision points (root path: inside
+	// the four hook points with a CNAME already in hand; backup path: at the
+	// CNAME-relevant stage boundaries), never in the root-path query
+	// prologue — the exact-match hot path stays free of new map reads.
+	CollapseFlags config.CollapseFlags
 	// BackupOriginalCase maps the lookup-fold backup origin (lowercase, with
 	// trailing dot) to the operator-authored original case that the alias
 	// rewrite path emits on the wire. A missing key (or a nil map) is
@@ -96,6 +105,9 @@ func (s *ServerState) sanitize() {
 	}
 	if s.AliasFlags == nil {
 		s.AliasFlags = make(config.AliasFlags)
+	}
+	if s.CollapseFlags == nil {
+		s.CollapseFlags = make(config.CollapseFlags)
 	}
 	if s.BackupOriginalCase == nil {
 		s.BackupOriginalCase = make(map[string]string)
