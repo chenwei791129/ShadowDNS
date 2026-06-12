@@ -19,6 +19,25 @@
 - `nfpm.yaml` — nfpm configuration for `.deb` packaging
 - `mkdocs.yml` + `docs/` — Bilingual MkDocs Material manual site via mkdocs-static-i18n (suffix structure): `page.md` is English (default, served at site root), `page.zh.md` is Traditional Chinese (served under `/zh/`). Every new page needs BOTH language files, an English `nav:` entry in `mkdocs.yml`, and a matching `nav_translations` entry under the i18n plugin's `zh` language. Published to GitHub Pages at https://chenwei791129.github.io/ShadowDNS/ by `.github/workflows/docs.yml` on push to main touching `docs/**` or `mkdocs.yml` (Pages source: GitHub Actions).
 
+# Manual Site Maintenance
+
+**Every change that alters user-observable behavior MUST be reviewed against the MkDocs manual before it is considered complete** — fire this review when a spectra change finishes implementation (alongside the CLAUDE.md review that runs before commit), and for any ad-hoc change touching the surfaces below.
+
+Surfaces that require a manual update when touched:
+
+- New or changed `shadowdns.yaml` fields → `docs/configuration/shadowdns-yaml.md` (field tables + example)
+- New or changed CLI flags → `docs/reference/cli.md`
+- New user-facing feature or changed query/response behavior → a Feature Guide under `docs/guides/` (new page or update to the relevant existing one)
+- Feature availability changes → the comparison table in `docs/index.md` and the README features/planned lists
+- Operational behavior (reload, logging, packaging, migration) → the relevant page under Operations
+
+Rules:
+
+- Internal-only refactors with no observable behavior change need no manual update — but state that conclusion explicitly instead of skipping the review silently.
+- Bilingual invariant: never update one language file without the other; new pages need both files plus the two `mkdocs.yml` entries (see the structure note above). In `.zh.md` files, link to the base `.md` path (the i18n plugin localizes it) and use the target page's Chinese heading anchors.
+- Verify with `make docs-build` (strict — broken links and nav mismatches fail the build) before committing.
+- Docs examples are subject to the same sanitization rules as all committed files: RFC 2606 domains and RFC 5737 IPs only.
+
 <!-- SPECTRA:START v1.0.2 -->
 
 # Spectra Instructions
