@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://chenwei791129.github.io/ShadowDNS/sitemap.xml
