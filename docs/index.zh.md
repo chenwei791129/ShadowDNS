@@ -1,7 +1,9 @@
 # ShadowDNS
 
 <p align="center">
-  <img src="assets/logo.png" alt="ShadowDNS Logo" width="480">
+  <!-- Raw HTML src is not rewritten by the i18n plugin; this page is served
+       under /zh/, so step up one level to reach the shared root assets/. -->
+  <img src="../assets/logo.png" alt="ShadowDNS Logo" width="480">
 </p>
 
 ShadowDNS 是一套權威 DNS 伺服器（authoritative DNS server），核心特色是 **zone aliasing**：以極低的記憶體成本服務大量備援網域（backup domain），同時對 client、BIND slave 與既有管理系統保持完全透明的相容性。
