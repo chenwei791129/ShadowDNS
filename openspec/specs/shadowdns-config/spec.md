@@ -10,7 +10,7 @@ TBD - created by archiving change 'ephemeral-txt-api'. Update Purpose after arch
 
 The shadowdns-config loader SHALL parse a single YAML file specified by the `--config` CLI flag. The file is a single YAML document containing the following top-level sections:
 
-- `aliases` (optional): Mapping from each root domain to an object with `members` (non-empty list of backup domain strings) and `rewrite_rdata_labels` (bool, optional, default `false`). When the key is absent or the map is empty, no aliases are loaded.
+- `aliases` (optional): Mapping from each root domain to an object with `members` (non-empty list of backup domain strings), `rewrite_rdata_labels` (bool, optional, default `false`), and `collapse_cname_chain` (bool, optional, default `false`). When the key is absent or the map is empty, no aliases are loaded.
 - `ephemeral_api` (object, optional): Configuration for the ephemeral TXT API server. When the key is absent, the API server is not started.
 
 The loader SHALL use strict decoding: unknown top-level keys or unknown fields inside recognized sections SHALL cause a load error that identifies the offending key. A value under `aliases` whose YAML node type is not a mapping with the documented fields (for example, a sequence of strings such as `root.com: [backup.com]`, or a bare string such as `backup.com: root.com`) SHALL be rejected by the YAML decoder as a type mismatch.
@@ -29,6 +29,11 @@ The loader SHALL use strict decoding: unknown top-level keys or unknown fields i
 
 - **WHEN** the config file contains `aliases: {root.com: {members: [backup.com]}}`
 - **THEN** the loader SHALL return a config where `backup.com.` maps to root `root.com.` with `rewrite_rdata_labels: false`
+
+#### Scenario: Aliases object form omits collapse_cname_chain
+
+- **WHEN** the config file contains `aliases: {root.com: {members: [backup.com]}}`
+- **THEN** the loader SHALL return a config whose collapse lookup reports `false` for root `root.com.`
 
 #### Scenario: Multiple roots with mapping form
 
@@ -58,7 +63,7 @@ The loader SHALL use strict decoding: unknown top-level keys or unknown fields i
 #### Scenario: Aliases object form with unknown field is rejected
 
 - **WHEN** the config file contains `aliases: {root.com: {members: [backup.com], unknown_flag: true}}`
-- **THEN** the loader SHALL return an error that names the unknown field `unknown_flag`
+- **THEN** the loader SHALL return an error that names the unknown field `unknown_flag` and lists the accepted fields `members`, `rewrite_rdata_labels`, and `collapse_cname_chain`
 
 #### Scenario: Aliases object form missing members is rejected
 
@@ -82,29 +87,48 @@ The loader SHALL use strict decoding: unknown top-level keys or unknown fields i
 
 
 <!-- @trace
-source: unify-alias-yaml-form
-updated: 2026-05-05
+source: add-cname-chain-collapsing
+updated: 2026-06-12
 code:
   - packaging/shadowdns.yaml.example
-  - testdata/integration/shadowdns.yaml
   - internal/shadowdnscfg/config.go
+  - internal/server/server.go
+  - internal/config/aliases.go
+  - internal/zone/collapse.go
+  - internal/server/build.go
+  - cmd/shadowdns/main.go
+  - internal/alias/rewrite.go
+  - internal/alias/override.go
+  - internal/server/handler.go
 tests:
+  - test/integration/axfr_test.go
+  - test/integration/listenon_test.go
+  - test/integration/reload_diff_test.go
+  - internal/zone/collapse_test.go
   - internal/shadowdnscfg/config_test.go
+  - internal/config/aliases_test.go
+  - test/integration/cname_collapse_test.go
+  - internal/alias/override_test.go
+  - cmd/shadowdns/main_test.go
+  - test/integration/helpers_test.go
   - test/integration/case_preservation_test.go
-  - cmd/shadowdns/main_ephemeral_test.go
-  - cmd/shadowdns/prune_backup_test.go
+  - internal/server/handler_test.go
+  - internal/server/build_test.go
+  - internal/server/server_test.go
 -->
 
 ---
 ### Requirement: Validate aliases section
 
-The loader SHALL validate the `aliases` section after YAML decoding. The loader SHALL flatten the `map[root]{members, rewrite_rdata_labels}` structure into a normalized backup-to-root map; during flattening the loader SHALL reject the following conditions:
+The loader SHALL validate the `aliases` section after YAML decoding. The loader SHALL flatten the `map[root]{members, rewrite_rdata_labels, collapse_cname_chain}` structure into a normalized backup-to-root map; during flattening the loader SHALL reject the following conditions:
 
 - The same backup domain (after normalization) appears under two different root keys.
 - A backup domain is listed under a root key whose value (after normalization) equals that backup domain (self-alias).
 - Any backup entry or root key is empty or contains whitespace.
 
 A root key whose `members` list is omitted entirely from a mapping value SHALL be rejected at YAML decoding time (covered by the schema requirement above). A root key with a present but empty `members` list SHALL also be rejected at decoding time.
+
+In addition to the backup-to-root map, flattening SHALL emit a collapse lookup keyed by the normalized root origin (lookup-fold FQDN with trailing dot) whose value is the group's `collapse_cname_chain` setting. The query-time interpretation of a missing entry (treated as disabled) is normatively owned by the `cname-chain-collapsing` capability; this loader requirement covers only the lookup's construction.
 
 #### Scenario: Duplicate backup under different roots fails
 
@@ -121,19 +145,41 @@ A root key whose `members` list is omitted entirely from a mapping value SHALL b
 - **WHEN** the `aliases` section contains `root.com: {members: [backup.com, mirror.com, shadow.com]}`
 - **THEN** the loader SHALL return an alias map with three entries all pointing to `root.com.`
 
+#### Scenario: Collapse lookup is keyed by normalized root origin
+
+- **WHEN** the `aliases` section contains `Root.COM: {members: [backup.com], collapse_cname_chain: true}` (mixed-case root key)
+- **THEN** the collapse lookup SHALL contain the entry `root.com. -> true`
+
 
 <!-- @trace
-source: unify-alias-yaml-form
-updated: 2026-05-05
+source: add-cname-chain-collapsing
+updated: 2026-06-12
 code:
   - packaging/shadowdns.yaml.example
-  - testdata/integration/shadowdns.yaml
   - internal/shadowdnscfg/config.go
+  - internal/server/server.go
+  - internal/config/aliases.go
+  - internal/zone/collapse.go
+  - internal/server/build.go
+  - cmd/shadowdns/main.go
+  - internal/alias/rewrite.go
+  - internal/alias/override.go
+  - internal/server/handler.go
 tests:
+  - test/integration/axfr_test.go
+  - test/integration/listenon_test.go
+  - test/integration/reload_diff_test.go
+  - internal/zone/collapse_test.go
   - internal/shadowdnscfg/config_test.go
+  - internal/config/aliases_test.go
+  - test/integration/cname_collapse_test.go
+  - internal/alias/override_test.go
+  - cmd/shadowdns/main_test.go
+  - test/integration/helpers_test.go
   - test/integration/case_preservation_test.go
-  - cmd/shadowdns/main_ephemeral_test.go
-  - cmd/shadowdns/prune_backup_test.go
+  - internal/server/handler_test.go
+  - internal/server/build_test.go
+  - internal/server/server_test.go
 -->
 
 ---
