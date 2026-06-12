@@ -1,5 +1,6 @@
 # Project Build Commands
 
+- `make help` — List all annotated targets with colored output. Descriptions come from the trailing `## ...` comment on each target line, so new targets with a `##` comment appear automatically.
 - `make build` — Build the ShadowDNS binary for the host platform at `bin/shadowdns-$(go env GOOS)-$(go env GOARCH)` (e.g., `bin/shadowdns-darwin-arm64`). Intended for local dev + unit tests on macOS/Linux.
 - `make build-linux` — Cross-compile a linux/amd64 binary (`bin/shadowdns-linux-amd64`). Required input for `make deb`; on linux/amd64 hosts produces the same artefact as `make build`.
 - `make test` — Run unit tests with the race detector enabled (`go test -race -count=1`)
