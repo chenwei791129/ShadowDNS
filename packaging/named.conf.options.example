@@ -1,0 +1,100 @@
+// named.conf.options.example — ShadowDNS global options
+//
+// Included by named.conf. Holds the options{} block (and the optional
+// logging{} block). See named.conf.example for the overall layout.
+//
+// IP addresses in this file use the documentation ranges defined by RFC 5737
+// (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) and RFC 3849
+// (2001:db8::/32). Replace them with your real addresses before deploying.
+
+// ---------------------------------------------------------------------------
+// Global options
+// ---------------------------------------------------------------------------
+options {
+    // Working directory for all relative paths used in zone "file" directives.
+    // "/etc/bind" is the Debian/Ubuntu-idiomatic location for authoritative
+    // zone files alongside the configuration; change it to wherever you store
+    // your zone data files.
+    directory "/etc/bind";
+
+    // Path to the directory containing GeoLite2-Country.mmdb and
+    // GeoLite2-ASN.mmdb.  Download these from MaxMind and place them here.
+    // ShadowDNS will refuse to start if either .mmdb file is missing.
+    geoip-directory "/usr/local/share/GeoIP/";
+
+    // PID file used by `shadowdns reload` to locate the running server and
+    // send it SIGHUP. If this option is omitted, no PID file is written and
+    // the `reload` subcommand will be unavailable.
+    //
+    // The parent directory must exist and be writable by the shadowdns
+    // service user. The bundled systemd unit provisions /var/run/shadowdns
+    // automatically via `RuntimeDirectory=shadowdns`, so the default path
+    // below works out of the box when running under systemd.
+    pid-file "/var/run/shadowdns/pid";
+
+    // Accept DNS queries on all IPv4 interfaces.
+    // Replace "any" with a specific address to bind to a single interface,
+    // e.g.:  listen-on { 192.0.2.1; };
+    listen-on { any; };
+
+    // Disable IPv6 listening.  Change to "any" if you need dual-stack.
+    listen-on-v6 { none; };
+
+    // ShadowDNS is an authoritative-only server; do not forward queries.
+    recursion no;
+
+    // Suppress unnecessary authority/additional sections in responses.
+    minimal-responses yes;
+
+    // Hide the BIND version string from CHAOS TXT queries.
+    version none;
+
+    // Hide the server hostname from CHAOS TXT queries.
+    hostname none;
+
+    // Secondaries that are allowed to pull zone data via AXFR.
+    // Add one line per secondary nameserver.  Use RFC 5737 addresses here;
+    // replace with your real secondary IPs in production.
+    allow-transfer {
+        192.0.2.10;   // secondary ns1
+        192.0.2.11;   // secondary ns2
+    };
+
+    // Send NOTIFY messages to secondaries on startup and after reload.
+    // Set to "no" to disable NOTIFY dispatch; set to "yes" (the default)
+    // to enable it. The `--no-notify` CLI flag overrides this directive
+    // for the entire process lifetime (sticky across SIGHUP).
+    //
+    // Precedence: explicit `--no-notify` flag > this `notify` directive > default (yes)
+    notify yes;
+};
+
+// ---------------------------------------------------------------------------
+// Query logging (optional)
+//
+// ShadowDNS understands the BIND9 logging{} block for the "queries" category
+// and writes per-query log lines in BIND's exact format, so existing log
+// parsers keep working unchanged.
+//
+// Notes:
+//   - Only a file channel wired to "category queries" is honored; other
+//     categories and channel types are ignored.
+//   - BIND's built-in rotation parameters (versions/size) are NOT implemented;
+//     if present they are ignored with a startup warning. Use logrotate with
+//     a postrotate hook that sends SIGUSR1 to reopen the file instead.
+//   - Settings take effect at startup only; SIGHUP reload does not re-apply
+//     logging{} changes.
+//   - Keep the log path under /var/log/shadowdns/ when running under the
+//     bundled systemd unit (ProtectSystem=strict only whitelists that
+//     directory), or extend ReadWritePaths= via a systemd override.
+// ---------------------------------------------------------------------------
+logging {
+    channel queries_log {
+        file "/var/log/shadowdns/queries.log";
+        severity info;
+        print-time yes;
+        print-category yes;
+        print-severity yes;
+    };
+    category queries { queries_log; };
+};

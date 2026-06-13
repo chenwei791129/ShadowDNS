@@ -39,6 +39,12 @@ contents:
   - src: ./packaging/named.conf.example
     dst: /etc/shadowdns/named.conf.example
 
+  - src: ./packaging/named.conf.options.example
+    dst: /etc/shadowdns/named.conf.options.example
+
+  - src: ./packaging/named.conf.local.example
+    dst: /etc/shadowdns/named.conf.local.example
+
   - src: ./packaging/shadowdns.yaml.example
     dst: /etc/shadowdns/shadowdns.yaml.example
 
