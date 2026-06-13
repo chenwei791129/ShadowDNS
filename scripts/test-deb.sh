@@ -133,6 +133,12 @@ echo "  [OK] logrotate -f succeeds without running daemon (postrotate tolerates 
 $CTR exec "$CONTAINER_NAME" test -f /etc/shadowdns/named.conf.example
 echo "  [OK] /etc/shadowdns/named.conf.example exists"
 
+$CTR exec "$CONTAINER_NAME" test -f /etc/shadowdns/named.conf.options.example
+echo "  [OK] /etc/shadowdns/named.conf.options.example exists"
+
+$CTR exec "$CONTAINER_NAME" test -f /etc/shadowdns/named.conf.local.example
+echo "  [OK] /etc/shadowdns/named.conf.local.example exists"
+
 $CTR exec "$CONTAINER_NAME" test -f /etc/shadowdns/shadowdns.yaml.example
 echo "  [OK] /etc/shadowdns/shadowdns.yaml.example exists"
 
@@ -172,9 +178,11 @@ done
 echo "--- Dry-run test ---"
 $CTR exec "$CONTAINER_NAME" sh -c '
     cp /tmp/testdata/named.conf /etc/shadowdns/named.conf &&
+    cp /tmp/testdata/named.conf.options /etc/shadowdns/named.conf.options &&
+    cp /tmp/testdata/named.conf.local /etc/shadowdns/named.conf.local &&
     cp /tmp/testdata/shadowdns.yaml /etc/shadowdns/shadowdns.yaml &&
-    cp /tmp/testdata/master.zones /etc/shadowdns/master.zones &&
-    cp -r /tmp/testdata/master /etc/shadowdns/master &&
+    cp /tmp/testdata/db.* /etc/shadowdns/ &&
+    cp -r /tmp/testdata/cnames /etc/shadowdns/cnames &&
     cp -r /tmp/testdata/geoip /etc/shadowdns/geoip
 '
 $CTR exec "$CONTAINER_NAME" shadowdns \

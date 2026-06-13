@@ -35,58 +35,77 @@ func main() {
 
 	fixtureDir := filepath.Join("testdata", "integration")
 
-	// Create output directories.
-	for _, d := range []string{"geoip", "master"} {
+	// Create output directories. The Debian layout keeps zone files flat
+	// beside the config; only the nested cnames/ $INCLUDE fragment dir remains.
+	for _, d := range []string{"geoip", "cnames"} {
 		if err := os.MkdirAll(filepath.Join(*outDir, d), 0o755); err != nil {
 			log.Fatalf("mkdir: %v", err)
 		}
 	}
 
-	// Copy zone files, recursing into subdirectories (e.g. `master/cnames/`).
-	srcMaster := filepath.Join(fixtureDir, "master")
-	dstMaster := filepath.Join(*outDir, "master")
-	if err := filepath.Walk(srcMaster, func(path string, info os.FileInfo, werr error) error {
-		if werr != nil {
-			return werr
+	// Copy the flat db.* zone files (and the db.*.overrides $INCLUDE fragment)
+	// from the fixture top level, plus the nested cnames/ fragments.
+	fixtureEntries, err := os.ReadDir(fixtureDir)
+	if err != nil {
+		log.Fatalf("readdir fixtures: %v", err)
+	}
+	for _, e := range fixtureEntries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "db.") {
+			copyFile(
+				filepath.Join(fixtureDir, e.Name()),
+				filepath.Join(*outDir, e.Name()),
+			)
 		}
-		rel, err := filepath.Rel(srcMaster, path)
-		if err != nil {
-			return err
+	}
+	cnamesDir := filepath.Join(fixtureDir, "cnames")
+	cnameEntries, err := os.ReadDir(cnamesDir)
+	if err != nil {
+		log.Fatalf("readdir cnames: %v", err)
+	}
+	for _, e := range cnameEntries {
+		if !e.IsDir() {
+			copyFile(
+				filepath.Join(cnamesDir, e.Name()),
+				filepath.Join(*outDir, "cnames", e.Name()),
+			)
 		}
-		dst := filepath.Join(dstMaster, rel)
-		if info.IsDir() {
-			return os.MkdirAll(dst, 0o755)
-		}
-		copyFile(path, dst)
-		return nil
-	}); err != nil {
-		log.Fatalf("walk master: %v", err)
 	}
 
-	// Copy and patch named.conf.
+	// Copy and patch named.conf (only the two includes; rewrite to absolute
+	// target paths — no TESTDATA_DIR_PLACEHOLDER lives here, it's in
+	// named.conf.options).
 	data, err := os.ReadFile(filepath.Join(fixtureDir, "named.conf"))
 	if err != nil {
 		log.Fatalf("read named.conf: %v", err)
 	}
-	patched := strings.ReplaceAll(string(data), "TESTDATA_DIR_PLACEHOLDER", *targetDir)
-	patched = strings.ReplaceAll(patched,
-		`include "master.zones";`,
-		`include "`+filepath.Join(*targetDir, "master.zones")+`";`)
+	patched := string(data)
+	for _, inc := range []string{"named.conf.options", "named.conf.local"} {
+		patched = strings.ReplaceAll(patched,
+			`include "`+inc+`";`,
+			`include "`+filepath.Join(*targetDir, inc)+`";`)
+	}
 	if err := os.WriteFile(filepath.Join(*outDir, "named.conf"), []byte(patched), 0o644); err != nil {
 		log.Fatalf("write named.conf: %v", err)
 	}
 
-	// Copy and patch master.zones.
-	data, err = os.ReadFile(filepath.Join(fixtureDir, "master.zones"))
+	// Copy and patch named.conf.options (placeholder → target for the options{}
+	// directory and geoip-directory).
+	data, err = os.ReadFile(filepath.Join(fixtureDir, "named.conf.options"))
 	if err != nil {
-		log.Fatalf("read master.zones: %v", err)
+		log.Fatalf("read named.conf.options: %v", err)
 	}
-	patched = strings.ReplaceAll(string(data),
-		`file "master/`,
-		`file "`+filepath.Join(*targetDir, "master")+`/`)
-	if err := os.WriteFile(filepath.Join(*outDir, "master.zones"), []byte(patched), 0o644); err != nil {
-		log.Fatalf("write master.zones: %v", err)
+	patched = strings.ReplaceAll(string(data), "TESTDATA_DIR_PLACEHOLDER", *targetDir)
+	if err := os.WriteFile(filepath.Join(*outDir, "named.conf.options"), []byte(patched), 0o644); err != nil {
+		log.Fatalf("write named.conf.options: %v", err)
 	}
+
+	// Copy named.conf.local. Zone files use relative `file "db.*"` names that
+	// the parser resolves against the options{} directory (the target path), so
+	// no path rewrite is needed.
+	copyFile(
+		filepath.Join(fixtureDir, "named.conf.local"),
+		filepath.Join(*outDir, "named.conf.local"),
+	)
 
 	// Copy shadowdns.yaml (unified config with aliases section).
 	copyFile(

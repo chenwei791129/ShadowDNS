@@ -197,7 +197,7 @@ func TestLexer_ParseFailureReportsFileLine(t *testing.T) {
 }
 
 func TestLexer_FixtureBackupViewTH(t *testing.T) {
-	path := "../../testdata/integration/master/backup.example_view-th.fwd"
+	path := "../../testdata/integration/db.backup.example-th"
 	_, _, lexemes, err := lexFile(path, "backup.example.", 0)
 	if err != nil {
 		t.Fatalf("lexFile: %v", err)

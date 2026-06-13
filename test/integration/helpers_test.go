@@ -332,51 +332,48 @@ func copyFile(t *testing.T, src, dst string) {
 	}
 }
 
-// patchNamedConf replaces TESTDATA_DIR_PLACEHOLDER in named.conf with tmpDir
-// and rewrites the included master.zones include path to use the absolute
-// tmpDir path (so that relative includes also resolve correctly).
+// patchNamedConf prepares the copied Debian-split fixture for loading from
+// tmpDir. The TESTDATA_DIR_PLACEHOLDER token lives in named.conf.options (the
+// options{} directory and geoip-directory) after the include split, so it is
+// substituted there; named.conf itself holds only the two includes, which are
+// rewritten to absolute tmpDir paths. The zone files referenced by
+// named.conf.local use relative `file "db.*"` names, which the parser resolves
+// against the options{} directory (also tmpDir), so they need no rewrite.
 func patchNamedConf(t *testing.T, tmpDir string) {
 	t.Helper()
+
+	// Substitute the placeholder in named.conf.options (directory + geoip-directory).
+	substitutePlaceholder(t, filepath.Join(tmpDir, "named.conf.options"), tmpDir)
+
+	// named.conf holds only the two includes; rewrite them to absolute paths.
+	// (No TESTDATA_DIR_PLACEHOLDER lives here — it's in named.conf.options.)
 	namedConf := filepath.Join(tmpDir, "named.conf")
 	data, err := os.ReadFile(namedConf)
 	if err != nil {
 		t.Fatalf("read named.conf: %v", err)
 	}
-
-	// Substitute TESTDATA_DIR_PLACEHOLDER → tmpDir.
-	patched := strings.ReplaceAll(string(data), testdataPlaceholder, tmpDir)
-
-	// Replace the relative include "master.zones" with an absolute path.
-	// The named.conf fixture has: include "master.zones";
-	patched = strings.ReplaceAll(patched,
-		`include "master.zones";`,
-		`include "`+filepath.Join(tmpDir, "master.zones")+`";`)
-
+	patched := string(data)
+	for _, inc := range []string{"named.conf.options", "named.conf.local"} {
+		patched = strings.ReplaceAll(patched,
+			`include "`+inc+`";`,
+			`include "`+filepath.Join(tmpDir, inc)+`";`)
+	}
 	if err := os.WriteFile(namedConf, []byte(patched), 0o644); err != nil {
 		t.Fatalf("write named.conf: %v", err)
 	}
-
-	// Patch master.zones: rewrite zone file paths to absolute paths under tmpDir.
-	patchMasterZones(t, tmpDir)
 }
 
-// patchMasterZones rewrites each `file "master/..."` path in master.zones to
-// the absolute tmpDir equivalent.
-func patchMasterZones(t *testing.T, tmpDir string) {
+// substitutePlaceholder replaces TESTDATA_DIR_PLACEHOLDER with tmpDir in the
+// file at path, rewriting it in place.
+func substitutePlaceholder(t *testing.T, path, tmpDir string) {
 	t.Helper()
-	masterZones := filepath.Join(tmpDir, "master.zones")
-	data, err := os.ReadFile(masterZones)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read master.zones: %v", err)
+		t.Fatalf("read %s: %v", path, err)
 	}
-
-	// Replace relative file paths with absolute paths.
-	patched := strings.ReplaceAll(string(data),
-		`file "master/`,
-		`file "`+filepath.Join(tmpDir, "master")+`/`)
-
-	if err := os.WriteFile(masterZones, []byte(patched), 0o644); err != nil {
-		t.Fatalf("write master.zones: %v", err)
+	patched := strings.ReplaceAll(string(data), testdataPlaceholder, tmpDir)
+	if err := os.WriteFile(path, []byte(patched), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }
 

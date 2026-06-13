@@ -15,7 +15,7 @@ $TTL 300
 ns1       IN A     192.0.2.1
 
 ; BIND-style quoted $include — the syntax this change is adding support for.
-$include "cnames/example.com_cname"
+$include "cnames/db.example.com.cname"
 
 ; Original bare $include — must continue to work without regression.
-$include cnames/example.com_cname
+$include cnames/db.example.com.cname

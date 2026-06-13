@@ -282,11 +282,11 @@ func TestQuery_NS_TCP(t *testing.T) {
 // over DNS through the running server.
 //
 // Fixture wiring:
-//   - testdata/integration/master/example.com_include.fwd has both quoted
+//   - testdata/integration/db.include-test.example has both quoted
 //     and bare $include directives pointing at the same fragment
-//   - testdata/integration/master/cnames/example.com_cname provides
+//   - testdata/integration/cnames/db.example.com.cname provides
 //     three CNAMEs (alias, mail, help) under origin include-test.example.
-//   - testdata/integration/master.zones registers the zone in view-other
+//   - testdata/integration/named.conf.local registers the zone in view-other
 //     so loopback queries reach it
 func TestQuery_QuotedInclude_LoadsCNAME(t *testing.T) {
 	srv, cancel := newTestServer(t)

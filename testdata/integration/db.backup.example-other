@@ -12,4 +12,4 @@ $TTL 300
 
 ; Pull in additional override records via a BIND-style quoted $include —
 ; exercises the include compatibility layer on a backup-classified zone.
-$include "backup.example_overrides"
+$include "db.backup.example.overrides"

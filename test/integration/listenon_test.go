@@ -39,22 +39,25 @@ func startServerWithListenOn(t *testing.T, listenOnTokens, listenFlag string) (*
 
 	namedConf := filepath.Join(tmpDir, "named.conf")
 
-	// Rewrite the listen-on directive in the patched named.conf so tests can
-	// exercise different token lists without touching the fixture source.
-	data, err := os.ReadFile(namedConf)
+	// Rewrite the listen-on directive so tests can exercise different token
+	// lists without touching the fixture source. After the Debian include
+	// split the options{} block (and thus listen-on) lives in
+	// named.conf.options, not named.conf.
+	optionsConf := filepath.Join(tmpDir, "named.conf.options")
+	data, err := os.ReadFile(optionsConf)
 	if err != nil {
-		t.Fatalf("read named.conf: %v", err)
+		t.Fatalf("read named.conf.options: %v", err)
 	}
 	original := string(data)
 	// The fixture uses `listen-on { any; };` — replace it with the test value.
 	const anyListen = "listen-on { any; };"
 	newListen := "listen-on " + listenOnTokens + ";"
 	if !strings.Contains(original, anyListen) {
-		t.Fatalf("fixture named.conf does not contain %q; update test", anyListen)
+		t.Fatalf("fixture named.conf.options does not contain %q; update test", anyListen)
 	}
 	patched := strings.Replace(original, anyListen, newListen, 1)
-	if err := os.WriteFile(namedConf, []byte(patched), 0o644); err != nil {
-		t.Fatalf("write named.conf: %v", err)
+	if err := os.WriteFile(optionsConf, []byte(patched), 0o644); err != nil {
+		t.Fatalf("write named.conf.options: %v", err)
 	}
 
 	logger := zap.NewNop()

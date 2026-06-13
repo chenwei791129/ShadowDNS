@@ -12,8 +12,8 @@ import (
 // the shipped backup/root fixtures reports no deletions.
 //
 // The invariant this relies on: every overridable RRSet (TXT/MX/SRV) in
-// testdata/integration/master/backup.example_* differs from its aliased
-// root RRSet in example.com_view-*. If a future edit aligns a backup RRSet
+// testdata/integration/db.backup.example-* differs from its aliased
+// root RRSet in db.example.com-*. If a future edit aligns a backup RRSet
 // with root (or drops a backup-side TXT/MX/SRV), this test will flip to
 // reporting a deletion — update the fixture or the test accordingly.
 func TestPruneBackup_NoCandidatesOnCleanFixture(t *testing.T) {
@@ -33,8 +33,8 @@ func TestPruneBackup_NoCandidatesOnCleanFixture(t *testing.T) {
 		t.Errorf("expected 'no redundant records found', got:\n%s", out)
 	}
 
-	// No mutation: every *.fwd file has no .bak sibling.
-	walkAndAssertNoBak(t, filepath.Join(tmpDir, "master"))
+	// No mutation: no zone file under the fixture dir has a .bak sibling.
+	walkAndAssertNoBak(t, tmpDir)
 }
 
 // TestPruneBackup_ApplyDeletesRedundantOverlayAndCreatesBak seeds the backup
@@ -51,7 +51,7 @@ func TestPruneBackup_ApplyDeletesRedundantOverlayAndCreatesBak(t *testing.T) {
 	// relative owner makes the backup RRSet byte-equivalent to root's ⇒
 	// eligible for deletion under the overridable-type equality rule.
 	redundantSRV := `_sip._tcp IN SRV 10 5 5060 sip.example.com.`
-	backupFile := filepath.Join(tmpDir, "master", "backup.example_view-th.fwd")
+	backupFile := filepath.Join(tmpDir, "db.backup.example-th")
 	injectLine(t, backupFile, "\n"+redundantSRV+"\n")
 	content, _ := os.ReadFile(backupFile)
 	if !strings.Contains(string(content), redundantSRV) {
@@ -88,9 +88,9 @@ func TestPruneBackup_ApplyDeletesRedundantOverlayAndCreatesBak(t *testing.T) {
 		t.Errorf(".bak content differs from pre-apply original")
 	}
 
-	// Include targets (backup.example_overrides) that had no deletion remain
+	// Include targets (db.backup.example.overrides) that had no deletion remain
 	// un-backed-up.
-	overrides := filepath.Join(tmpDir, "master", "backup.example_overrides")
+	overrides := filepath.Join(tmpDir, "db.backup.example.overrides")
 	if _, err := os.Stat(overrides + ".bak"); !os.IsNotExist(err) {
 		t.Errorf("include target .bak created unexpectedly: err=%v", err)
 	}

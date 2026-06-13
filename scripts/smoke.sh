@@ -44,9 +44,15 @@ info "Preparing smoke fixture in ${SMOKE_DIR}..."
 rm -rf "${SMOKE_DIR}"
 mkdir -p "${SMOKE_DIR}"
 
-# Copy fixtures (skip geoip/ — we generate it below).
-cp    "${FIXTURE_SRC}/named.conf"    "${SMOKE_DIR}/named.conf"
-cp    "${FIXTURE_SRC}/master.zones"  "${SMOKE_DIR}/master.zones"
+# Copy fixtures (skip geoip/ — we generate it below). The Debian include split
+# keeps the options{} block (with the path placeholder and listen-on) in
+# named.conf.options and the views in named.conf.local; zone files are flat
+# db.* files beside the config plus the nested cnames/ $INCLUDE fragments.
+cp    "${FIXTURE_SRC}/named.conf"         "${SMOKE_DIR}/named.conf"
+cp    "${FIXTURE_SRC}/named.conf.options" "${SMOKE_DIR}/named.conf.options"
+cp    "${FIXTURE_SRC}/named.conf.local"   "${SMOKE_DIR}/named.conf.local"
+cp    "${FIXTURE_SRC}"/db.*               "${SMOKE_DIR}/"
+cp -R "${FIXTURE_SRC}/cnames"             "${SMOKE_DIR}/cnames"
 
 # Generate a minimal unified shadowdns.yaml for --config.
 cat > "${SMOKE_DIR}/shadowdns.yaml" <<'YAML'
@@ -55,28 +61,26 @@ aliases:
     members:
       - backup.example
 YAML
-# Recursively copy the full master/ tree (zone files plus include fragments
-# that may live in subdirectories such as cnames/).
-cp -R "${FIXTURE_SRC}/master"        "${SMOKE_DIR}/master"
 
-# Substitute TESTDATA_DIR_PLACEHOLDER → SMOKE_DIR.
-sed -i.bak "s|TESTDATA_DIR_PLACEHOLDER|${SMOKE_DIR}|g" "${SMOKE_DIR}/named.conf"
-rm -f "${SMOKE_DIR}/named.conf.bak"
+# Substitute TESTDATA_DIR_PLACEHOLDER → SMOKE_DIR. After the include split the
+# placeholder (directory + geoip-directory) lives in named.conf.options.
+sed -i.bak "s|TESTDATA_DIR_PLACEHOLDER|${SMOKE_DIR}|g" "${SMOKE_DIR}/named.conf.options"
+rm -f "${SMOKE_DIR}/named.conf.options.bak"
 
 # Add a listen-on-v6 directive so the dry-run summary exercises IPv6 listener
-# resolution (loopback ::1 is always present). The shared integration fixture
-# is left untouched; only this smoke copy gets the v6 block. The backslash +
-# newline replacement is portable across GNU and BSD sed.
+# resolution (loopback ::1 is always present). listen-on lives in
+# named.conf.options after the split. The shared integration fixture is left
+# untouched; only this smoke copy gets the v6 block. The backslash + newline
+# replacement is portable across GNU and BSD sed.
 sed -i.bak 's|listen-on { any; };|listen-on { any; };\
-    listen-on-v6 { ::1; };|' "${SMOKE_DIR}/named.conf"
-rm -f "${SMOKE_DIR}/named.conf.bak"
+    listen-on-v6 { ::1; };|' "${SMOKE_DIR}/named.conf.options"
+rm -f "${SMOKE_DIR}/named.conf.options.bak"
 
-# Rewrite relative include and file paths to absolute paths.
-sed -i.bak 's|include "master.zones";|include "'"${SMOKE_DIR}/master.zones"'";|g' "${SMOKE_DIR}/named.conf"
+# Rewrite the two relative includes in named.conf to absolute SMOKE_DIR paths.
+# Zone files use relative `file "db.*"` names resolved against the options
+# directory (SMOKE_DIR), so they need no rewrite.
+sed -i.bak 's|include "named.conf.options";|include "'"${SMOKE_DIR}/named.conf.options"'";|g; s|include "named.conf.local";|include "'"${SMOKE_DIR}/named.conf.local"'";|g' "${SMOKE_DIR}/named.conf"
 rm -f "${SMOKE_DIR}/named.conf.bak"
-
-sed -i.bak 's|file "master/|file "'"${SMOKE_DIR}/master/"'|g' "${SMOKE_DIR}/master.zones"
-rm -f "${SMOKE_DIR}/master.zones.bak"
 
 # ---------------------------------------------------------------------------
 # 3. Generate GeoIP mmdb files using Go.

@@ -7,12 +7,12 @@ view "view-th" {
 
     zone "example.com" {
         type master;
-        file "master/example.com_view-th.fwd";
+        file "db.example.com-th";
     };
 
     zone "backup.example" {
         type master;
-        file "master/backup.example_view-th.fwd";
+        file "db.backup.example-th";
     };
 };
 
@@ -24,16 +24,16 @@ view "view-other" {
 
     zone "example.com" {
         type master;
-        file "master/example.com_view-other.fwd";
+        file "db.example.com-other";
     };
 
     zone "backup.example" {
         type master;
-        file "master/backup.example_view-other.fwd";
+        file "db.backup.example-other";
     };
 
     zone "include-test.example" {
         type master;
-        file "master/example.com_include.fwd";
+        file "db.include-test.example";
     };
 };
