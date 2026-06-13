@@ -59,6 +59,11 @@ type Config struct {
 	// rejects them (mixed with explicit views). It is never read by consumers
 	// of Config.
 	topLevelZones []Zone
+
+	// optionsSet records whether an options{} block has already been applied
+	// during loadFile, so a second block (in any file) can be flagged. It is a
+	// load-time scratch field only and is never read by consumers of Config.
+	optionsSet bool
 }
 
 // defaultViewName is the name BIND gives the implicit view that holds top-level
@@ -220,10 +225,18 @@ func loadFile(path string, cfg *Config, logger *zap.Logger) error {
 			if oErr != nil {
 				return oErr
 			}
-			if cfg.Path == path {
-				// Only apply options from the root named.conf (standard BIND behaviour).
-				cfg.Options = block
+			// Apply the options{} block regardless of which file declares it.
+			// `include` is a textual inclusion in BIND, so an options block in an
+			// included file (e.g. the Debian-idiomatic named.conf.options) is
+			// honored exactly as if inlined into named.conf. BIND permits only one
+			// options statement; if a second block is seen across the include
+			// tree, warn and let the later block win.
+			if cfg.optionsSet {
+				logger.Sugar().Warnw("multiple options{} blocks across the include tree; the last block takes effect",
+					"file", path, "line", countLines(data, 0, optOffset))
 			}
+			cfg.Options = block
+			cfg.optionsSet = true
 			lx.pos = endOff
 			// Recount lines after jumping pos.
 			lx.line = countLines(data, 0, endOff)

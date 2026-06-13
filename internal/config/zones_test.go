@@ -1087,6 +1087,88 @@ zone "example.com" {
 	}
 }
 
+// TestLoadNamedConf_OptionsFromIncludedFile verifies that an options{} block
+// declared in an included file (the Debian-idiomatic named.conf.options split,
+// where named.conf holds only include directives) is honored exactly as if it
+// were inlined into named.conf: directory, geoip-directory, and listen-on are
+// populated on the loaded Config rather than silently dropped.
+func TestLoadNamedConf_OptionsFromIncludedFile(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `include "named.conf.options";
+include "named.conf.local";
+`
+	namedConfOptions := `options {
+	directory "/etc/bind";
+	geoip-directory "/etc/bind/geoip";
+	listen-on { 192.0.2.1; };
+};
+`
+	namedConfLocal := `view "view-other" {
+	match-clients { any; };
+	zone "example.com" {
+		type master;
+		file "db.example.com";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+	writeFile(t, filepath.Join(dir, "named.conf.options"), namedConfOptions)
+	writeFile(t, filepath.Join(dir, "named.conf.local"), namedConfLocal)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Options.Directory != "/etc/bind" {
+		t.Errorf("Directory from included options: got %q, want %q", cfg.Options.Directory, "/etc/bind")
+	}
+	if cfg.Options.GeoIPDirectory != "/etc/bind/geoip" {
+		t.Errorf("GeoIPDirectory from included options: got %q, want %q", cfg.Options.GeoIPDirectory, "/etc/bind/geoip")
+	}
+	if len(cfg.Options.ListenOn) != 1 || cfg.Options.ListenOn[0] != "192.0.2.1" {
+		t.Errorf("ListenOn from included options: got %v, want [192.0.2.1]", cfg.Options.ListenOn)
+	}
+}
+
+// TestLoadNamedConf_MultipleOptionsBlocksLastWins verifies that when more than
+// one options{} block appears across the include tree, a warning is logged and
+// the last-parsed block takes effect (BIND permits a single options statement;
+// ShadowDNS tolerates duplicates rather than failing).
+func TestLoadNamedConf_MultipleOptionsBlocksLastWins(t *testing.T) {
+	dir := t.TempDir()
+
+	core, obs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	// Root declares directory "/first"; the include re-declares directory
+	// "/second". The included block is parsed second, so it wins.
+	namedConf := `options {
+	directory "/first";
+};
+include "named.conf.options";
+`
+	namedConfOptions := `options {
+	directory "/second";
+};
+`
+	confPath := filepath.Join(dir, "named.conf")
+	writeFile(t, confPath, namedConf)
+	writeFile(t, filepath.Join(dir, "named.conf.options"), namedConfOptions)
+
+	cfg, err := LoadNamedConf(confPath, logger)
+	if err != nil {
+		t.Fatalf("multiple options blocks must not be fatal, got: %v", err)
+	}
+	if cfg.Options.Directory != "/second" {
+		t.Errorf("last options block should win: got Directory %q, want %q", cfg.Options.Directory, "/second")
+	}
+	warns := obs.FilterMessageSnippet("multiple options{} blocks").All()
+	if len(warns) != 1 {
+		t.Fatalf("expected exactly 1 multiple-options warning, got %d: %+v", len(warns), obs.All())
+	}
+}
+
 // Task 1.3-a (spec scenario "Top-level zone declared before a view fails"): a
 // top-level zone followed by a view is a fatal mixing error naming the zone and
 // its source:line.
