@@ -48,6 +48,58 @@ view "<name>" {
 !!! warning "ASN description string format"
     The `geoip asnum` string must match the `"AS<number> <description>"` format (the parsing rule is `^AS(\d+)\s`); the description text is ignored. A string not starting with `AS` + digits + whitespace (e.g. `"64500"` missing the `AS` prefix) causes startup failure.
 
+## Viewless configurations (implicit `_default` view)
+
+ShadowDNS does not require any `view` block. You can declare zones at the top level — outside every `view` block — directly in `named.conf` or any of its `include` files:
+
+```text
+options {
+    directory   "/etc/namedb";
+    listen-on   { any; };
+    recursion   no;
+};
+
+zone "example.com" {
+    type master;
+    file "example.com.zone";
+};
+
+zone "example.net" {
+    type master;
+    file "example.net.zone";
+};
+```
+
+A top-level zone body follows the **exact same rules** as a zone inside a view: only `type master` is supported, and a relative `file` path keeps the same resolution semantics used during parsing.
+
+!!! warning "Declare `options` before any top-level zone"
+    Place the `options` block ahead of your top-level zone declarations. Otherwise a relative `file` path is resolved against the directory of the file in which the zone is declared, not against `options.directory`.
+
+### How the `_default` view is synthesized
+
+When the whole configuration (including every `include`) contains **no `view` block** but has **at least one top-level zone**, ShadowDNS synthesizes a view named `_default`:
+
+- Its `match-clients` is equivalent to `{ any; }` — it matches every source IP.
+- It contains all top-level zones, in declaration order.
+
+This mirrors BIND's behavior when no views are configured.
+
+### No GeoIP required
+
+The synthesized `_default` view holds only an `any` rule and **no geo rules**, so a viewless configuration never needs `geoip-directory` and never needs any mmdb file. This is the conditional-requirement behavior described in [GeoIP Databases](geoip.md#running-without-geoip).
+
+### Mixing views and top-level zones is a startup error
+
+If the configuration contains **any `view` block** *and* **any top-level zone** — regardless of declaration order, and regardless of which files they are spread across — ShadowDNS fails to start with a fatal error. The message names the first top-level zone (its name, source file path, and line number). This mirrors BIND's rule that once views are used, every zone must live inside a view.
+
+### Duplicate top-level zone names
+
+Duplicate top-level zone names are **not fatal** — every entry is retained. During synthesis, ShadowDNS emits one Warn per duplicated name, listing the location of every declaration of that name and noting that the **last declaration wins** at serving time.
+
+!!! warning "Two surface differences when migrating from a viewless BIND"
+    - **Query log:** each line carries a `view _default:` clause, whereas a viewless BIND query log has no view clause. Downstream log parsers must account for this extra field.
+    - **Prometheus metrics:** the view label takes the value `_default`.
+
 ## Response Rate Limiting (RRL)
 
 RRL is configured through the BIND-compatible `rate-limit { ... }` block, and is **only supported inside the global `options`** — placing it inside a `view` block is warned about and ignored (v1 does not support per-view rate limiting).

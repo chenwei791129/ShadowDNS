@@ -48,6 +48,58 @@ view "<name>" {
 !!! warning "ASN 描述字串格式"
     `geoip asnum` 的字串必須符合 `"AS<數字> <描述>"` 格式（解析規則為 `^AS(\d+)\s`），描述文字會被忽略。不以 `AS` + 數字 + 空白開頭的字串（例如缺少 `AS` 前綴的 `"64500"`）會導致啟動失敗。
 
+## 無 view 形態（隱含 `_default` view）
+
+ShadowDNS 不要求設定任何 `view` 區塊。你可以在所有 `view` 區塊之外，於 `named.conf` 或其任一 `include` 檔中直接宣告頂層 zone：
+
+```text
+options {
+    directory   "/etc/namedb";
+    listen-on   { any; };
+    recursion   no;
+};
+
+zone "example.com" {
+    type master;
+    file "example.com.zone";
+};
+
+zone "example.net" {
+    type master;
+    file "example.net.zone";
+};
+```
+
+頂層 zone 的 zone-body 規則與 view 內 zone **完全相同**：僅支援 `type master`，且相對 `file` 路徑沿用解析期的語意。
+
+!!! warning "請將 `options` 置於頂層 zone 宣告之前"
+    請將 `options` 區塊放在頂層 zone 宣告之前。否則相對 `file` 路徑會以該 zone 宣告所在檔案的目錄為基底解析，而非 `options.directory`。
+
+### `_default` view 如何合成
+
+當整份設定（含所有 `include`）**沒有任何 `view` 區塊**、但有**至少一個頂層 zone** 時，ShadowDNS 會合成一個名為 `_default` 的 view：
+
+- 其 `match-clients` 等同 `{ any; }` —— 匹配所有來源 IP。
+- 依宣告順序包含所有頂層 zone。
+
+這對齊 BIND 在無 view 時的行為。
+
+### 不需要 GeoIP
+
+合成的 `_default` view 只含 `any` 規則、**不含 geo 規則**，因此無 view 形態完全不需要設定 `geoip-directory`，也不需要任何 mmdb 檔。這正是 [GeoIP 資料庫](geoip.md#未載入-geoip-時)所述的條件式需求行為。
+
+### 混用 view 與頂層 zone 是啟動錯誤
+
+當設定中同時存在**任何 `view` 區塊**與**任何頂層 zone**（不論宣告順序、不論分散在哪些檔案），ShadowDNS 啟動失敗並回致命錯誤。訊息會指出第一個頂層 zone（其名稱、來源檔案路徑與行號）。這對齊 BIND「一旦使用 view，所有 zone 都必須在 view 內」的規則。
+
+### 頂層 zone 重名
+
+重複的頂層 zone 名稱**不會 fatal** —— 全部條目都會保留。合成時，ShadowDNS 對每個重複名稱輸出一條 Warn，列出該名稱所有宣告的位置，並說明服務時以**最後一筆宣告為準**。
+
+!!! warning "從無 view BIND 遷移的兩個表面差異"
+    - **Query log：**每一行會多出 `view _default:` 子句，而無 view 設定下的 BIND 查詢日誌不含 view 子句。下游 log 解析器需留意這多出的欄位。
+    - **Prometheus metrics：**view label 會出現 `_default` 值。
+
 ## Response Rate Limiting（RRL）
 
 RRL 透過 BIND 相容的 `rate-limit { ... }` 區塊設定，**只支援放在全域 `options` 內** —— 放在 `view` 區塊內會被警告並忽略（v1 不支援 per-view rate limiting）。
