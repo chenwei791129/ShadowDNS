@@ -57,11 +57,13 @@ func LocalInterfaceNets() (localhost, localnets []netip.Prefix, err error) {
 			// localhost: the address itself, as a host route (/32 or /128).
 			localhost = append(localhost, netip.PrefixFrom(addr, addr.BitLen()))
 			// localnets: the attached network (address masked to its prefix
-			// length). Mask.Size() returns (0, 0) for a non-canonical mask; skip
-			// such an interface rather than emitting a /0 prefix that would make
-			// `localnets` match every client (fail-open).
+			// length). Skip an interface whose mask is either non-canonical
+			// (Mask.Size() reports bits == 0) or a /0 (ones == 0): emitting a
+			// 0.0.0.0/0 or ::/0 prefix would make `localnets` match every client
+			// (fail-open). A point-to-point/tunnel interface carrying a /0 address
+			// is the realistic trigger for the ones == 0 case.
 			ones, bits := ipNet.Mask.Size()
-			if bits == 0 {
+			if bits == 0 || ones == 0 {
 				continue
 			}
 			if p, prefErr := addr.Prefix(ones); prefErr == nil {

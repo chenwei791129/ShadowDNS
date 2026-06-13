@@ -1766,6 +1766,126 @@ view "v" {
 	}
 }
 
+// A NEGATED reference to an undefined acl must NOT be silently dropped (which
+// would widen the list — a following `any` would then accept everyone). It is
+// replaced by a list-rejecting `!any` element so the lost exclusion narrows the
+// list (fail-closed), and a WARN is logged.
+func TestLoadNamedConf_NegatedUndefinedReferenceRejectsList(t *testing.T) {
+	dir := t.TempDir()
+
+	core, obs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+view "internal" {
+	match-clients { !trusted; any; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), logger)
+	if err != nil {
+		t.Fatalf("negated undefined reference must not be fatal, got: %v", err)
+	}
+	mc := cfg.Views[0].MatchClients
+	// `!trusted` → rejectAllElement (`!any`); `any` is preserved after it.
+	if len(mc) != 2 {
+		t.Fatalf("expected 2 elements (reject sentinel + any), got %d: %+v", len(mc), mc)
+	}
+	if mc[0].Kind != ElemAny || !mc[0].Negated {
+		t.Errorf("dropped negated reference must become a list-rejecting !any, got %+v", mc[0])
+	}
+	if mc[1].Kind != ElemAny || mc[1].Negated {
+		t.Errorf("trailing any must survive unchanged, got %+v", mc[1])
+	}
+	if warns := obs.FilterField(zap.String("token", "trusted")).All(); len(warns) != 1 {
+		t.Errorf("expected exactly 1 WARN naming the negated dropped token, got %+v", obs.All())
+	}
+}
+
+// A relative zone file path must resolve against the options{} directory even
+// when the options block is declared in a file INCLUDED AFTER the zone — the
+// directory is finalized before paths are resolved.
+func TestLoadNamedConf_ZonePathResolvesAgainstLaterIncludedOptions(t *testing.T) {
+	dir := t.TempDir()
+
+	// Root declares the view+zone (relative file) BEFORE including the options
+	// file that sets the directory.
+	namedConf := `view "v" {
+	match-clients { any; };
+	zone "example.com" {
+		type master;
+		file "db.example.com.fwd";
+	};
+};
+
+include "opts.conf";
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+	writeFile(t, filepath.Join(dir, "opts.conf"), `options { directory "/etc/namedb"; };`)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := cfg.Views[0].Zones[0].File
+	want := "/etc/namedb/db.example.com.fwd"
+	if got != want {
+		t.Errorf("zone file must resolve against the later-included options directory: got %q, want %q", got, want)
+	}
+}
+
+// A top-level directive that is a one-edit misspelling of a structural keyword
+// (here `veiw` for `view`) is skipped (not fatal) but surfaced at WARN naming the
+// suspected keyword, so the silently-dropped block does not go unnoticed.
+func TestLoadNamedConf_MisspelledStructuralKeywordWarns(t *testing.T) {
+	dir := t.TempDir()
+
+	core, obs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+veiw "typo" {
+	match-clients { any; };
+};
+
+view "real" {
+	match-clients { any; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), logger)
+	if err != nil {
+		t.Fatalf("misspelled keyword must be skipped, not fatal, got: %v", err)
+	}
+	// Only the correctly-spelled view loads; the typo'd block is skipped.
+	if len(cfg.Views) != 1 || cfg.Views[0].Name != "real" {
+		t.Fatalf("expected only the 'real' view to load, got %+v", cfg.Views)
+	}
+	warns := obs.FilterField(zap.String("suggestion", "view")).All()
+	if len(warns) != 1 {
+		t.Fatalf("expected exactly 1 WARN suggesting 'view' for the typo, got %+v", obs.All())
+	}
+	if ctx := warns[0].ContextMap(); ctx["directive"] != "veiw" {
+		t.Errorf("WARN should name the misspelled directive, got directive=%v", ctx["directive"])
+	}
+}
+
 // keysOf returns the keys of an acl registry for diagnostic messages.
 func keysOf(m map[string][]Element) []string {
 	out := make([]string, 0, len(m))

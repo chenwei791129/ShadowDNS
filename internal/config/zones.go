@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"go.uber.org/zap"
@@ -104,13 +105,47 @@ var recursionFamilyDirectives = map[string]bool{
 	"dnssec-validation": true,
 }
 
+// topLevelScope is the scope label used for directives/zones skipped outside any
+// view block (a view's scope label is its name).
+const topLevelScope = "top level"
+
+// structuralTopLevel and structuralView are the block-introducing keywords whose
+// misspelling silently drops a whole config section (a typo'd `view`/`zone`
+// becomes an unrecognized directive that the skip-unknown posture quietly
+// consumes). A skipped directive within one edit of one of these is almost
+// certainly such a typo, so it is surfaced at WARN naming the likely intent.
+var (
+	structuralTopLevel = []string{"options", "include", "acl", "view", "zone", "logging"}
+	structuralView     = []string{"match-clients", "zone", "rate-limit"}
+)
+
+// nearMissKeyword returns the structural keyword within edit-distance 1 of
+// directive for the given scope, or "" if none. The top-level scope uses the
+// top-level keyword set; any other scope (a view name) uses the view set.
+func nearMissKeyword(directive, scope string) string {
+	candidates := structuralView
+	if scope == topLevelScope {
+		candidates = structuralTopLevel
+	}
+	for _, kw := range candidates {
+		if kw != directive && withinEditDistance1(kw, directive) {
+			return kw
+		}
+	}
+	return ""
+}
+
 // logSkippedDirective logs a skipped directive at the level dictated by the
-// tiered logging strategy: access-control directives at WARN (ShadowDNS does
-// not enforce them), recursion-family directives at INFO, everything else at
-// DEBUG. scope names where the directive was skipped — "top level" or a view
+// tiered logging strategy: a likely misspelling of a structural keyword at WARN
+// (naming the suspected intent), access-control directives at WARN (ShadowDNS
+// does not enforce them), recursion-family directives at INFO, everything else
+// at DEBUG. scope names where the directive was skipped — "top level" or a view
 // name.
 func logSkippedDirective(logger *zap.Logger, directive, scope, path string, line int) {
 	switch {
+	case nearMissKeyword(directive, scope) != "":
+		logger.Sugar().Warnw("unrecognized directive looks like a misspelled keyword; skipping (it will not take effect)",
+			"directive", directive, "suggestion", nearMissKeyword(directive, scope), "scope", scope, "line", line, "file", path)
 	case accessControlDirectives[directive]:
 		logger.Sugar().Warnw("ShadowDNS does not enforce this access-control directive; skipping",
 			"directive", directive, "scope", scope, "line", line, "file", path)
@@ -121,6 +156,65 @@ func logSkippedDirective(logger *zap.Logger, directive, scope, path string, line
 		logger.Sugar().Debugw("skipping unrecognized directive",
 			"directive", directive, "scope", scope, "line", line, "file", path)
 	}
+}
+
+// withinEditDistance1 reports whether a and b differ by at most one single-edit
+// operation: one insertion, deletion, substitution, or adjacent transposition
+// (Damerau). It is used only to flag a skipped directive that is almost certainly
+// a misspelled structural keyword (e.g. "veiw" → "view", "zoen" → "zone").
+func withinEditDistance1(a, b string) bool {
+	if a == b {
+		return true
+	}
+	la, lb := len(a), len(b)
+	switch {
+	case la == lb:
+		// Same length: at most one substitution, or one adjacent transposition.
+		firstDiff, mismatches := -1, 0
+		for i := 0; i < la; i++ {
+			if a[i] == b[i] {
+				continue
+			}
+			mismatches++
+			switch mismatches {
+			case 1:
+				firstDiff = i
+			case 2:
+				// Accept an adjacent swap: a[firstDiff]a[i] == b[i]b[firstDiff].
+				if i != firstDiff+1 || a[firstDiff] != b[i] || a[i] != b[firstDiff] {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+		return true
+	case la+1 == lb:
+		return isOneDeletionApart(a, b) // b has one extra byte
+	case la == lb+1:
+		return isOneDeletionApart(b, a) // a has one extra byte
+	default:
+		return false
+	}
+}
+
+// isOneDeletionApart reports whether the longer string becomes short by deleting
+// exactly one byte. short is the shorter of the two strings.
+func isOneDeletionApart(short, long string) bool {
+	i, j, skipped := 0, 0, false
+	for i < len(short) && j < len(long) {
+		if short[i] == long[j] {
+			i++
+			j++
+			continue
+		}
+		if skipped {
+			return false
+		}
+		skipped = true
+		j++ // consume the extra byte in long
+	}
+	return true
 }
 
 // zoneIsSkipped reports whether a parsed zone declares an explicit type other
@@ -176,6 +270,11 @@ func LoadNamedConf(path string, logger *zap.Logger) (*Config, error) {
 		return nil, err
 	}
 
+	// Resolve relative zone file paths now that every options{} block (including
+	// any in a file included after the zones) has been applied. All zones —
+	// in-view and the folded top-level ones — live under cfg.Views at this point.
+	cfg.resolveZoneFilePaths()
+
 	// Warn when a non-last view uses `any` (subsequent views would be unreachable).
 	warnShadowedViews(cfg.Views, logger)
 
@@ -220,6 +319,30 @@ func (cfg *Config) resolveTopLevelZones(logger *zap.Logger) error {
 		Source:       first.Source,
 	})
 	return nil
+}
+
+// resolveZoneFilePaths resolves each zone's relative `file` path against the
+// final options{} directory, after the whole include tree (and therefore every
+// options block) has loaded. Resolving here rather than at parse time removes an
+// ordering trap: a zone declared before the options block (e.g. an options file
+// included after the zones) would otherwise bind to the wrong base directory. An
+// absolute path is left untouched; a zone with no file (missing-file tolerance)
+// is skipped. The fallback base when no directory is configured is the directory
+// of the file that declared the zone (z.Source), preserving the prior behavior.
+func (cfg *Config) resolveZoneFilePaths() {
+	for vi := range cfg.Views {
+		for zi := range cfg.Views[vi].Zones {
+			z := &cfg.Views[vi].Zones[zi]
+			if z.File == "" || filepath.IsAbs(z.File) {
+				continue
+			}
+			baseDir := cfg.Options.Directory
+			if baseDir == "" {
+				baseDir = filepath.Dir(z.Source)
+			}
+			z.File = filepath.Join(baseDir, z.File)
+		}
+	}
 }
 
 // warnDuplicateTopLevelZones logs exactly one warning per top-level zone name
@@ -330,7 +453,7 @@ func loadFile(path string, cfg *Config, logger *zap.Logger) error {
 			}
 
 		case "view":
-			v, err := parseView(lx, path, cfg.Options, logger)
+			v, err := parseView(lx, path, logger)
 			if err != nil {
 				return err
 			}
@@ -341,7 +464,7 @@ func loadFile(path string, cfg *Config, logger *zap.Logger) error {
 			// rules (relative-path resolution against cfg.Options.Directory,
 			// missing type/file tolerance) match in-view zones exactly.
 			// Accumulate for post-processing in LoadNamedConf.
-			z, err := parseZone(lx, path, cfg.Options)
+			z, err := parseZone(lx, path)
 			if err != nil {
 				return err
 			}
@@ -349,7 +472,7 @@ func loadFile(path string, cfg *Config, logger *zap.Logger) error {
 			// file never opened), matching the in-view rule. Common in
 			// named.conf.default-zones (the root `type hint` zone).
 			if zoneIsSkipped(z) {
-				logSkippedZone(logger, z, "top level", path)
+				logSkippedZone(logger, z, topLevelScope, path)
 				continue
 			}
 			cfg.topLevelZones = append(cfg.topLevelZones, z)
@@ -383,7 +506,7 @@ func loadFile(path string, cfg *Config, logger *zap.Logger) error {
 			// trusted-keys, …) is consumed and skipped, not fatal. Only a genuine
 			// syntax error (unbalanced brace, missing ';') surfaces from the skip
 			// helper. The tiered logger classifies the directive.
-			logSkippedDirective(logger, directive, "top level", path, tok.line)
+			logSkippedDirective(logger, directive, topLevelScope, path, tok.line)
 			if err := lx.skipNamedDirective(path); err != nil {
 				return err
 			}
@@ -395,7 +518,7 @@ func loadFile(path string, cfg *Config, logger *zap.Logger) error {
 
 // parseView parses a `view "name" { ... };` block. The lexer has just consumed
 // the "view" keyword.
-func parseView(lx *lexer, path string, opts OptionsBlock, logger *zap.Logger) (View, error) {
+func parseView(lx *lexer, path string, logger *zap.Logger) (View, error) {
 	// Expect view name (quoted string or word).
 	nameTok := lx.next()
 	if nameTok.kind != tokenString && nameTok.kind != tokenWord {
@@ -453,7 +576,7 @@ func parseView(lx *lexer, path string, opts OptionsBlock, logger *zap.Logger) (V
 			v.MatchClients = rules
 
 		case "zone":
-			z, err := parseZone(lx, path, opts)
+			z, err := parseZone(lx, path)
 			if err != nil {
 				return View{}, err
 			}
@@ -495,7 +618,7 @@ func parseView(lx *lexer, path string, opts OptionsBlock, logger *zap.Logger) (V
 
 // parseZone parses a `zone "domain" { ... };` block. The lexer has just
 // consumed the "zone" keyword.
-func parseZone(lx *lexer, path string, opts OptionsBlock) (Zone, error) {
+func parseZone(lx *lexer, path string) (Zone, error) {
 	// Expect zone name (quoted string or word).
 	nameTok := lx.next()
 	if nameTok.kind != tokenString && nameTok.kind != tokenWord {
@@ -562,14 +685,11 @@ func parseZone(lx *lexer, path string, opts OptionsBlock) (Zone, error) {
 			if semi.kind != tokenSemicolon {
 				return Zone{}, fmt.Errorf("%s:%d: expected ';' after file path, got %q", path, valTok.line, semi.value)
 			}
-			// Resolve relative paths.
-			if !filepath.IsAbs(filePath) {
-				baseDir := opts.Directory
-				if baseDir == "" {
-					baseDir = filepath.Dir(path)
-				}
-				filePath = filepath.Join(baseDir, filePath)
-			}
+			// Store the path verbatim. Relative paths are resolved later, in
+			// resolveZoneFilePaths, against the FINAL options{} directory once the
+			// whole include tree has loaded. Resolving here would bind the path to
+			// a stale directory when the options block is declared (or included)
+			// after this zone.
 			z.File = filePath
 
 		default:
@@ -669,7 +789,15 @@ func parseACL(lx *lexer, cfg *Config, path string, logger *zap.Logger) error {
 // map lookups.
 func (cfg *Config) resolveACLReferences(logger *zap.Logger) {
 	r := &aclResolver{registry: cfg.ACLs, state: make(map[string]int8, len(cfg.ACLs)), logger: logger}
+	// Resolve in sorted name order so the edge cut to break a reference cycle is
+	// deterministic — map iteration order would otherwise vary the resolved
+	// structure (and its WARN logs) run-to-run for the same named.conf.
+	names := make([]string, 0, len(cfg.ACLs))
 	for name := range cfg.ACLs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
 		r.resolveACL(name)
 	}
 	for i := range cfg.Views {
@@ -695,22 +823,36 @@ func (r *aclResolver) resolveACL(name string) {
 	r.state[name] = 2
 }
 
+// rejectAllElement is the fail-closed replacement for a negated element that can
+// never fire — an undefined or cyclic reference, or a group whose entire content
+// was dropped. A negated element is an exclusion; simply dropping it would WIDEN
+// the list (a following `any` would then accept everyone), violating the
+// matcher's "a reduced rule set can only narrow, never widen" contract. `!any`
+// always fires and rejects, so it narrows the list to match no client.
+var rejectAllElement = Element{Kind: ElemAny, Negated: true}
+
 // resolveList resolves references and nested groups within elems, returning a
-// filtered list with undefined and cyclic references dropped. scope names the
+// filtered list. A POSITIVE undefined/cyclic reference is dropped (fail-closed:
+// it never matches). A NEGATED undefined/cyclic reference — or a negated group
+// reduced to empty — is replaced by rejectAllElement instead of being dropped,
+// so the lost exclusion narrows rather than widens the list. scope names the
 // enclosing acl or view for the WARN.
 func (r *aclResolver) resolveList(elems []Element, scope string) []Element {
+	if !listNeedsResolution(elems) {
+		// No references or nested groups: nothing to resolve, no element to drop
+		// or replace. Return the input untouched to avoid a needless copy.
+		return elems
+	}
 	var out []Element
 	for _, el := range elems {
 		switch el.Kind {
 		case ElemRef:
 			if _, ok := r.registry[el.RefName]; !ok {
-				r.logger.Sugar().Warnw("dropping match-clients reference to undefined acl (fail-closed: it never matches)",
-					"token", el.RefName, "scope", scope)
+				out = appendUnevaluableRef(out, el, scope, "reference to undefined acl", r.logger)
 				continue
 			}
 			if r.state[el.RefName] == 1 {
-				r.logger.Sugar().Warnw("breaking acl reference cycle (fail-closed: it never matches)",
-					"token", el.RefName, "scope", scope)
+				out = appendUnevaluableRef(out, el, scope, "acl reference cycle", r.logger)
 				continue
 			}
 			r.resolveACL(el.RefName)
@@ -718,11 +860,45 @@ func (r *aclResolver) resolveList(elems []Element, scope string) []Element {
 			out = append(out, el)
 		case ElemGroup:
 			el.Sub = r.resolveList(el.Sub, scope)
+			if el.Negated && len(el.Sub) == 0 {
+				// A negated group reduced to empty can never fire; keep the
+				// exclusion fail-closed instead of letting it widen the list.
+				out = append(out, rejectAllElement)
+				continue
+			}
 			out = append(out, el)
 		default:
 			out = append(out, el)
 		}
 	}
+	return out
+}
+
+// listNeedsResolution reports whether elems contains any reference or nested
+// group that the resolver must rewrite. Lists of plain leaves/built-ins (the
+// common case) need no resolution and can be returned as-is.
+func listNeedsResolution(elems []Element) bool {
+	for _, el := range elems {
+		if el.Kind == ElemRef || el.Kind == ElemGroup {
+			return true
+		}
+	}
+	return false
+}
+
+// appendUnevaluableRef logs a dropped reference and appends its fail-closed
+// replacement (if any) to out. A positive reference is dropped (nothing
+// appended); a negated reference is replaced by rejectAllElement so the lost
+// exclusion narrows the list rather than widening it. reason is the human phrase
+// for the WARN ("reference to undefined acl" / "acl reference cycle").
+func appendUnevaluableRef(out []Element, el Element, scope, reason string, logger *zap.Logger) []Element {
+	if el.Negated {
+		logger.Sugar().Warnw("negated match-clients "+reason+" cannot be evaluated; rejecting the whole list (fail-closed)",
+			"token", el.RefName, "scope", scope)
+		return append(out, rejectAllElement)
+	}
+	logger.Sugar().Warnw("dropping match-clients "+reason+" (fail-closed: it never matches)",
+		"token", el.RefName, "scope", scope)
 	return out
 }
 
