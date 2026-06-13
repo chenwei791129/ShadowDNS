@@ -30,23 +30,61 @@ view "<name>" {
 };
 ```
 
-- 採 **first-match** 語意（與 BIND 相同）：依宣告順序由左至右評估，第一條命中的規則決定 view。
+- 採 **first-match** 語意（與 BIND 相同）：address-match-list 依宣告順序評估，**第一個命中**的元素決定結果 —— 正向元素選中該 view，否定元素（`!`）命中則**拒絕**該 view（評估落到下一個 view）。若沒有任何元素命中，則不選中該 view。
 - 沒有任何 view 命中時回應 **REFUSED**。
-- 支援的規則類型：
+- 支援的元素形式：
 
-| 規則類型 | 範例 |
-|----------|------|
-| GeoIP country | `geoip country TW` |
-| GeoIP ASN | `geoip asnum "AS64500 Example ISP"` |
-| 單一 IPv4 位址 | `192.0.2.10` |
-| IPv4 CIDR | `198.51.100.0/24` |
-| 任意來源 | `any` |
+| 元素 | 範例 | 比對對象 |
+|----------|------|------|
+| GeoIP country | `geoip country TW` | geo 查詢位址的國別 |
+| GeoIP ASN | `geoip asnum "AS64500 Example ISP"` | geo 查詢位址的 AS 編號 |
+| 單一 IPv4 位址 | `192.0.2.10` | 來源 IP |
+| IPv4 CIDR | `198.51.100.0/24` | 來源 IP |
+| 具名 acl 參照 | `internal` | 被參照的 `acl` 所比對的內容 |
+| 巢狀群組 | `{ 192.0.2.0/24; 198.51.100.0/24; }` | 群組自身的有序清單 |
+| 否定 | `! 192.0.2.0/24` | 反轉：命中的 client 會被**拒絕** |
+| `any` | `any` | 所有 client（catch-all） |
+| `none` | `none` | 不命中任何 client |
+| `localhost` | `localhost` | 伺服器自身的位址 |
+| `localnets` | `localnets` | 伺服器各介面所屬的網段 |
+
+GeoIP country/ASN 元素比對 geo 查詢位址（有 [ECS](../guides/ecs.md) 衍生位址時用它，否則用來源 IP）；其餘所有元素一律比對傳輸層來源 IP，因此偽造的 ECS 位址永遠無法滿足 IP/CIDR/具名 acl 規則。
 
 !!! warning "`any` view 必須宣告在最後"
     `match-clients` 含 `any;` 的 view 會命中**所有** client。若它排在更精確的 view（如 GeoIP view）之前，後者永遠不會被評估。ShadowDNS 啟動時會對「非最後一個 view 使用 `any`」記 WARN，但不會阻止啟動。
 
 !!! warning "ASN 描述字串格式"
     `geoip asnum` 的字串必須符合 `"AS<數字> <描述>"` 格式（解析規則為 `^AS(\d+)\s`），描述文字會被忽略。不以 `AS` + 數字 + 空白開頭的字串（例如缺少 `AS` 前綴的 `"64500"`）會導致啟動失敗。
+
+### 具名 ACL
+
+用頂層 `acl` 區塊定義可重用的 client 群組，再於任一 view 的 `match-clients`（或另一個 `acl`）以名稱參照：
+
+```text
+acl "internal" {
+    10.0.0.0/8;
+    192.0.2.0/24;
+};
+
+view "internal" {
+    match-clients { internal; };
+    // ...
+};
+
+view "external" {
+    match-clients { ! internal; any; };   // 除 internal 以外的所有人
+    // ...
+};
+```
+
+- `acl` body 使用與 `match-clients` **相同的元素文法** —— 包含 `geoip` 規則、`!` 否定、巢狀群組、內建 ACL，以及對其他具名 ACL 的參照。
+- 參照會解析為被參照 acl 的清單並遞迴評估；前綴 `!` 會否定整個參照。
+- **未定義的參照採 fail-closed**：參照到沒有 `acl` 定義的名稱時會被丟棄並記 WARN 且永不命中 —— 該 view 不服務任何 client，而非匹配所有人。
+- 參照**環**（`a` → `b` → `a`）會被斷開並記 WARN。
+- **重名**的 `acl` 以**最後一筆**定義為準並記 WARN。
+
+!!! note "`localhost` / `localnets` 於載入時解析"
+    `localhost`（伺服器自身位址）與 `localnets`（直接連接的網段）兩個內建 ACL，會在載入設定時從主機網路介面列舉展開，並於每次 reload 重新列舉。
 
 ## 無 view 形態（隱含 `_default` view）
 

@@ -30,23 +30,61 @@ view "<name>" {
 };
 ```
 
-- Uses **first-match** semantics (same as BIND): rules are evaluated left to right in declaration order, and the first matching rule determines the view.
+- Uses **first-match** semantics (same as BIND): the address-match-list is evaluated in declaration order, and the **first element that matches** the client decides the outcome — a positive element selects the view, while a negated element (`!`) that matches **rejects** the view (evaluation falls through to the next view). If no element matches, the view is not selected.
 - When no view matches, the response is **REFUSED**.
-- Supported rule types:
+- Supported element forms:
 
-| Rule type | Example |
-|----------|------|
-| GeoIP country | `geoip country TW` |
-| GeoIP ASN | `geoip asnum "AS64500 Example ISP"` |
-| Single IPv4 address | `192.0.2.10` |
-| IPv4 CIDR | `198.51.100.0/24` |
-| Any source | `any` |
+| Element | Example | Matches |
+|----------|------|------|
+| GeoIP country | `geoip country TW` | the geo lookup address's country |
+| GeoIP ASN | `geoip asnum "AS64500 Example ISP"` | the geo lookup address's AS number |
+| Single IPv4 address | `192.0.2.10` | the source IP |
+| IPv4 CIDR | `198.51.100.0/24` | the source IP |
+| Named acl reference | `internal` | whatever the referenced `acl` matches |
+| Nested group | `{ 192.0.2.0/24; 198.51.100.0/24; }` | the group's own ordered list |
+| Negation | `! 192.0.2.0/24` | inverts: a matching client is **rejected** |
+| `any` | `any` | every client (catch-all) |
+| `none` | `none` | no client |
+| `localhost` | `localhost` | the server's own addresses |
+| `localnets` | `localnets` | the networks attached to the server's interfaces |
+
+GeoIP country/ASN elements are evaluated against the geo lookup address (the [ECS](../guides/ecs.md)-derived address when present, otherwise the source IP); every other element is evaluated against the transport source IP, so a forged ECS address can never satisfy an IP/CIDR/named-acl rule.
 
 !!! warning "The `any` view must be declared last"
     A view whose `match-clients` contains `any;` matches **all** clients. If it precedes more specific views (such as GeoIP views), those will never be evaluated. ShadowDNS logs a WARN at startup when `any` is used by a view that is not the last one, but does not block startup.
 
 !!! warning "ASN description string format"
     The `geoip asnum` string must match the `"AS<number> <description>"` format (the parsing rule is `^AS(\d+)\s`); the description text is ignored. A string not starting with `AS` + digits + whitespace (e.g. `"64500"` missing the `AS` prefix) causes startup failure.
+
+### Named ACLs
+
+Define a reusable client group with a top-level `acl` block, then reference it by name from any view's `match-clients` (or from another `acl`):
+
+```text
+acl "internal" {
+    10.0.0.0/8;
+    192.0.2.0/24;
+};
+
+view "internal" {
+    match-clients { internal; };
+    // ...
+};
+
+view "external" {
+    match-clients { ! internal; any; };   // everyone except internal
+    // ...
+};
+```
+
+- An `acl` body uses the **same element grammar** as `match-clients` — including `geoip` rules, `!` negation, nested groups, the built-in ACLs, and references to other named ACLs.
+- A reference resolves to the named acl's list and is evaluated recursively; a leading `!` negates the whole reference.
+- **Undefined references are fail-closed:** a reference to a name with no `acl` definition is dropped with a WARN and never matches — the enclosing view serves nothing rather than matching everyone.
+- A reference **cycle** (`a` → `b` → `a`) is broken with a WARN.
+- A **duplicate** `acl` name keeps the **last** definition and logs a WARN.
+
+!!! note "`localhost` / `localnets` are resolved at load time"
+    The `localhost` (the server's own addresses) and `localnets` (the directly attached networks) built-ins are expanded from the host's network interfaces when the configuration is loaded, and re-enumerated on each reload.
 
 ## Viewless configurations (implicit `_default` view)
 
