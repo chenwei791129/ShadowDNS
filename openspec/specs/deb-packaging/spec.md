@@ -550,3 +550,90 @@ tests:
   - cmd/shadowdns/main_test.go
   - internal/logging/logger_test.go
 -->
+
+---
+### Requirement: Viewless BIND-style example configuration file
+
+The `.deb` package SHALL install a viewless BIND-style example configuration file at `/etc/shadowdns/named.conf.viewless.example` to help operators who want a Debian-style authoritative setup without GeoIP views. The file SHALL be a self-contained, valid viewless `named.conf` skeleton consisting of an `options` block and one or more top-level `zone "<domain>" { type master; file "<path>"; };` declarations (no `view` block), and SHALL carry a comment pointing to the migration guide for BIND `named.conf.default-zones` compatibility. This file is installed in addition to, and does not replace, the existing `named.conf.example`.
+
+#### Scenario: Viewless example is installed
+
+- **WHEN** the package is installed
+- **THEN** `/etc/shadowdns/named.conf.viewless.example` SHALL exist AND contain a valid viewless `named.conf` skeleton with an `options` block and at least one top-level `zone` declaration of `type master` and no `view` block
+
+#### Scenario: Viewless example loads without a fatal error
+
+- **WHEN** ShadowDNS is started with `--named-conf` pointed at a copy of the installed `named.conf.viewless.example` whose zone `file` paths resolve to present zone files
+- **THEN** the configuration loads without a fatal error AND the top-level zones are served via the synthesized default view
+
+<!-- @trace
+source: bind-migration-docs-examples
+updated: 2026-06-13
+code:
+  - docs/index.md
+  - testdata/integration/master/cnames/example.com_cname
+  - testdata/integration/bindcompat/named.conf
+  - internal/view/matcher.go
+  - docs/migration.zh.md
+  - nfpm.yaml
+  - scripts/smoke.sh
+  - testdata/integration/README.md
+  - internal/config/match.go
+  - testdata/integration/bindcompat/db.0
+  - testdata/integration/named.conf.options
+  - testdata/integration/bindcompat/named.conf.default-zones
+  - testdata/integration/bindcompat/named.conf.local
+  - testdata/integration/db.example.com-th
+  - docs/configuration/named-conf.md
+  - testdata/integration/master.zones
+  - testdata/integration/named.conf
+  - testdata/integration/bindcompat/db.local
+  - testdata/integration/bindcompat/db.255
+  - testdata/integration/bindcompat/shadowdns.yaml
+  - testdata/integration/master/backup.example_view-other.fwd
+  - packaging/named.conf.local.example
+  - docs/getting-started.md
+  - scripts/gen-container-testdata.go
+  - docs/getting-started.zh.md
+  - docs/configuration/named-conf.zh.md
+  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/master/example.com_include.fwd
+  - internal/config/options.go
+  - scripts/test-deb.sh
+  - testdata/integration/cnames/db.example.com.cname
+  - docs/index.zh.md
+  - testdata/integration/db.include-test.example
+  - README.md
+  - packaging/named.conf.options.example
+  - docs/migration.md
+  - testdata/integration/bindcompat/named.conf.options
+  - testdata/integration/named.conf.local
+  - internal/server/build.go
+  - internal/view/netmatch.go
+  - testdata/integration/db.backup.example.overrides
+  - testdata/integration/bindcompat/README.md
+  - testdata/integration/master/example.com_view-other.fwd
+  - packaging/named.conf.example
+  - testdata/integration/master/backup.example_overrides
+  - internal/config/zones.go
+  - testdata/integration/bindcompat/db.127
+  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.backup.example-th
+  - testdata/integration/db.backup.example-other
+  - testdata/integration/db.example.com-other
+  - packaging/named.conf.viewless.example
+tests:
+  - internal/config/match_test.go
+  - internal/server/handler_ecs_test.go
+  - internal/server/build_test.go
+  - internal/prunebackup/lexer_test.go
+  - test/integration/alias_rdata_rewrite_test.go
+  - test/integration/helpers_test.go
+  - test/integration/query_test.go
+  - test/integration/listenon_test.go
+  - test/integration/prune_backup_test.go
+  - internal/server/server_test.go
+  - internal/config/zones_test.go
+  - test/integration/bind_compat_test.go
+  - internal/view/matcher_test.go
+-->

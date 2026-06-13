@@ -45,6 +45,12 @@ contents:
   - src: ./packaging/named.conf.local.example
     dst: /etc/shadowdns/named.conf.local.example
 
+  # Self-contained viewless (no-GeoIP) starter, installed alongside the
+  # view-based named.conf.example above. See the migration guide for the
+  # implicit _default view and BIND default-zones tolerance.
+  - src: ./packaging/named.conf.viewless.example
+    dst: /etc/shadowdns/named.conf.viewless.example
+
   - src: ./packaging/shadowdns.yaml.example
     dst: /etc/shadowdns/shadowdns.yaml.example
 

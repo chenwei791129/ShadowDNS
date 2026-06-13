@@ -1,0 +1,95 @@
+// named.conf.viewless.example — ShadowDNS viewless (no-GeoIP) starter
+//
+// A self-contained, single-file named.conf skeleton for a Debian-style
+// authoritative setup that does NOT use GeoIP split-horizon views. ShadowDNS
+// does not require any `view` block: when the configuration declares zones at
+// the top level (outside every view) and contains no view block, ShadowDNS
+// synthesizes an implicit `_default` view matching every client. This mirrors
+// BIND's behavior when no views are configured.
+//
+// Copy this file, adjust the zone names and "file" paths to your zone data,
+// and point ShadowDNS at it:
+//
+//     shadowdns --named-conf /etc/shadowdns/named.conf.viewless.example \
+//               --config     /etc/shadowdns/shadowdns.yaml
+//
+// This file is installed alongside (not instead of) named.conf.example; the
+// latter demonstrates the view-based split-horizon layout.
+//
+// IP addresses use the RFC 5737 documentation ranges (192.0.2.0/24,
+// 198.51.100.0/24, 203.0.113.0/24); replace them with your real addresses
+// before deploying. See the manual for the full directive reference:
+//   - named.conf Compatibility: tiered tolerance contract + supported options
+//   - Migrating from BIND: BIND drop-in compatibility and the viewless model
+//
+// BIND default-zones note: a stock Debian BIND ships a "named.conf.default-zones"
+// include defining localhost/reverse/root-hint zones. ShadowDNS is
+// authoritative-only and does not act on hint zones; any such zone whose type
+// is not `master` is dropped on load and logged at INFO (it is tolerated, not
+// fatal), so an unmodified default-zones include does not block startup. See
+// the "Migrating from BIND" guide for what is tolerated or ignored on load.
+
+// ---------------------------------------------------------------------------
+// Global options
+// ---------------------------------------------------------------------------
+options {
+    // Working directory for all relative paths in zone "file" directives.
+    // "/etc/bind" is the Debian/Ubuntu-idiomatic location for authoritative
+    // zone files alongside the configuration.
+    directory "/etc/bind";
+
+    // No geoip-directory: a viewless configuration uses the implicit `_default`
+    // view, which carries only an `any` rule and no geo rules, so no mmdb files
+    // are needed and ShadowDNS starts without GeoIP databases.
+
+    // PID file used by `shadowdns reload` to locate the running server.
+    // The bundled systemd unit provisions /var/run/shadowdns automatically.
+    pid-file "/var/run/shadowdns/pid";
+
+    // Accept DNS queries on all IPv4 interfaces. Replace "any" with a specific
+    // address to bind a single interface, e.g.:  listen-on { 192.0.2.1; };
+    listen-on { any; };
+
+    // Disable IPv6 listening. Change to "any" if you need dual-stack.
+    listen-on-v6 { none; };
+
+    // ShadowDNS is an authoritative-only server; do not forward queries.
+    recursion no;
+
+    // Suppress unnecessary authority/additional sections in responses.
+    minimal-responses yes;
+
+    // Hide the BIND version string and hostname from CHAOS TXT queries.
+    version none;
+    hostname none;
+
+    // Secondaries allowed to pull zone data via AXFR. Options-scope
+    // allow-transfer is the one access-control directive ShadowDNS enforces
+    // (it is the AXFR ACL): only the IPs listed here may transfer; everyone
+    // else is REFUSED, and an empty list denies all. Add one line per secondary.
+    allow-transfer {
+        192.0.2.10;   // secondary ns1
+        192.0.2.11;   // secondary ns2
+    };
+
+    // Send NOTIFY to secondaries on startup and after reload.
+    notify yes;
+};
+
+// ---------------------------------------------------------------------------
+// Top-level zones (no view block)
+//
+// Each zone is declared directly at the top level. Only `type master` is
+// served; the "file" path is resolved against options.directory above. Place
+// the options block ahead of these declarations so relative paths resolve
+// against options.directory rather than this file's directory.
+// ---------------------------------------------------------------------------
+zone "example.com" {
+    type master;
+    file "db.example.com";
+};
+
+zone "example.net" {
+    type master;
+    file "db.example.net";
+};
