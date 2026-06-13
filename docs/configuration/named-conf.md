@@ -1,6 +1,23 @@
 # named.conf Compatibility
 
-ShadowDNS reads your existing BIND `named.conf` directly — no format conversion needed. This page covers the supported directive scope, view matching semantics, RRL and query logging configuration, and the directives that are rejected.
+ShadowDNS reads your existing BIND `named.conf` directly — no format conversion needed. This page covers the supported directive scope, view matching semantics, RRL and query logging configuration, the tiered tolerance contract, and the directives that are rejected.
+
+## Tiered tolerance contract
+
+ShadowDNS is a **drop-in** reader of a BIND `named.conf`: it loads any syntactically valid configuration and reacts to each construct at one of four tiers, so the behavior is predictable rather than discovered by trial. The governing principle is **fail-closed** — a construct ShadowDNS cannot evaluate is never allowed to *widen* access.
+
+| Tier | What ShadowDNS does | Representative constructs |
+|------|---------------------|---------------------------|
+| **Silent** (DEBUG / no log) | Consumes and ignores the construct without operator-visible noise | Unrecognized non-access-control directives at top level or view scope (`key`, `controls`, `server`, `masters`, `dnssec-enable`, …); access-control directives inside a `zone` block (skipped, still not enforced); query logging disabled via a built-in channel (`default_syslog`, `null`, …) |
+| **INFO** | Skips and logs once at INFO — informational, no action required | Recursion-family directives (`recursion`, `forwarders`, `dnssec-validation`); a zone whose `type` is not `master` (dropped, `file` never opened) |
+| **WARN** | Skips/drops and logs at WARN — review recommended | Access-control directives at **top level or view scope** (`allow-query`, `allow-recursion`, `allow-transfer`, `allow-update`, `allow-notify`, `blackhole`) with a "does not enforce" message; an unknown `match-clients` token (dropped, fail-closed); an undefined or cyclic `acl` reference (fail-closed); a duplicate `acl` / `options` / top-level-zone name (last wins); an unsupported `listen-on` token; `qps-scale` and a view-scope `rate-limit`; a non-last `any` view |
+| **fail-closed (fatal)** | Aborts startup citing the offending file and line | Genuine syntax errors (unbalanced brace, missing `;`, unterminated block); a malformed `geoip asnum` value (no leading `AS<number>`); `geoip-directory` unset while a view uses `geoip` rules; mixing `view` blocks with top-level zones |
+
+### Fail-closed doctrine
+
+The fail-closed doctrine governs the WARN tier specifically: when an access-control element of a `match-clients` list (or an `acl` body) cannot be evaluated — an unknown token, a reference to an undefined named ACL, or a reference cycle — it is dropped and treated as **never-matching**, never as **match-all**. A view built entirely from unevaluable elements therefore serves nothing rather than matching everyone. This guarantees a typo in a `match-clients` list can never silently expose a restricted view to every client.
+
+The one access-control directive ShadowDNS **does** enforce is **options-scope `allow-transfer`**, which is the AXFR ACL (see [Migrating from BIND](../migration.md#access-control-model-differences) for the scope distinction). View- or zone-scope `allow-*` directives fall into the WARN tier above and are not enforced.
 
 ## Supported options directives
 
@@ -187,16 +204,24 @@ ShadowDNS parses the standard `logging{}` block (a `channel`'s `file`/`severity`
 - SIGUSR1 reopens the query log file along with `--log-file`.
 - A SIGHUP reload re-applies `logging{}` changes: modifications to the path and `print-*` options take effect without a restart.
 
-## Unsupported / rejected directives
+## Directive handling summary
 
-| Directive | Behavior |
-|------|------|
-| `type slave`, `type forward` zones | Fatal error at startup |
-| `allow-update`, `dnssec-enable` | Rejected at startup |
-| `rate-limit` inside a view | Warned about and ignored |
-| `qps-scale` | Warned about and ignored |
+Every BIND directive ShadowDNS encounters resolves to one of the four tiers in the [Tiered tolerance contract](#tiered-tolerance-contract). The table below summarizes the cases operators ask about most:
 
-Recursion is always off (`recursion no` is always in effect); ShadowDNS is a purely authoritative server.
+| Directive | Tier | Behavior |
+|------|------|------|
+| `type slave`, `type forward` zones | INFO | Zone dropped (not served), its `file` never opened; loading continues |
+| `allow-update`, `allow-notify`, `blackhole` | WARN | Skipped and logged as not enforced |
+| `allow-query` / `allow-recursion` / `allow-transfer` at **view scope** | WARN | Skipped and logged as not enforced; the same directives inside a `zone` block are skipped silently — neither scope is enforced (see [access-control model](../migration.md#access-control-model-differences)) |
+| `dnssec-enable` | Silent | Skipped without operator-visible noise |
+| `recursion`, `forwarders`, `dnssec-validation` | INFO | Skipped; ShadowDNS is authoritative-only |
+| `rate-limit` inside a view | WARN | Skipped; RRL is supported only at `options` scope |
+| `qps-scale` | WARN | Skipped; load-adaptive scaling is not implemented |
+| Unbalanced brace / missing `;` / unterminated block | fail-closed | Startup aborts citing the file and line |
+| `geoip asnum` without a leading `AS<number>` | fail-closed | Startup aborts |
+| `view` blocks mixed with top-level zones | fail-closed | Startup aborts naming the first top-level zone |
+
+Recursion is always off (`recursion no` is always in effect); ShadowDNS is a purely authoritative server. **Options-scope `allow-transfer` is the one access-control directive ShadowDNS does enforce** — it is the AXFR ACL (see [Migrating from BIND](../migration.md#access-control-model-differences)).
 
 ## Example
 

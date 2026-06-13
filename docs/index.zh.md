@@ -30,6 +30,7 @@ ShadowDNS 透過 zone aliasing 消除這項浪費：
 
 | 功能                               | BIND (master) | ShadowDNS  |
 |------------------------------------|---------------|------------|
+| BIND `named.conf` drop-in          | 原生          | Yes        |
 | RFC 1035 zone file 解析            | Yes           | Yes        |
 | Split-horizon views                | Yes           | Yes        |
 | GeoIP country 比對                 | Yes           | Yes        |

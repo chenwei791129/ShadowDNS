@@ -28,6 +28,7 @@ In the reference deployment, memory usage is reduced by about **80%** compared w
 
 | Feature                            | BIND (master) | ShadowDNS  |
 |------------------------------------|---------------|------------|
+| BIND `named.conf` drop-in          | Native        | Yes        |
 | RFC 1035 zone file parsing         | Yes           | Yes        |
 | Split-horizon views                | Yes           | Yes        |
 | GeoIP country matching             | Yes           | Yes        |

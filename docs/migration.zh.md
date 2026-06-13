@@ -1,6 +1,40 @@
 # 從 BIND 遷移到 ShadowDNS
 
-本文件為 DNS Ops 團隊提供將 BIND master 替換為 ShadowDNS 的操作指引，涵蓋環境前置條件、四階段切換步驟、Rollback 策略、監控檢核清單、常見問題，以及切換完成後的 Day 2 維運（監控告警與例行 SOP）。
+本文件為 DNS Ops 團隊提供將 BIND master 替換為 ShadowDNS 的操作指引，涵蓋 BIND drop-in 相容、環境前置條件、四階段切換步驟、Rollback 策略、監控檢核清單、常見問題，以及切換完成後的 Day 2 維運（監控告警與例行 SOP）。
+
+---
+
+## BIND drop-in 相容
+
+ShadowDNS 直接讀取既有的 BIND `named.conf` —— 不需轉換格式、不需重寫。規劃切換前，請先了解 ShadowDNS 載入你目前設定時究竟會怎麼處理。
+
+### 將 ShadowDNS 指向既有的 named.conf
+
+直接把 `--named-conf` 指向你線上的 BIND 設定：
+
+```bash
+./shadowdns \
+    --named-conf /etc/bind/named.conf \
+    --config     /etc/bind/shadowdns.yaml
+```
+
+`include` 指令以包含它的檔案為基底解析，所以 Debian 慣用的拆分結構（`named.conf` 拉進 `named.conf.options` 與 `named.conf.local`）可原樣載入。ShadowDNS 只需額外加上 `--config` 檔提供 alias map（`aliases:` 區段）；`named.conf` 本身完全不必修改即可起步。
+
+### 載入時被容忍或忽略的構造
+
+ShadowDNS 把遇到的每個構造分類到四個層級之一 —— **silent**、**INFO**、**WARN**、**fail-closed（fatal）**。BIND 設定中會帶有 ShadowDNS 不處理的指令（recursion 設定、DNSSEC 選項、`type slave` / `type forward` zone、`key` / `controls` / `acl` 區塊、view 範圍的存取控制）。ShadowDNS 不會因此拒絕啟動，而是**容忍**這些構造：不支援的 zone type 與 recursion 家族指令被丟棄並記 INFO，view／zone 範圍的存取控制指令被丟棄並記 WARN，其餘多數未識別的區塊則被靜默消化。只有真正的語法錯誤與少數結構衝突（格式錯誤的 `geoip asnum`、view 區塊與頂層 zone 混用、view 用 `geoip` 規則但未設 `geoip-directory`）才會 fatal。
+
+完整的逐層分類與逐指令摘要見 [named.conf 相容性](configuration/named-conf.md#分層容忍契約)頁。對你的生產設定跑 `--dry-run`，即可看到 ShadowDNS 究竟跳過哪些指令、各記在哪個層級（見下方 Phase 0）。
+
+### 存取控制模型差異
+
+ShadowDNS 的存取控制模型與 BIND 有一個切換前必須內化的差異：
+
+- **view 的選擇靠 `match-clients`。** ShadowDNS 以 first-match 順序評估各 view 的 `match-clients` address-match-list，將查詢路由到 view —— 與 BIND 完全一致。這是 ShadowDNS 在應答查詢時唯一採用的 client 分類機制。
+- **options 範圍的 `allow-transfer` 會被強制 —— 它就是 AXFR ACL。** 全域 `options` 區塊宣告的 `allow-transfer { ... };` 被當成 zone transfer ACL：只有列在其中的來源 IP 能取得 AXFR，其餘一律 REFUSED，空清單則拒絕所有。這是本指南通篇依賴的既有 zone-transfer 行為（適用前提的 slave IP 清單、Phase 2 的 AXFR 檢查、以及疑難排解 FAQ 都假設它成立）。
+- **view 與 zone 範圍的 `allow-query` / `allow-recursion` / `allow-transfer` 不會被強制。** 這類指令在載入時會被丟棄 —— view 範圍的會記 WARN 並附「does not enforce」訊息，zone 範圍的則靜默跳過。兩者對 ACL 都無作用：ShadowDNS 完全不以 client ACL 限制**查詢**應答，只要 client 經 `match-clients` 命中某 view，該 view 的 zone 就會被服務。若你的 BIND 部署靠 view 範圍的 `allow-query` 對特定 client 隱藏 zone，請改用 `match-clients` 複製該邊界（讓該 client 落在不含那些 zone 的 view），而非期待 `allow-query` 被遵守。
+
+fail-closed doctrine 仍套用於 view 選擇：無法評估的 `match-clients` 元素（未知 token、未定義 `acl`）會被丟棄並視為永不命中，因此設定錯誤的 view 不服務任何 client，而非匹配所有 client。
 
 ---
 
@@ -47,7 +81,7 @@
 
 5. 觀察啟動 log，確認：
    - 所有 view 與 zone 均成功載入
-   - 無 `fatal` 或 `unsupported directive` 錯誤
+   - 無 `fatal` 啟動錯誤（BIND drop-in 設定出現 skipped-directive 的 INFO/WARN log 是預期的 —— 見[常見問題](#常見問題)）
    - GeoIP mmdb 載入成功
 
 6. 以 `dig` 對 ShadowDNS 測試實例發送代表性查詢，驗證 root zone 與 backup zone 回應正確：
@@ -354,11 +388,13 @@ dig @<shadowdns-ip> <backup-domain> A
 
 ---
 
-**Q：ShadowDNS 啟動時出現 `unsupported directive` 錯誤**
+**Q：啟動 log 顯示有指令被跳過 —— 有問題嗎？**
 
-ShadowDNS 在啟動時會拒絕部分 BIND 指令（如 `type slave`、`type forward`、`dnssec-enable`、`allow-update`）。錯誤訊息會指出具體檔案路徑與行號。
+通常沒有。ShadowDNS 對不處理的 BIND 指令採容忍而非失敗。像 `type slave` / `type forward` zone（被丟棄、記 INFO）、`dnssec-enable`（silent）、以及 view／zone 範圍的存取控制如 `allow-query` / `allow-update`（記 WARN 為不強制）都會被跳過，載入繼續。在 BIND drop-in 設定上這是預期行為 —— 完整分類見[載入時被容忍或忽略的構造](#載入時被容忍或忽略的構造)與[分層容忍契約](configuration/named-conf.md#分層容忍契約)。
 
-處理方式：從 `named.conf`（或其 `named.conf.options` / `named.conf.local` include 檔）中移除該指令，或將對應 zone 從 ShadowDNS 的設定範圍中排除。
+要特別讀的是跳過 `allow-query` / `allow-recursion` / view 範圍 `allow-transfer` 的 WARN：ShadowDNS 不強制 client 查詢 ACL（見[存取控制模型差異](#存取控制模型差異)）。若你原本靠該指令對特定 client 隱藏 zone，請改用 `match-clients` 複製該邊界。
+
+ShadowDNS 只在真正的語法錯誤（括號不對稱、缺 `;`）或少數結構衝突（格式錯誤的 `geoip asnum`、view 區塊與頂層 zone 混用、view 用 `geoip` 規則但未設 `geoip-directory`）時才會**啟動失敗**。這些錯誤會指出具體檔案路徑與行號；修正所指位置即可。
 
 ---
 

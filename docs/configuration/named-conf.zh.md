@@ -1,6 +1,23 @@
 # named.conf 相容性
 
-ShadowDNS 直接讀取既有的 BIND `named.conf`，不需要轉換格式。本頁說明支援的指令範圍、view 比對語意、RRL 與 query logging 設定，以及會被拒絕的指令。
+ShadowDNS 直接讀取既有的 BIND `named.conf`，不需要轉換格式。本頁說明支援的指令範圍、view 比對語意、RRL 與 query logging 設定、分層容忍契約，以及會被拒絕的指令。
+
+## 分層容忍契約
+
+ShadowDNS 是 BIND `named.conf` 的 **drop-in** 讀取器：只要設定語法合法就能載入，並以四個層級之一回應每個構造，讓行為可預測、不必靠試誤摸索。其指導原則是 **fail-closed** —— ShadowDNS 無法評估的構造，永遠不會被允許**放寬**存取。
+
+| 層級 | ShadowDNS 的處理 | 代表性構造 |
+|------|------------------|------------|
+| **Silent**（DEBUG／不記錄） | 消化並忽略該構造，不產生操作者可見的雜訊 | 頂層或 view 範圍內未識別的非存取控制指令（`key`、`controls`、`server`、`masters`、`dnssec-enable`……）；`zone` 區塊內的存取控制指令（跳過，仍不強制）；經由內建 channel（`default_syslog`、`null`……）停用 query logging |
+| **INFO** | 跳過並記錄一筆 INFO —— 純資訊性，無需動作 | recursion 家族指令（`recursion`、`forwarders`、`dnssec-validation`）；`type` 非 `master` 的 zone（被丟棄，`file` 永不開啟） |
+| **WARN** | 跳過／丟棄並記錄 WARN —— 建議檢視 | **top level 或 view 範圍**的存取控制指令（`allow-query`、`allow-recursion`、`allow-transfer`、`allow-update`、`allow-notify`、`blackhole`），附「does not enforce」訊息；未知的 `match-clients` token（丟棄，fail-closed）；未定義或成環的 `acl` 參照（fail-closed）；重複的 `acl` / `options` / 頂層 zone 名稱（最後一筆為準）；不支援的 `listen-on` token；`qps-scale` 與 view 範圍的 `rate-limit`；非最後一個的 `any` view |
+| **fail-closed（fatal）** | 中止啟動並指出違規的檔案與行號 | 真正的語法錯誤（括號不對稱、缺終止 `;`、未封閉區塊）；格式錯誤的 `geoip asnum`（無前綴 `AS<數字>`）；view 使用 `geoip` 規則但未設 `geoip-directory`；view 區塊與頂層 zone 混用 |
+
+### Fail-closed doctrine
+
+fail-closed doctrine 專門規範 WARN 層：當 `match-clients` 清單（或 `acl` body）的某個存取控制元素無法評估 —— 未知 token、參照到未定義的具名 ACL、或參照成環 —— 該元素會被丟棄並視為**永不命中**，絕不視為**匹配所有人**。因此完全由無法評估的元素組成的 view 不服務任何 client，而非匹配所有人。這保證了 `match-clients` 清單中的一個打字錯誤，永遠不會悄悄把受限 view 暴露給所有 client。
+
+ShadowDNS **唯一會強制**的存取控制指令是 **options 範圍的 `allow-transfer`**，它就是 AXFR ACL（scope 區分見[從 BIND 遷移](../migration.md#存取控制模型差異)）。view 或 zone 範圍的 `allow-*` 指令落在上述 WARN 層，不會被強制。
 
 ## 支援的 options 指令
 
@@ -187,16 +204,24 @@ ShadowDNS 解析標準的 `logging{}` 區塊（`channel` 的 `file`/`severity`/`
 - SIGUSR1 會連同 `--log-file` 一起重開 query log 檔。
 - SIGHUP reload 會重新套用 `logging{}` 變更：路徑與 `print-*` 選項的修改不需重啟即可生效。
 
-## 不支援／會被拒絕的指令
+## 指令處理摘要
 
-| 指令 | 行為 |
-|------|------|
-| `type slave`、`type forward` zone | 啟動時 fatal error |
-| `allow-update`、`dnssec-enable` | 啟動時拒絕 |
-| `rate-limit` 於 view 內 | 警告並忽略 |
-| `qps-scale` | 警告並忽略 |
+ShadowDNS 遇到的每個 BIND 指令都會落到[分層容忍契約](#分層容忍契約)的四個層級之一。下表摘錄操作者最常詢問的情況：
 
-Recursion 永遠關閉（`recursion no` 恆為有效），ShadowDNS 是純權威伺服器。
+| 指令 | 層級 | 行為 |
+|------|------|------|
+| `type slave`、`type forward` zone | INFO | zone 被丟棄（不服務），其 `file` 永不開啟；載入繼續 |
+| `allow-update`、`allow-notify`、`blackhole` | WARN | 跳過並記錄為不強制 |
+| **view 範圍**的 `allow-query` / `allow-recursion` / `allow-transfer` | WARN | 跳過並記錄為不強制；同樣指令在 `zone` 區塊內則靜默跳過 —— 兩種範圍皆不強制（見[存取控制模型](../migration.md#存取控制模型差異)） |
+| `dnssec-enable` | Silent | 跳過，不產生操作者可見的雜訊 |
+| `recursion`、`forwarders`、`dnssec-validation` | INFO | 跳過；ShadowDNS 為純權威 |
+| `rate-limit` 於 view 內 | WARN | 跳過；RRL 只支援 `options` 範圍 |
+| `qps-scale` | WARN | 跳過；不實作 load-adaptive scaling |
+| 括號不對稱／缺 `;`／未封閉區塊 | fail-closed | 中止啟動並指出檔案與行號 |
+| `geoip asnum` 無前綴 `AS<數字>` | fail-closed | 中止啟動 |
+| view 區塊與頂層 zone 混用 | fail-closed | 中止啟動並指出第一個頂層 zone |
+
+Recursion 永遠關閉（`recursion no` 恆為有效），ShadowDNS 是純權威伺服器。**options 範圍的 `allow-transfer` 是 ShadowDNS 唯一會強制的存取控制指令** —— 它就是 AXFR ACL（見[從 BIND 遷移](../migration.md#存取控制模型差異)）。
 
 ## 範例
 

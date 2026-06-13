@@ -66,6 +66,7 @@ Response sent to client
 
 ### Supported
 
+- **BIND `named.conf` drop-in** — point `--named-conf` at an existing `/etc/bind/named.conf` (Debian-idiomatic `include` split and all) and ShadowDNS loads it directly. Constructs ShadowDNS does not act on are handled under a tiered tolerance contract (silent / INFO / WARN / fail-closed): unsupported zone types and recursion/DNSSEC directives are skipped and logged, not fatal, so a real BIND config still starts. Access control is governed by a fail-closed doctrine — an unevaluable `match-clients` element matches nothing rather than everyone. See [docs/migration.md](docs/migration.md) and [docs/configuration/named-conf.md](docs/configuration/named-conf.md)
 - `named.conf` options block (`directory`, `geoip-directory`, `listen-on`, `listen-on-v6`, `allow-transfer`, `recursion`, `minimal-responses`, `version`, `hostname`, `transfer-format`, `notify`)
 - `listen-on { any; }` and explicit IPv4 address lists from `named.conf` are honored via per-address binding. Individual bind failures (e.g. a `127.0.0.x` alias occupied by `systemd-resolved`) log a warning and are skipped; the server starts as long as at least one listener binds. See [docs/migration.md](docs/migration.md) for the precedence rules between `--listen` and `listen-on`
 - `listen-on-v6` from `named.conf` drives IPv6 listeners using the same per-address binding model as IPv4. Supported tokens: `any` (enumerates local IPv6 interface addresses, excluding link-local `fe80::/10` addresses that require a zone index, but including loopback `::1`), `none`, and explicit IPv6 address literals (e.g. `2001:db8::1`). IPv6 is opt-in: an absent `listen-on-v6` stanza yields no IPv6 listener, keeping IPv4-only deployments unchanged. Unsupported tokens (IPv4 literals, exclusion `!addr`, ACL names, `port N`) are logged at WARN and skipped non-fatally. `--listen` accepts IPv6 bracket literals (e.g. `[::1]:5353`); with the `:PORT` short form the resolved listener set is the union of `listen-on` (IPv4) and `listen-on-v6` (IPv6) addresses, IPv4 first
@@ -97,13 +98,14 @@ Response sent to client
 - Dynamic Update (RFC 2136) — not planned; all record changes go through zone file edits and reload
 - CNAME Flattening with out-of-bailiwick (external) targets — not planned; resolving an arbitrary external target (e.g. a third-party CDN hostname) at query time requires an outbound recursive path, which conflicts with the authoritative-only, `recursion no` design and degrades GeoIP accuracy (the target is resolved from the server's location, not the client's). Only the in-bailiwick subset is planned (see above); for external apex targets, RFC 9460 HTTPS/SVCB records are the standards-track alternative
 - Recursion — ShadowDNS is authoritative-only; `recursion no` is always in effect
-- `type slave` or `type forward` zones — rejected at startup with a fatal error
-- `allow-update`, `dnssec-enable` directives — rejected at startup
+- `type slave` or `type forward` zones — not served; tolerated on load (the zone is dropped and logged at INFO rather than failing startup, so a mixed BIND config still loads)
+- `allow-update`, `dnssec-enable` directives — not acted on; tolerated on load (skipped and logged rather than rejected). Note: `allow-update` is logged at WARN under the access-control tier, `dnssec-enable` is skipped silently
 
 ### Feature comparison
 
 | Feature                            | BIND (master) | ShadowDNS  |
 |------------------------------------|---------------|------------|
+| BIND `named.conf` drop-in          | Native        | Yes        |
 | RFC 1035 zone file parsing         | Yes           | Yes        |
 | Split-horizon views                | Yes           | Yes        |
 | GeoIP country match                | Yes           | Yes        |

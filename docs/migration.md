@@ -1,6 +1,40 @@
 # Migrating from BIND to ShadowDNS
 
-This document provides the DNS Ops team with operational guidance for replacing a BIND master with ShadowDNS, covering environment prerequisites, the four-phase cutover steps, rollback strategy, monitoring checklist, frequently asked questions, and Day 2 operations after the cutover is complete (monitoring alerts and routine SOPs).
+This document provides the DNS Ops team with operational guidance for replacing a BIND master with ShadowDNS, covering BIND drop-in compatibility, environment prerequisites, the four-phase cutover steps, rollback strategy, monitoring checklist, frequently asked questions, and Day 2 operations after the cutover is complete (monitoring alerts and routine SOPs).
+
+---
+
+## BIND drop-in compatibility
+
+ShadowDNS reads an existing BIND `named.conf` directly — no format conversion, no rewrite. Before planning a cutover, understand exactly what ShadowDNS does with your current configuration on load.
+
+### Pointing ShadowDNS at an existing named.conf
+
+Point `--named-conf` straight at your live BIND configuration:
+
+```bash
+./shadowdns \
+    --named-conf /etc/bind/named.conf \
+    --config     /etc/bind/shadowdns.yaml
+```
+
+`include` directives are resolved relative to the including file, so the Debian-idiomatic split (`named.conf` pulling in `named.conf.options` and `named.conf.local`) loads unchanged. ShadowDNS only needs the `--config` file added for the alias map (the `aliases:` section); nothing in `named.conf` has to be edited to get started.
+
+### What is tolerated or ignored on load
+
+ShadowDNS classifies every construct it encounters into one of four tiers — **silent**, **INFO**, **WARN**, or **fail-closed (fatal)**. A BIND config carries directives ShadowDNS does not act on (recursion settings, DNSSEC options, `type slave` / `type forward` zones, `key` / `controls` / `acl` blocks, view-scope access control). Rather than refusing to start, ShadowDNS **tolerates** these: unsupported zone types and recursion-family directives are dropped and logged at INFO, view/zone-scope access-control directives are dropped and logged at WARN, and most other unrecognized blocks are consumed silently. Only genuine syntax errors and a handful of structural conflicts (a malformed `geoip asnum`, mixing `view` blocks with top-level zones, `geoip-directory` unset while a view uses `geoip` rules) are fatal.
+
+The full tier-by-tier classification and the per-directive summary live on the [named.conf Compatibility](configuration/named-conf.md#tiered-tolerance-contract) page. Run `--dry-run` against your production config to see exactly which directives ShadowDNS skips and at what level (see Phase 0 below).
+
+### Access-control model differences
+
+ShadowDNS's access-control model differs from BIND's in one way operators must internalize before cutover:
+
+- **View selection is by `match-clients`.** ShadowDNS routes a query to a view by evaluating each view's `match-clients` address-match-list in first-match order — exactly as BIND does. This is the only client-classification mechanism ShadowDNS honors for answering queries.
+- **Options-scope `allow-transfer` IS enforced — it is the AXFR ACL.** The `allow-transfer { ... };` declared in the global `options` block is honored as the zone-transfer ACL: only source IPs listed there receive AXFR; everyone else gets REFUSED, and an empty list denies all. This is the existing zone-transfer behavior relied on throughout this guide (the Prerequisites slave-IP list, the Phase 2 AXFR checks, and the troubleshooting FAQ all assume it).
+- **View- and zone-scope `allow-query` / `allow-recursion` / `allow-transfer` are NOT enforced.** Such directives are dropped on load — a view-scope occurrence is logged at WARN with a "does not enforce" message, while a zone-scope occurrence is skipped silently. Either way the ACL has no effect: ShadowDNS does not restrict *query* answering by client ACL at all, so if a client matches a view via `match-clients`, that view's zones are served. If your BIND deployment relies on a view-scope `allow-query` to hide zones from certain clients, replicate that boundary with `match-clients` (so the client lands in a view that does not contain those zones) rather than expecting `allow-query` to be honored.
+
+The fail-closed doctrine still applies to view selection: an unevaluable `match-clients` element (unknown token, undefined `acl`) is dropped and treated as never-matching, so a misconfigured view serves nothing rather than matching every client.
 
 ---
 
@@ -47,7 +81,7 @@ Before starting any cutover work, confirm each of the following environment cond
 
 5. Observe the startup log and confirm:
    - All views and zones load successfully
-   - No `fatal` or `unsupported directive` errors
+   - No `fatal` startup errors (skipped-directive INFO/WARN logs are expected on a BIND drop-in config — see [the FAQ on skipped directives](#frequently-asked-questions))
    - GeoIP mmdb loads successfully
 
 6. Use `dig` to send representative queries to the ShadowDNS test instance, verifying that root zone and backup zone responses are correct:
@@ -354,11 +388,13 @@ Possible causes:
 
 ---
 
-**Q: ShadowDNS reports an `unsupported directive` error at startup**
+**Q: The startup log shows directives being skipped — is that a problem?**
 
-ShadowDNS rejects certain BIND directives at startup (such as `type slave`, `type forward`, `dnssec-enable`, `allow-update`). The error message indicates the specific file path and line number.
+Usually not. ShadowDNS tolerates BIND directives it does not act on rather than failing. Directives such as `type slave` / `type forward` zones (dropped, logged at INFO), `dnssec-enable` (silent), and view/zone-scope access control like `allow-query` / `allow-update` (logged at WARN as not enforced) are skipped, and loading continues. This is expected on a BIND drop-in config — see [What is tolerated or ignored on load](#what-is-tolerated-or-ignored-on-load) and the [tiered tolerance contract](configuration/named-conf.md#tiered-tolerance-contract) for the full classification.
 
-How to handle it: remove the directive from `named.conf` (or its `named.conf.options` / `named.conf.local` includes), or exclude the corresponding zone from ShadowDNS's configuration scope.
+A WARN about a skipped `allow-query` / `allow-recursion` / view-scope `allow-transfer` is the one to read closely: ShadowDNS does not enforce client query ACLs (see [Access-control model differences](#access-control-model-differences)). If you were relying on that directive to hide zones from certain clients, replicate the boundary with `match-clients` instead.
+
+ShadowDNS only **fails** to start on genuine syntax errors (unbalanced brace, missing `;`) or a few structural conflicts (a malformed `geoip asnum`, mixing `view` blocks with top-level zones, `geoip-directory` unset while a view uses `geoip` rules). Those errors name the specific file path and line number; fix the cited location.
 
 ---
 
