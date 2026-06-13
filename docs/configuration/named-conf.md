@@ -50,25 +50,39 @@ view "<name>" {
 
 ## Viewless configurations (implicit `_default` view)
 
-ShadowDNS does not require any `view` block. You can declare zones at the top level — outside every `view` block — directly in `named.conf` or any of its `include` files:
+ShadowDNS does not require any `view` block. You can declare zones at the top level — outside every `view` block — directly in `named.conf` or any of its `include` files.
+
+On Debian/Ubuntu the configuration is conventionally split across the `named.conf` / `named.conf.options` / `named.conf.local` include layout. The top-level `named.conf` just pulls in the other two:
 
 ```text
+// named.conf
+include "named.conf.options";
+include "named.conf.local";
+```
+
+```text
+// named.conf.options
 options {
-    directory   "/etc/namedb";
+    directory   "/etc/bind";
     listen-on   { any; };
     recursion   no;
 };
+```
 
+```text
+// named.conf.local
 zone "example.com" {
     type master;
-    file "example.com.zone";
+    file "db.example.com";
 };
 
 zone "example.net" {
     type master;
-    file "example.net.zone";
+    file "db.example.net";
 };
 ```
+
+The `directory "/etc/bind"` here is Debian-idiomatic (authoritative zone files alongside the config).
 
 A top-level zone body follows the **exact same rules** as a zone inside a view: only `type master` is supported, and a relative `file` path keeps the same resolution semantics used during parsing.
 
@@ -148,9 +162,20 @@ Recursion is always off (`recursion no` is always in effect); ShadowDNS is a pur
 
 ## Example
 
+On Debian/Ubuntu the configuration is split across the include layout. The top-level `named.conf` only wires the pieces together:
+
 ```text
+// named.conf
+include "named.conf.options";
+include "named.conf.local";
+```
+
+`named.conf.options` holds the global `options` (and `logging`) blocks:
+
+```text
+// named.conf.options
 options {
-    directory           "/etc/namedb";
+    directory           "/etc/bind";
     geoip-directory     "/usr/local/share/GeoIP/";
     listen-on           { any; };
     listen-on-v6        { none; };
@@ -160,8 +185,29 @@ options {
     hostname            none;
     allow-transfer      { 192.0.2.10; 192.0.2.11; };
 };
-
-include "master.zones";
 ```
+
+`named.conf.local` holds the `view` blocks and their zones. Split-horizon zones that share a name across views use the `db.<zone>-<view>` hyphen naming convention so each view's copy lives in its own file:
+
+```text
+// named.conf.local
+view "th" {
+    match-clients { geoip country TH; };
+    zone "example.com" {
+        type master;
+        file "db.example.com-th";
+    };
+};
+
+view "other" {
+    match-clients { any; };
+    zone "example.com" {
+        type master;
+        file "db.example.com-other";
+    };
+};
+```
+
+The `directory "/etc/bind"` here is Debian-idiomatic (authoritative zone files alongside the config). A zone that exists in only one view needs no view suffix — use plain `db.<zone>`, e.g. `db.include-test.example`.
 
 Zone files use the RFC 1035 master file format (`$TTL`, `$ORIGIN`, `@`, multi-line `(...)`, `;` comments) and support the `$INCLUDE` / `$include` directive (both bare paths and BIND-style double-quoted paths; the directive name is case-insensitive). Limitations: the path itself **must not contain whitespace** (an underlying limitation of the miekg/dns scanner that quoting cannot work around), and the quoted form is only valid in the top-level zone file — fragments pulled in via `$INCLUDE` are read directly by the underlying parser and must use the bare-path form internally.

@@ -50,25 +50,39 @@ view "<name>" {
 
 ## 無 view 形態（隱含 `_default` view）
 
-ShadowDNS 不要求設定任何 `view` 區塊。你可以在所有 `view` 區塊之外，於 `named.conf` 或其任一 `include` 檔中直接宣告頂層 zone：
+ShadowDNS 不要求設定任何 `view` 區塊。你可以在所有 `view` 區塊之外，於 `named.conf` 或其任一 `include` 檔中直接宣告頂層 zone。
+
+在 Debian/Ubuntu 上，設定慣例會拆成 `named.conf` / `named.conf.options` / `named.conf.local` 的 include 結構。最上層的 `named.conf` 只負責拉進另外兩個檔：
 
 ```text
+// named.conf
+include "named.conf.options";
+include "named.conf.local";
+```
+
+```text
+// named.conf.options
 options {
-    directory   "/etc/namedb";
+    directory   "/etc/bind";
     listen-on   { any; };
     recursion   no;
 };
+```
 
+```text
+// named.conf.local
 zone "example.com" {
     type master;
-    file "example.com.zone";
+    file "db.example.com";
 };
 
 zone "example.net" {
     type master;
-    file "example.net.zone";
+    file "db.example.net";
 };
 ```
+
+此處的 `directory "/etc/bind"` 為 Debian 慣用（權威 zone 檔放設定同層）。
 
 頂層 zone 的 zone-body 規則與 view 內 zone **完全相同**：僅支援 `type master`，且相對 `file` 路徑沿用解析期的語意。
 
@@ -148,9 +162,20 @@ Recursion 永遠關閉（`recursion no` 恆為有效），ShadowDNS 是純權威
 
 ## 範例
 
+在 Debian/Ubuntu 上，設定會拆成 include 結構。最上層的 `named.conf` 只負責串接各部分：
+
 ```text
+// named.conf
+include "named.conf.options";
+include "named.conf.local";
+```
+
+`named.conf.options` 放全域的 `options`（與 `logging`）區塊：
+
+```text
+// named.conf.options
 options {
-    directory           "/etc/namedb";
+    directory           "/etc/bind";
     geoip-directory     "/usr/local/share/GeoIP/";
     listen-on           { any; };
     listen-on-v6        { none; };
@@ -160,8 +185,29 @@ options {
     hostname            none;
     allow-transfer      { 192.0.2.10; 192.0.2.11; };
 };
-
-include "master.zones";
 ```
+
+`named.conf.local` 放 `view` 區塊與其 zone。跨 view 同名的 split-horizon zone 採 `db.<zone>-<view>` 連字號命名慣例，讓每個 view 的副本各有獨立檔案：
+
+```text
+// named.conf.local
+view "th" {
+    match-clients { geoip country TH; };
+    zone "example.com" {
+        type master;
+        file "db.example.com-th";
+    };
+};
+
+view "other" {
+    match-clients { any; };
+    zone "example.com" {
+        type master;
+        file "db.example.com-other";
+    };
+};
+```
+
+此處的 `directory "/etc/bind"` 為 Debian 慣用（權威 zone 檔放設定同層）。只存在於單一 view 的 zone 不需 view 後綴 —— 使用純 `db.<zone>`，例如 `db.include-test.example`。
 
 Zone file 採 RFC 1035 master file 格式（`$TTL`、`$ORIGIN`、`@`、跨行 `(...)`、`;` 註解），並支援 `$INCLUDE` / `$include` 指令（裸路徑與 BIND 式雙引號路徑皆可，指令名稱不分大小寫）。限制：路徑本身**不可包含空白**（miekg/dns scanner 的底層限制，加引號也無法繞過），且引號形式只在最上層 zone file 有效 —— 經 `$INCLUDE` 拉進來的片段由底層 parser 直接讀取，內部必須使用裸路徑形式。

@@ -40,8 +40,8 @@ Use the binary produced in step 2 (the example below assumes linux/amd64):
 
 ```bash
 ./bin/shadowdns-linux-amd64 \
-    --named-conf /etc/namedb/named.conf \
-    --config     /etc/namedb/shadowdns.yaml
+    --named-conf /etc/bind/named.conf \
+    --config     /etc/bind/shadowdns.yaml
 ```
 
 ShadowDNS listens on `:53` (UDP and TCP) by default; this can be overridden with `--listen`.
@@ -54,8 +54,8 @@ Before starting for real, it is recommended to first verify with `--dry-run` tha
 
 ```bash
 ./bin/shadowdns-linux-amd64 \
-    --named-conf /etc/namedb/named.conf \
-    --config     /etc/namedb/shadowdns.yaml \
+    --named-conf /etc/bind/named.conf \
+    --config     /etc/bind/shadowdns.yaml \
     --dry-run
 ```
 
