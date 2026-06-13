@@ -102,21 +102,21 @@ tests:
 
 ### Requirement: Resolve client IP to a view using first-match semantics
 
-The view-matcher SHALL accept two addresses — the real client source IP and a geo lookup address — and return the name of the first view whose `match-clients` rule set contains a matching rule. Country and ASN rules SHALL be evaluated against the geo lookup address; `any`, IP, and CIDR rules SHALL be evaluated against the source IP. Callers without an ECS-derived address SHALL pass the source IP as the geo lookup address, in which case behavior is identical to single-address resolution. Rules within a view SHALL be evaluated in declaration order and the first matching rule SHALL select that view without evaluating subsequent rules or views.
+The view-matcher SHALL accept two addresses — the real client source IP and a geo lookup address — and return the name of the first view whose `match-clients` address-match-list **accepts** the client. A view's address-match-list SHALL be evaluated in declaration order: the first element whose predicate matches the client decides the list outcome — a positive (non-negated) matching element makes the list **accept** (select this view); a negated matching element (`!`) makes the list **reject** (do not select this view, fall through to the next view); if no element matches, the list does not accept (default deny, fall through). Country and ASN element predicates SHALL be evaluated against the geo lookup address; `any`, `none`, `localhost`, `localnets`, IP, and CIDR element predicates SHALL be evaluated against the source IP. A named-acl reference or a nested `{ ... }` group SHALL match when its own address-match-list accepts the client, evaluated by the same first-match rule recursively; a leading `!` negates that result. The built-in `any` always matches; `none` never matches; `localhost` matches the server's own addresses; `localnets` matches the networks attached to the server's interfaces. Callers without an ECS-derived address SHALL pass the source IP as the geo lookup address, in which case behavior is identical to single-address resolution. An element that the config-loader dropped (an undefined reference) SHALL never match, and SHALL never be promoted to a matching or catch-all behavior (fail-closed).
 
-#### Scenario: First view whose rule matches wins
+#### Scenario: First view whose list accepts wins
 
 - **WHEN** views are declared in order `view-th` (rule: country TH), `view-eu` (rule: country DE), `view-other` (rule: any) AND the geo lookup address resolves to country DE
 - **THEN** the matcher returns `view-eu`
 
-#### Scenario: Fallback to `any` when no earlier view matches
+#### Scenario: Fallback to `any` when no earlier view accepts
 
 - **WHEN** the geo lookup address resolves to a country not listed in any earlier view
-- **THEN** the matcher returns the name of the view whose rule list contains `any`
+- **THEN** the matcher returns the name of the view whose list contains `any`
 
-#### Scenario: No matching view returns an empty result
+#### Scenario: No accepting view returns an empty result
 
-- **WHEN** no view contains a rule that matches either address and no view declares `any`
+- **WHEN** no view's list accepts either address and no view declares `any`
 - **THEN** the matcher returns an explicit no-view sentinel AND the caller is responsible for producing REFUSED
 
 #### Scenario: Geo and ACL rules evaluate different addresses in one resolution
@@ -124,103 +124,106 @@ The view-matcher SHALL accept two addresses — the real client source IP and a 
 - **WHEN** views are declared in order `view-internal` (rule: CIDR `192.0.2.0/24`), `view-asia` (rule: country TW), the source IP is `198.51.100.1` (outside the CIDR), and the geo lookup address `203.0.113.0` resolves to country TW
 - **THEN** the matcher returns `view-asia` because the CIDR rule evaluated the source IP and the country rule evaluated the geo lookup address
 
-<!-- @trace
-source: shadowdns-foundation
-updated: 2026-04-14
-code:
-  - cmd/shadowdns/main.go
-  - testdata/integration/named.conf
-  - testdata/integration/db.example.com-th
-  - internal/view/geoip_asn.go
-  - go.mod
-  - internal/config/zones.go
-  - internal/zone/zone.go
-  - internal/config/options.go
-  - internal/view/geoip_country.go
-  - .spectra.yaml
-  - internal/alias/detect.go
-  - internal/zone/classify.go
-  - testdata/integration/named.conf.local
-  - internal/alias/override.go
-  - internal/server/listener.go
-  - internal/transfer/notify.go
-  - internal/view/matcher.go
-  - internal/view/netmatch.go
-  - internal/transfer/axfr.go
-  - Makefile
-  - README.md
-  - internal/view/loader.go
-  - internal/config/match.go
-  - testdata/integration/README.md
-  - internal/dnsutil/dnsutil.go
-  - internal/zone/parser.go
-  - internal/transfer/acl.go
-  - testdata/integration/db.example.com-other
-  - docs/benchmark.md
-  - go.sum
-  - testdata/integration/aliases.yaml
-  - internal/server/server.go
-  - testdata/integration/db.backup.example-th
-  - docs/migration.md
-  - internal/config/aliases.go
-  - scripts/smoke.sh
-  - testdata/integration/geoip/.gitkeep
-  - internal/server/build.go
-  - internal/alias/rewrite.go
-  - internal/alias/soa.go
-  - internal/server/handler.go
-  - testdata/integration/db.backup.example-other
-tests:
-  - internal/view/testhelper_test.go
-  - internal/view/geoip_country_test.go
-  - internal/dnsutil/dnsutil_test.go
-  - internal/zone/zone_test.go
-  - internal/transfer/axfr_test.go
-  - test/integration/backup_test.go
-  - internal/view/netmatch_test.go
-  - internal/view/geoip_asn_test.go
-  - test/integration/query_test.go
-  - internal/config/options_test.go
-  - internal/view/loader_test.go
-  - internal/zone/parser_test.go
-  - internal/zone/classify_test.go
-  - internal/config/aliases_test.go
-  - internal/alias/rewrite_test.go
-  - test/integration/negative_test.go
-  - internal/alias/detect_test.go
-  - internal/alias/override_test.go
-  - internal/server/server_test.go
-  - internal/view/matcher_test.go
-  - test/integration/axfr_test.go
-  - internal/config/zones_test.go
-  - test/integration/helpers_test.go
-  - internal/config/match_test.go
-  - internal/transfer/acl_test.go
-  - cmd/shadowdns/main_test.go
-  - internal/alias/soa_test.go
-  - internal/transfer/notify_test.go
--->
+#### Scenario: Negated element rejects, then any accepts the rest
+
+- **WHEN** a view declares `match-clients { ! 192.0.2.0/24; any; }` and a query arrives from `198.51.100.7`
+- **THEN** the `! 192.0.2.0/24` element does not match (so the list does not reject), the `any` element matches, and the matcher selects this view
+
+##### Example: negate-then-any boundary
+
+| Source IP | `! 192.0.2.0/24` matches? | List outcome |
+|-----------|---------------------------|--------------|
+| 192.0.2.5 | yes (negated match) | reject — view not selected |
+| 198.51.100.7 | no | falls to `any` → accept |
+
+#### Scenario: Named-acl reference selects via the referenced list
+
+- **WHEN** `acl "internal" { 10.0.0.0/8; }` is defined, a view declares `match-clients { internal; }`, and the source IP is `10.0.0.3`
+- **THEN** the reference matches (the `internal` list accepts) AND the matcher selects this view
+
+#### Scenario: Negated named reference rejects matching clients
+
+- **WHEN** a view declares `match-clients { ! internal; any; }` where `internal` is `10.0.0.0/8`, and the source IP is `10.0.0.3`
+- **THEN** the `! internal` element matches and rejects the view (the matcher does not select it for `10.0.0.3`)
+
+#### Scenario: Built-in localhost matches the server's own address
+
+- **WHEN** a view declares `match-clients { localhost; }` and the source IP is one of the server's own interface addresses
+- **THEN** the matcher selects this view
+
+#### Scenario: Undefined reference never matches
+
+- **WHEN** a view's only element is a reference to an undefined acl (dropped by the config-loader) and a query arrives from any source IP
+- **THEN** the matcher does not select this view AND does not treat the dropped element as a catch-all
+
 
 <!-- @trace
-source: add-edns-client-subnet
-updated: 2026-06-11
+source: bind-named-acl-match-clients
+updated: 2026-06-13
 code:
-  - docs/reference/cli.zh.md
-  - internal/view/matcher.go
-  - docs/index.zh.md
-  - docs/index.md
-  - internal/server/handler.go
-  - docs/reference/cli.md
-  - internal/server/server.go
-  - cmd/shadowdns/main.go
-  - internal/dnsutil/ecs.go
+  - testdata/integration/bindcompat/db.127
+  - testdata/integration/bindcompat/db.local
+  - testdata/integration/db.backup.example.overrides
+  - testdata/integration/master/example.com_view-other.fwd
+  - docs/configuration/named-conf.zh.md
+  - testdata/integration/README.md
+  - testdata/integration/bindcompat/db.0
+  - testdata/integration/db.backup.example-other
+  - scripts/test-deb.sh
+  - internal/config/match.go
+  - testdata/integration/master/backup.example_overrides
+  - docs/getting-started.md
+  - testdata/integration/db.example.com-other
+  - testdata/integration/master.zones
+  - testdata/integration/master/backup.example_view-th.fwd
+  - docs/migration.md
+  - docs/migration.zh.md
+  - internal/view/netmatch.go
+  - testdata/integration/db.backup.example-th
+  - testdata/integration/named.conf.options
+  - internal/config/zones.go
+  - testdata/integration/named.conf.local
+  - docs/configuration/named-conf.md
+  - scripts/gen-container-testdata.go
+  - docs/getting-started.zh.md
+  - testdata/integration/bindcompat/named.conf.default-zones
+  - testdata/integration/master/example.com_view-th.fwd
+  - packaging/named.conf.local.example
+  - testdata/integration/db.example.com-th
+  - testdata/integration/master/example.com_include.fwd
+  - internal/server/build.go
+  - testdata/integration/bindcompat/README.md
+  - packaging/named.conf.options.example
+  - scripts/smoke.sh
+  - testdata/integration/bindcompat/named.conf
+  - testdata/integration/cnames/db.example.com.cname
+  - testdata/integration/master/cnames/example.com_cname
   - README.md
+  - testdata/integration/bindcompat/db.255
+  - testdata/integration/bindcompat/shadowdns.yaml
+  - nfpm.yaml
+  - internal/config/options.go
+  - testdata/integration/bindcompat/named.conf.local
+  - packaging/named.conf.example
+  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/named.conf
+  - internal/view/matcher.go
+  - testdata/integration/bindcompat/named.conf.options
+  - testdata/integration/db.include-test.example
 tests:
-  - cmd/shadowdns/main_test.go
-  - internal/dnsutil/ecs_test.go
-  - internal/server/handler_ecs_test.go
+  - internal/server/server_test.go
+  - test/integration/bind_compat_test.go
+  - test/integration/helpers_test.go
+  - internal/prunebackup/lexer_test.go
+  - test/integration/listenon_test.go
+  - internal/server/build_test.go
+  - internal/config/match_test.go
+  - test/integration/alias_rdata_rewrite_test.go
   - internal/view/matcher_test.go
-  - internal/view/testhelper_test.go
+  - internal/config/zones_test.go
+  - test/integration/query_test.go
+  - test/integration/prune_backup_test.go
+  - internal/server/handler_ecs_test.go
 -->
 
 ---

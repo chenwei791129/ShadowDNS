@@ -312,27 +312,31 @@ tests:
 ---
 ### Requirement: Parse match-clients rule syntax
 
-The config-loader SHALL recognize the following rule forms inside `match-clients { ... };`:
+The config-loader SHALL recognize the following element forms inside `match-clients { ... };` and inside any `acl` body, producing an ordered address-match-list:
 
 - `geoip country <ISO-2>;` — country code match
 - `geoip asnum "AS<number> <description>";` — AS number extracted from the leading numeric portion, description ignored
 - `<IPv4-address>;` — single IPv4 address
 - `<IPv4-prefix>/<bits>;` — CIDR prefix
-- `any;` — catch-all
+- `any;` — catch-all (always matches); `none;` — never matches
+- `localhost;` — the server's own addresses; `localnets;` — the networks directly attached to the server's interfaces
+- `<acl-name>;` — a reference to a named acl, resolved to that acl's element list
+- `{ <address-match-list> };` — a nested group evaluated as its own ordered list
+- a leading `!` on any of the above — negation; when a negated element matches, the enclosing list rejects (see view-matcher)
 
-The loader SHALL accept rules written either one per line or as multiple rules on the same line separated by `;`.
+The loader SHALL accept elements written either one per line or as multiple elements on the same line separated by `;`.
 
-A token that does not match any recognized rule form — including a named-acl reference (a bare word that is neither `any`, a `geoip` form, an IP, nor a CIDR prefix), a `!` negation prefix, or a nested `{ ... }` group — SHALL be dropped rather than causing a fatal error. The loader SHALL log a WARN entry naming the dropped token and the enclosing view, and the dropped rule SHALL be treated as never-matching by the view-matcher (fail-closed). A malformed instance of a recognized form (for example `geoip asnum` whose value carries no leading AS number) SHALL remain a fatal error, because it is a recognized form written incorrectly rather than an unsupported construct.
+A token that does not resolve to any recognized element form — including a bare word that is neither `any`, `none`, `localhost`, `localnets`, a `geoip` form, an IP, a CIDR prefix, nor a defined acl name — SHALL be dropped rather than causing a fatal error. The loader SHALL log a WARN entry naming the dropped token and the enclosing view (or acl), and the dropped element SHALL be treated as never-matching (fail-closed). A malformed instance of a recognized form (for example `geoip asnum` whose value carries no leading AS number) SHALL remain a fatal error.
 
 #### Scenario: Country code rule is recognized
 
 - **WHEN** a rule reads `geoip country TH;`
-- **THEN** the loader produces a rule with type=country and value="TH"
+- **THEN** the loader produces an element with type=country and value="TH"
 
 #### Scenario: ASN rule extracts numeric AS
 
 - **WHEN** a rule reads `geoip asnum "AS4134 Chinanet";`
-- **THEN** the loader produces a rule with type=asn and value=4134
+- **THEN** the loader produces an element with type=asn and value=4134
 
 #### Scenario: ASN rule with unparseable description fails loudly
 
@@ -342,79 +346,91 @@ A token that does not match any recognized rule form — including a named-acl r
 #### Scenario: CIDR and single-IP rules are distinguished
 
 - **WHEN** rules include `192.0.2.8;` and `198.51.100.0/26;`
-- **THEN** the loader produces an IPRule for the first and a CIDRRule with prefix length 26 for the second
+- **THEN** the loader produces an IP element for the first and a CIDR element with prefix length 26 for the second
 
-#### Scenario: Multiple rules on a single line
+#### Scenario: Negated and nested elements are parsed
 
-- **WHEN** a line reads `geoip country CN; geoip country HK; geoip country MO;`
-- **THEN** the loader produces three separate country rules in left-to-right order
+- **WHEN** a `match-clients` block reads `! 192.0.2.0/24; { 198.51.100.0/24; 203.0.113.0/24; }; any;`
+- **THEN** the loader produces a negated CIDR element, a nested group of two CIDR elements, and an `any` element, in that order
 
-#### Scenario: Named-acl reference is dropped, not fatal
+#### Scenario: Built-in acl names are recognized
 
-- **WHEN** a `match-clients` block contains `internal-net;` where `internal-net` is a bare word that is neither `any`, a `geoip` form, an IP, nor a CIDR prefix
-- **THEN** the loader drops that rule AND logs a WARN entry naming the token and the view AND does not return a fatal error AND the dropped rule never matches any client
+- **WHEN** a `match-clients` block reads `localhost;` or `localnets;` or `none;`
+- **THEN** the loader produces the corresponding built-in element rather than dropping it as unknown
+
+#### Scenario: Named reference resolves to its acl element list
+
+- **WHEN** `acl "internal" { 10.0.0.0/8; };` is defined and a `match-clients` reads `internal;`
+- **THEN** the loader produces a reference element resolved to the `internal` acl's element list
 
 
 <!-- @trace
-source: bind-config-tolerant-parsing
+source: bind-named-acl-match-clients
 updated: 2026-06-13
 code:
-  - internal/config/match.go
-  - testdata/integration/bindcompat/db.0
-  - docs/configuration/named-conf.zh.md
-  - scripts/smoke.sh
-  - testdata/integration/master/cnames/example.com_cname
-  - internal/config/options.go
   - testdata/integration/bindcompat/db.127
-  - internal/config/zones.go
+  - testdata/integration/bindcompat/db.local
   - testdata/integration/db.backup.example.overrides
   - testdata/integration/master/example.com_view-other.fwd
-  - testdata/integration/cnames/db.example.com.cname
-  - testdata/integration/master/backup.example_view-other.fwd
-  - docs/getting-started.md
-  - testdata/integration/bindcompat/shadowdns.yaml
+  - docs/configuration/named-conf.zh.md
+  - testdata/integration/README.md
+  - testdata/integration/bindcompat/db.0
+  - testdata/integration/db.backup.example-other
+  - scripts/test-deb.sh
+  - internal/config/match.go
   - testdata/integration/master/backup.example_overrides
-  - testdata/integration/named.conf.local
-  - testdata/integration/master.zones
-  - docs/migration.md
-  - testdata/integration/db.backup.example-th
-  - testdata/integration/bindcompat/README.md
-  - packaging/named.conf.options.example
-  - docs/getting-started.zh.md
-  - testdata/integration/bindcompat/named.conf
-  - testdata/integration/db.include-test.example
-  - testdata/integration/bindcompat/named.conf.local
-  - nfpm.yaml
+  - docs/getting-started.md
   - testdata/integration/db.example.com-other
+  - testdata/integration/master.zones
+  - testdata/integration/master/backup.example_view-th.fwd
+  - docs/migration.md
   - docs/migration.zh.md
+  - internal/view/netmatch.go
+  - testdata/integration/db.backup.example-th
+  - testdata/integration/named.conf.options
+  - internal/config/zones.go
+  - testdata/integration/named.conf.local
   - docs/configuration/named-conf.md
   - scripts/gen-container-testdata.go
-  - scripts/test-deb.sh
-  - testdata/integration/db.backup.example-other
+  - docs/getting-started.zh.md
   - testdata/integration/bindcompat/named.conf.default-zones
-  - testdata/integration/bindcompat/db.255
-  - testdata/integration/master/example.com_include.fwd
-  - testdata/integration/named.conf
-  - testdata/integration/bindcompat/db.local
-  - testdata/integration/master/backup.example_view-th.fwd
-  - packaging/named.conf.local.example
-  - testdata/integration/named.conf.options
-  - testdata/integration/README.md
-  - testdata/integration/db.example.com-th
-  - testdata/integration/bindcompat/named.conf.options
-  - packaging/named.conf.example
   - testdata/integration/master/example.com_view-th.fwd
+  - packaging/named.conf.local.example
+  - testdata/integration/db.example.com-th
+  - testdata/integration/master/example.com_include.fwd
+  - internal/server/build.go
+  - testdata/integration/bindcompat/README.md
+  - packaging/named.conf.options.example
+  - scripts/smoke.sh
+  - testdata/integration/bindcompat/named.conf
+  - testdata/integration/cnames/db.example.com.cname
+  - testdata/integration/master/cnames/example.com_cname
   - README.md
+  - testdata/integration/bindcompat/db.255
+  - testdata/integration/bindcompat/shadowdns.yaml
+  - nfpm.yaml
+  - internal/config/options.go
+  - testdata/integration/bindcompat/named.conf.local
+  - packaging/named.conf.example
+  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/named.conf
+  - internal/view/matcher.go
+  - testdata/integration/bindcompat/named.conf.options
+  - testdata/integration/db.include-test.example
 tests:
+  - internal/server/server_test.go
   - test/integration/bind_compat_test.go
+  - test/integration/helpers_test.go
   - internal/prunebackup/lexer_test.go
-  - internal/view/matcher_test.go
   - test/integration/listenon_test.go
+  - internal/server/build_test.go
+  - internal/config/match_test.go
+  - test/integration/alias_rdata_rewrite_test.go
+  - internal/view/matcher_test.go
+  - internal/config/zones_test.go
   - test/integration/query_test.go
   - test/integration/prune_backup_test.go
-  - internal/config/match_test.go
-  - internal/config/zones_test.go
-  - test/integration/helpers_test.go
+  - internal/server/handler_ecs_test.go
 -->
 
 ---
@@ -1211,4 +1227,98 @@ tests:
   - internal/config/match_test.go
   - internal/config/zones_test.go
   - test/integration/helpers_test.go
+-->
+
+---
+### Requirement: Parse and store named acl definitions
+
+The config-loader SHALL parse top-level `acl "<name>" { <address-match-list>; };` blocks and store each definition in a named registry on the loaded configuration, keyed by acl name. The `<address-match-list>` SHALL be parsed with the same element parser used for `match-clients` (see Parse match-clients rule syntax), producing an ordered element list. When the same acl name is defined more than once, the last definition SHALL take effect and the loader SHALL log a WARN naming the acl. After all files are loaded, the config-loader SHALL resolve every named reference (in any acl body or any view's `match-clients`) to the element list of the named acl; a reference to an undefined name SHALL be dropped and treated as never-matching (fail-closed) with a WARN, and a reference cycle SHALL be broken with a WARN.
+
+#### Scenario: acl definition is stored and referenced
+
+- **WHEN** `named.conf` contains `acl "internal" { 192.0.2.0/24; };` and a `view` with `match-clients { internal; };`
+- **THEN** the loader stores the `internal` acl AND resolves the view's `match-clients` reference to the `192.0.2.0/24` element
+
+#### Scenario: Duplicate acl name keeps the last definition
+
+- **WHEN** `named.conf` defines `acl "x"` twice with different contents
+- **THEN** the loader keeps the last definition AND logs a WARN naming `x`
+
+#### Scenario: Reference to undefined acl is dropped fail-closed
+
+- **WHEN** a `match-clients` references `nosuchacl;` and no `acl "nosuchacl"` is defined
+- **THEN** the loader drops that element AND logs a WARN AND the element never matches any client
+
+#### Scenario: Reference cycle is broken
+
+- **WHEN** `acl "a" { b; };` and `acl "b" { a; };` are both defined
+- **THEN** the loader breaks the cycle AND logs a WARN AND does not recurse without bound
+
+<!-- @trace
+source: bind-named-acl-match-clients
+updated: 2026-06-13
+code:
+  - testdata/integration/bindcompat/db.127
+  - testdata/integration/bindcompat/db.local
+  - testdata/integration/db.backup.example.overrides
+  - testdata/integration/master/example.com_view-other.fwd
+  - docs/configuration/named-conf.zh.md
+  - testdata/integration/README.md
+  - testdata/integration/bindcompat/db.0
+  - testdata/integration/db.backup.example-other
+  - scripts/test-deb.sh
+  - internal/config/match.go
+  - testdata/integration/master/backup.example_overrides
+  - docs/getting-started.md
+  - testdata/integration/db.example.com-other
+  - testdata/integration/master.zones
+  - testdata/integration/master/backup.example_view-th.fwd
+  - docs/migration.md
+  - docs/migration.zh.md
+  - internal/view/netmatch.go
+  - testdata/integration/db.backup.example-th
+  - testdata/integration/named.conf.options
+  - internal/config/zones.go
+  - testdata/integration/named.conf.local
+  - docs/configuration/named-conf.md
+  - scripts/gen-container-testdata.go
+  - docs/getting-started.zh.md
+  - testdata/integration/bindcompat/named.conf.default-zones
+  - testdata/integration/master/example.com_view-th.fwd
+  - packaging/named.conf.local.example
+  - testdata/integration/db.example.com-th
+  - testdata/integration/master/example.com_include.fwd
+  - internal/server/build.go
+  - testdata/integration/bindcompat/README.md
+  - packaging/named.conf.options.example
+  - scripts/smoke.sh
+  - testdata/integration/bindcompat/named.conf
+  - testdata/integration/cnames/db.example.com.cname
+  - testdata/integration/master/cnames/example.com_cname
+  - README.md
+  - testdata/integration/bindcompat/db.255
+  - testdata/integration/bindcompat/shadowdns.yaml
+  - nfpm.yaml
+  - internal/config/options.go
+  - testdata/integration/bindcompat/named.conf.local
+  - packaging/named.conf.example
+  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/named.conf
+  - internal/view/matcher.go
+  - testdata/integration/bindcompat/named.conf.options
+  - testdata/integration/db.include-test.example
+tests:
+  - internal/server/server_test.go
+  - test/integration/bind_compat_test.go
+  - test/integration/helpers_test.go
+  - internal/prunebackup/lexer_test.go
+  - test/integration/listenon_test.go
+  - internal/server/build_test.go
+  - internal/config/match_test.go
+  - test/integration/alias_rdata_rewrite_test.go
+  - internal/view/matcher_test.go
+  - internal/config/zones_test.go
+  - test/integration/query_test.go
+  - test/integration/prune_backup_test.go
+  - internal/server/handler_ecs_test.go
 -->
