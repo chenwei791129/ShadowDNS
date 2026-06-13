@@ -34,7 +34,7 @@ func singleViewConfig(zones []config.Zone) *config.Config {
 		Views: []config.View{
 			{
 				Name:         "default",
-				MatchClients: []config.MatchRule{config.AnyRule{}},
+				MatchClients: []config.Element{{Kind: config.ElemAny}},
 				Zones:        zones,
 			},
 		},

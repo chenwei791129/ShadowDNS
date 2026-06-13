@@ -333,8 +333,8 @@ func TestServeDNS_ECSMatrix(t *testing.T) {
 func TestServeDNS_ECSGeoOverride(t *testing.T) {
 	matcher := &view.Matcher{
 		Views: []view.NamedRuleSet{
-			{Name: "view-asia", Rules: []config.MatchRule{config.CountryRule{Code: "TW"}}},
-			{Name: "view-global", Rules: []config.MatchRule{config.AnyRule{}}},
+			{Name: "view-asia", Rules: []config.Element{{Kind: config.ElemLeaf, Leaf: config.CountryRule{Code: "TW"}}}},
+			{Name: "view-global", Rules: []config.Element{{Kind: config.ElemAny}}},
 		},
 		Country: openTestCountryDB(t),
 	}
@@ -390,10 +390,10 @@ func TestServeDNS_ECSGeoOverride(t *testing.T) {
 func TestServeDNS_ForgedECSCannotSelectACLView(t *testing.T) {
 	matcher := &view.Matcher{
 		Views: []view.NamedRuleSet{
-			{Name: "view-internal", Rules: []config.MatchRule{
-				config.CIDRRule{Prefix: netip.MustParsePrefix("192.0.2.0/24")},
+			{Name: "view-internal", Rules: []config.Element{
+				{Kind: config.ElemLeaf, Leaf: config.CIDRRule{Prefix: netip.MustParsePrefix("192.0.2.0/24")}},
 			}},
-			{Name: "view-global", Rules: []config.MatchRule{config.AnyRule{}}},
+			{Name: "view-global", Rules: []config.Element{{Kind: config.ElemAny}}},
 		},
 	}
 	st := ecsViewState(matcher, map[string]string{

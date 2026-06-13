@@ -70,21 +70,21 @@ include "master.zones";
 	if len(rules0) != 2 {
 		t.Fatalf("view-th: expected 2 rules, got %d", len(rules0))
 	}
-	r0, ok := rules0[0].(CountryRule)
-	if !ok || r0.Code != "TH" {
-		t.Errorf("view-th rule[0]: got %T %+v, want CountryRule{TH}", rules0[0], rules0[0])
+	r0, ok := rules0[0].Leaf.(CountryRule)
+	if rules0[0].Kind != ElemLeaf || !ok || r0.Code != "TH" {
+		t.Errorf("view-th rule[0]: got %+v, want leaf CountryRule{TH}", rules0[0])
 	}
-	r1, ok := rules0[1].(CountryRule)
-	if !ok || r1.Code != "SG" {
-		t.Errorf("view-th rule[1]: got %T %+v, want CountryRule{SG}", rules0[1], rules0[1])
+	r1, ok := rules0[1].Leaf.(CountryRule)
+	if rules0[1].Kind != ElemLeaf || !ok || r1.Code != "SG" {
+		t.Errorf("view-th rule[1]: got %+v, want leaf CountryRule{SG}", rules0[1])
 	}
-	// Check view-other has AnyRule
+	// Check view-other has an `any` element.
 	rules1 := cfg.Views[1].MatchClients
 	if len(rules1) != 1 {
 		t.Fatalf("view-other: expected 1 rule, got %d", len(rules1))
 	}
-	if _, ok := rules1[0].(AnyRule); !ok {
-		t.Errorf("view-other rule[0]: got %T, want AnyRule", rules1[0])
+	if rules1[0].Kind != ElemAny {
+		t.Errorf("view-other rule[0]: got kind %d, want ElemAny", rules1[0].Kind)
 	}
 }
 
@@ -1023,7 +1023,7 @@ zone "example.net" {
 		t.Errorf("view name: got %q, want _default", v.Name)
 	}
 	// The synthesized rule set must be value-identical to parsing `any;`.
-	wantRules, _, perr := ParseMatchClients([]byte("any;"), "test", 1)
+	wantRules, perr := ParseMatchClients([]byte("any;"), "test", 1)
 	if perr != nil {
 		t.Fatalf("ParseMatchClients(any): %v", perr)
 	}
@@ -1616,6 +1616,163 @@ view "internal" {
 	if ctx := warns[0].ContextMap(); ctx["scope"] != "internal" {
 		t.Errorf("dropped-rule WARN should name the enclosing view in scope, got scope=%v", ctx["scope"])
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Named acl: parsing, storage, reference resolution
+// ---------------------------------------------------------------------------
+
+// Task 1.2 + 2.1 (spec scenario "acl definition is stored and referenced"): a
+// top-level acl is parsed into the registry, and a view's match-clients
+// reference to it resolves to the acl's element list.
+func TestLoadNamedConf_AclStoredAndReferenced(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+acl "internal" { 192.0.2.0/24; };
+
+view "internal-view" {
+	match-clients { internal; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The acl is stored in the registry with its single CIDR element.
+	aclElems, ok := cfg.ACLs["internal"]
+	if !ok {
+		t.Fatalf("acl 'internal' not stored in registry; got keys %v", keysOf(cfg.ACLs))
+	}
+	if len(aclElems) != 1 {
+		t.Fatalf("acl 'internal': expected 1 element, got %d", len(aclElems))
+	}
+	if cr, ok := aclElems[0].Leaf.(CIDRRule); !ok || cr.Prefix.String() != "192.0.2.0/24" {
+		t.Errorf("acl 'internal' element: got %+v, want CIDR 192.0.2.0/24", aclElems[0])
+	}
+
+	// The view's match-clients reference resolves to that element list.
+	if len(cfg.Views) != 1 {
+		t.Fatalf("expected 1 view, got %d", len(cfg.Views))
+	}
+	mc := cfg.Views[0].MatchClients
+	if len(mc) != 1 {
+		t.Fatalf("view match-clients: expected 1 element, got %d", len(mc))
+	}
+	if mc[0].Kind != ElemRef || mc[0].RefName != "internal" {
+		t.Fatalf("view element: got %+v, want ElemRef{internal}", mc[0])
+	}
+	if len(mc[0].Sub) != 1 {
+		t.Fatalf("resolved reference Sub: expected 1 element, got %d", len(mc[0].Sub))
+	}
+	if cr, ok := mc[0].Sub[0].Leaf.(CIDRRule); !ok || cr.Prefix.String() != "192.0.2.0/24" {
+		t.Errorf("resolved reference points at the wrong element: %+v", mc[0].Sub[0])
+	}
+}
+
+// Task 1.2 (spec scenario "Duplicate acl name keeps the last definition"): the
+// same acl name defined twice keeps the last definition and logs one WARN naming
+// the acl.
+func TestLoadNamedConf_DuplicateAclNameLastWins(t *testing.T) {
+	dir := t.TempDir()
+
+	core, obs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+acl "x" { 192.0.2.0/24; };
+acl "x" { 198.51.100.0/24; };
+
+view "v" {
+	match-clients { x; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), logger)
+	if err != nil {
+		t.Fatalf("duplicate acl must not be fatal, got: %v", err)
+	}
+
+	// The last definition (198.51.100.0/24) takes effect.
+	aclElems := cfg.ACLs["x"]
+	if len(aclElems) != 1 {
+		t.Fatalf("acl 'x': expected 1 element (last definition), got %d", len(aclElems))
+	}
+	if cr, ok := aclElems[0].Leaf.(CIDRRule); !ok || cr.Prefix.String() != "198.51.100.0/24" {
+		t.Errorf("acl 'x' should keep the last definition 198.51.100.0/24, got %+v", aclElems[0])
+	}
+
+	warns := obs.FilterField(zap.String("acl", "x")).All()
+	if len(warns) != 1 {
+		t.Fatalf("expected exactly 1 WARN naming the duplicate acl 'x', got %d: %+v", len(warns), obs.All())
+	}
+}
+
+// Task 2.1 (spec scenario "Reference cycle is broken"): two acls that reference
+// each other do not recurse without bound; the cycle is broken and a WARN logged.
+func TestLoadNamedConf_AclReferenceCycleBroken(t *testing.T) {
+	dir := t.TempDir()
+
+	core, obs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+acl "a" { b; };
+acl "b" { a; };
+
+view "v" {
+	match-clients { a; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	// The call must return (not hang) — a cycle that recursed without bound
+	// would never reach this assertion.
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), logger)
+	if err != nil {
+		t.Fatalf("acl reference cycle must not be fatal, got: %v", err)
+	}
+	if len(cfg.Views) != 1 {
+		t.Fatalf("expected 1 view, got %d", len(cfg.Views))
+	}
+	warns := obs.FilterMessageSnippet("cycle").All()
+	if len(warns) == 0 {
+		t.Errorf("expected at least one WARN about breaking the reference cycle, got: %+v", obs.All())
+	}
+}
+
+// keysOf returns the keys of an acl registry for diagnostic messages.
+func keysOf(m map[string][]Element) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

@@ -109,10 +109,22 @@ func BuildState(
 		zoneOrigins[v.Name] = seenOrigins
 	}
 
+	// Enumerate the host's own addresses and attached networks for the
+	// localhost/localnets built-in ACLs. Re-enumerated on every build so the
+	// sets track interface changes across reloads. On failure, log and continue
+	// with empty sets (localhost/localnets then match nothing — fail-closed).
+	localhostNets, localnetsNets, lerr := view.LocalInterfaceNets()
+	if lerr != nil {
+		logger.Sugar().Warnw("could not enumerate local interfaces; localhost/localnets match-clients will match nothing",
+			"error", lerr)
+	}
+
 	matcher := &view.Matcher{
-		Views:   viewRuleSets,
-		Country: country,
-		ASN:     asn,
+		Views:         viewRuleSets,
+		Country:       country,
+		ASN:           asn,
+		LocalhostNets: localhostNets,
+		LocalnetsNets: localnetsNets,
 	}
 
 	acl, err := transfer.NewACL(cfg.Options.AllowTransfer)

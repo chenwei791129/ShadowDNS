@@ -36,7 +36,7 @@ func TestAliasRDATARewrite_TemplatedCNAME(t *testing.T) {
 	state := server.ServerState{
 		Matcher: &view.Matcher{
 			Views: []view.NamedRuleSet{
-				{Name: "default", Rules: []config.MatchRule{config.AnyRule{}}},
+				{Name: "default", Rules: []config.Element{{Kind: config.ElemAny}}},
 			},
 		},
 		Aliases: config.AliasMap{

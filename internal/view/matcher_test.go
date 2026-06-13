@@ -9,10 +9,18 @@ import (
 
 // --- helpers -----------------------------------------------------------------
 
+// leaf wraps a leaf predicate in an Element.
+func leaf(r config.MatchRule) config.Element {
+	return config.Element{Kind: config.ElemLeaf, Leaf: r}
+}
+
+// anyElem is the built-in `any` element.
+func anyElem() config.Element { return config.Element{Kind: config.ElemAny} }
+
 func ipView(name string, ips ...string) NamedRuleSet {
-	rules := make([]config.MatchRule, len(ips))
+	rules := make([]config.Element, len(ips))
 	for i, s := range ips {
-		rules[i] = config.IPRule{IP: netip.MustParseAddr(s)}
+		rules[i] = leaf(config.IPRule{IP: netip.MustParseAddr(s)})
 	}
 	return NamedRuleSet{Name: name, Rules: rules}
 }
@@ -20,28 +28,28 @@ func ipView(name string, ips ...string) NamedRuleSet {
 func cidrView(name string, cidr string) NamedRuleSet {
 	return NamedRuleSet{
 		Name:  name,
-		Rules: []config.MatchRule{config.CIDRRule{Prefix: netip.MustParsePrefix(cidr)}},
+		Rules: []config.Element{leaf(config.CIDRRule{Prefix: netip.MustParsePrefix(cidr)})},
 	}
 }
 
 func anyView(name string) NamedRuleSet {
 	return NamedRuleSet{
 		Name:  name,
-		Rules: []config.MatchRule{config.AnyRule{}},
+		Rules: []config.Element{anyElem()},
 	}
 }
 
 func countryView(name string, code string) NamedRuleSet {
 	return NamedRuleSet{
 		Name:  name,
-		Rules: []config.MatchRule{config.CountryRule{Code: code}},
+		Rules: []config.Element{leaf(config.CountryRule{Code: code})},
 	}
 }
 
 func asnView(name string, asn uint32) NamedRuleSet {
 	return NamedRuleSet{
 		Name:  name,
-		Rules: []config.MatchRule{config.ASNRule{ASN: asn}},
+		Rules: []config.Element{leaf(config.ASNRule{ASN: asn})},
 	}
 }
 
@@ -180,9 +188,9 @@ func TestMatcher_FirstRuleInViewDecides(t *testing.T) {
 		Views: []NamedRuleSet{
 			{
 				Name: "mixed",
-				Rules: []config.MatchRule{
-					config.IPRule{IP: netip.MustParseAddr("192.0.2.99")}, // doesn't match
-					config.AnyRule{}, // matches everything
+				Rules: []config.Element{
+					leaf(config.IPRule{IP: netip.MustParseAddr("192.0.2.99")}), // doesn't match
+					anyElem(), // matches everything
 				},
 			},
 			ipView("other", "192.0.2.1"),
@@ -192,7 +200,7 @@ func TestMatcher_FirstRuleInViewDecides(t *testing.T) {
 	// because that view is evaluated first.
 	got := m.Resolve(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.1"))
 	if got != "mixed" {
-		t.Errorf("expected mixed (AnyRule fires), got %q", got)
+		t.Errorf("expected mixed (any element fires), got %q", got)
 	}
 }
 
@@ -509,9 +517,206 @@ func TestMatcher_ZeroClientIP_DoesNotPanic(t *testing.T) {
 		},
 	}
 	var zero netip.Addr
-	// Must not panic; AnyRule always returns true regardless of IP.
+	// Must not panic; the `any` element always matches regardless of IP.
 	got := m.Resolve(zero, zero)
 	if got != "catch-all" {
 		t.Errorf("expected catch-all, got %q", got)
+	}
+}
+
+// --- ordered first-match + negation semantics (task 3.1) ---------------------
+
+// negElem wraps a leaf predicate in a negated element.
+func negElem(r config.MatchRule) config.Element {
+	return config.Element{Kind: config.ElemLeaf, Negated: true, Leaf: r}
+}
+
+// refElem builds a (resolved) named-reference element pointing at sub.
+func refElem(name string, negated bool, sub ...config.Element) config.Element {
+	return config.Element{Kind: config.ElemRef, Negated: negated, RefName: name, Sub: sub}
+}
+
+// groupElem builds a nested-group element.
+func groupElem(negated bool, sub ...config.Element) config.Element {
+	return config.Element{Kind: config.ElemGroup, Negated: negated, Sub: sub}
+}
+
+// TestMatcher_NegateThenAnyBoundary pins the spec "negate-then-any boundary"
+// table: `! 192.0.2.0/24; any;` rejects clients inside the CIDR (falling through
+// to a later view) and accepts everyone else.
+func TestMatcher_NegateThenAnyBoundary(t *testing.T) {
+	cidr := config.CIDRRule{Prefix: netip.MustParsePrefix("192.0.2.0/24")}
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			{Name: "v", Rules: []config.Element{negElem(cidr), anyElem()}},
+			anyView("fallback"),
+		},
+	}
+
+	t.Run("inside CIDR is rejected, falls through", func(t *testing.T) {
+		// 192.0.2.5: `! 192.0.2.0/24` fires → list rejects → fall through to fallback.
+		got := m.Resolve(netip.MustParseAddr("192.0.2.5"), netip.MustParseAddr("192.0.2.5"))
+		if got != "fallback" {
+			t.Errorf("expected fallback (negated element rejects view v), got %q", got)
+		}
+	})
+
+	t.Run("outside CIDR falls to any and accepts", func(t *testing.T) {
+		// 198.51.100.7: `! 192.0.2.0/24` does not fire, `any` accepts → v.
+		got := m.Resolve(netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("198.51.100.7"))
+		if got != "v" {
+			t.Errorf("expected v (any accepts the rest), got %q", got)
+		}
+	})
+}
+
+// TestMatcher_NamedReferenceSelects pins the spec scenario "Named-acl reference
+// selects via the referenced list": a reference fires when its target list
+// accepts the client.
+func TestMatcher_NamedReferenceSelects(t *testing.T) {
+	internal := leaf(config.CIDRRule{Prefix: netip.MustParsePrefix("10.0.0.0/8")})
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			{Name: "v", Rules: []config.Element{refElem("internal", false, internal)}},
+			anyView("fallback"),
+		},
+	}
+
+	if got := m.Resolve(netip.MustParseAddr("10.0.0.3"), netip.MustParseAddr("10.0.0.3")); got != "v" {
+		t.Errorf("expected v (reference to internal matches 10.0.0.3), got %q", got)
+	}
+	if got := m.Resolve(netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("198.51.100.7")); got != "fallback" {
+		t.Errorf("expected fallback (reference does not match 198.51.100.7), got %q", got)
+	}
+}
+
+// TestMatcher_NegatedNamedReferenceRejects pins the spec scenario "Negated named
+// reference rejects matching clients": `! internal; any;` rejects clients the
+// referenced list would accept.
+func TestMatcher_NegatedNamedReferenceRejects(t *testing.T) {
+	internal := leaf(config.CIDRRule{Prefix: netip.MustParsePrefix("10.0.0.0/8")})
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			{Name: "v", Rules: []config.Element{refElem("internal", true, internal), anyElem()}},
+			anyView("fallback"),
+		},
+	}
+
+	// 10.0.0.3: `! internal` fires (internal accepts it) → list rejects → fallback.
+	if got := m.Resolve(netip.MustParseAddr("10.0.0.3"), netip.MustParseAddr("10.0.0.3")); got != "fallback" {
+		t.Errorf("expected fallback (negated reference rejects 10.0.0.3), got %q", got)
+	}
+	// 198.51.100.7: `! internal` does not fire, `any` accepts → v.
+	if got := m.Resolve(netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("198.51.100.7")); got != "v" {
+		t.Errorf("expected v (negated reference does not fire, any accepts), got %q", got)
+	}
+}
+
+// TestMatcher_NestedGroupRecursion verifies a nested group fires when its own
+// list accepts the client.
+func TestMatcher_NestedGroupRecursion(t *testing.T) {
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			{Name: "v", Rules: []config.Element{
+				groupElem(false, leaf(config.CIDRRule{Prefix: netip.MustParsePrefix("10.0.0.0/8")})),
+			}},
+			anyView("fallback"),
+		},
+	}
+	if got := m.Resolve(netip.MustParseAddr("10.1.2.3"), netip.MustParseAddr("10.1.2.3")); got != "v" {
+		t.Errorf("expected v (nested group accepts 10.1.2.3), got %q", got)
+	}
+	if got := m.Resolve(netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("198.51.100.7")); got != "fallback" {
+		t.Errorf("expected fallback (nested group does not accept), got %q", got)
+	}
+}
+
+// TestMatcher_UndefinedReferenceNeverMatches pins the spec scenario "Undefined
+// reference never matches": a reference the loader dropped (nil Sub) never fires
+// and is never treated as a catch-all.
+func TestMatcher_UndefinedReferenceNeverMatches(t *testing.T) {
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			// match-clients { nosuchacl; } where nosuchacl was undefined → Sub nil.
+			{Name: "internal", Rules: []config.Element{{Kind: config.ElemRef, RefName: "nosuchacl", Sub: nil}}},
+			ipView("other", "192.0.2.1"),
+		},
+	}
+	// No view accepts 203.0.113.9; the dropped reference must not act as catch-all.
+	if got := m.Resolve(netip.MustParseAddr("203.0.113.9"), netip.MustParseAddr("203.0.113.9")); got != "" {
+		t.Errorf("a dropped reference must never match or act as catch-all; got %q", got)
+	}
+}
+
+// --- built-in ACLs (task 2.2) ------------------------------------------------
+
+// TestMatcher_BuiltinNoneNeverMatches verifies `none` never fires.
+func TestMatcher_BuiltinNoneNeverMatches(t *testing.T) {
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			{Name: "v", Rules: []config.Element{{Kind: config.ElemNone}}},
+			anyView("fallback"),
+		},
+	}
+	if got := m.Resolve(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.1")); got != "fallback" {
+		t.Errorf("expected fallback (none never matches), got %q", got)
+	}
+}
+
+// TestMatcher_BuiltinLocalhostMatchesServerAddress pins the spec scenario
+// "Built-in localhost matches the server's own address": a localhost element
+// fires for a source IP in the enumerated localhost set, evaluated against the
+// source IP (not the geo address).
+func TestMatcher_BuiltinLocalhostMatchesServerAddress(t *testing.T) {
+	own := netip.MustParseAddr("192.0.2.50")
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			{Name: "v", Rules: []config.Element{{Kind: config.ElemLocalhost}}},
+			anyView("fallback"),
+		},
+		LocalhostNets: []netip.Prefix{netip.PrefixFrom(own, own.BitLen())},
+	}
+	if got := m.Resolve(own, own); got != "v" {
+		t.Errorf("expected v (localhost matches server's own address), got %q", got)
+	}
+	if got := m.Resolve(netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("198.51.100.1")); got != "fallback" {
+		t.Errorf("expected fallback (non-local address), got %q", got)
+	}
+}
+
+// TestMatcher_BuiltinLocalnetsMatchesAttachedNetwork verifies localnets fires for
+// a source IP within an enumerated attached network.
+func TestMatcher_BuiltinLocalnetsMatchesAttachedNetwork(t *testing.T) {
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			{Name: "v", Rules: []config.Element{{Kind: config.ElemLocalnets}}},
+			anyView("fallback"),
+		},
+		LocalnetsNets: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")},
+	}
+	if got := m.Resolve(netip.MustParseAddr("192.0.2.99"), netip.MustParseAddr("192.0.2.99")); got != "v" {
+		t.Errorf("expected v (localnets matches attached network), got %q", got)
+	}
+	if got := m.Resolve(netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("198.51.100.1")); got != "fallback" {
+		t.Errorf("expected fallback (outside attached network), got %q", got)
+	}
+}
+
+// TestMatcher_LocalhostDoesNotMatchViaGeoIP guards the anti-spoofing contract:
+// localhost/localnets evaluate the source IP, never the ECS-derived geo address.
+func TestMatcher_LocalhostDoesNotMatchViaGeoIP(t *testing.T) {
+	own := netip.MustParseAddr("192.0.2.50")
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			{Name: "v", Rules: []config.Element{{Kind: config.ElemLocalhost}}},
+			anyView("fallback"),
+		},
+		LocalhostNets: []netip.Prefix{netip.PrefixFrom(own, own.BitLen())},
+	}
+	// srcIP is non-local; geoIP equals the server's own address. localhost must
+	// not be satisfied by the client-controlled geo address.
+	got := m.Resolve(netip.MustParseAddr("203.0.113.7"), own)
+	if got != "fallback" {
+		t.Errorf("expected fallback (localhost must read srcIP, not geoIP), got %q", got)
 	}
 }

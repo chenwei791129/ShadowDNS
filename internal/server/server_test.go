@@ -93,8 +93,8 @@ func makeMatcher(cidr, viewName string) *view.Matcher {
 		Views: []view.NamedRuleSet{
 			{
 				Name: viewName,
-				Rules: []config.MatchRule{
-					config.CIDRRule{Prefix: prefix},
+				Rules: []config.Element{
+					{Kind: config.ElemLeaf, Leaf: config.CIDRRule{Prefix: prefix}},
 				},
 			},
 		},
@@ -105,7 +105,7 @@ func makeMatcher(cidr, viewName string) *view.Matcher {
 func makeAnyMatcher(viewName string) *view.Matcher {
 	return &view.Matcher{
 		Views: []view.NamedRuleSet{
-			{Name: viewName, Rules: []config.MatchRule{config.AnyRule{}}},
+			{Name: viewName, Rules: []config.Element{{Kind: config.ElemAny}}},
 		},
 	}
 }
@@ -475,7 +475,7 @@ func TestQuery_ViewRouting(t *testing.T) {
 
 	matcher := &view.Matcher{
 		Views: []view.NamedRuleSet{
-			{Name: "default", Rules: []config.MatchRule{config.AnyRule{}}},
+			{Name: "default", Rules: []config.Element{{Kind: config.ElemAny}}},
 		},
 	}
 

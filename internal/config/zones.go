@@ -32,7 +32,7 @@ type Zone struct {
 // View represents a single view declaration.
 type View struct {
 	Name         string
-	MatchClients []MatchRule
+	MatchClients []Element
 	Zones        []Zone
 	Line         int
 	Source       string
@@ -44,6 +44,12 @@ type Config struct {
 	Options  OptionsBlock    // parsed options block
 	Views    []View          // in declaration order across all included files
 	QueryLog *QueryLogConfig // nil when query logging is disabled
+
+	// ACLs is the registry of top-level `acl "<name>" { ... };` definitions,
+	// keyed by acl name, each parsed into an ordered element list with the same
+	// grammar as match-clients. References inside acl bodies and view
+	// match-clients are resolved against this registry after all files load.
+	ACLs map[string][]Element
 
 	// QueryLogDisabledReason is a human-readable string explaining why query
 	// logging is disabled. It is non-empty only when a logging{} block was
@@ -151,11 +157,17 @@ func LoadNamedConf(path string, logger *zap.Logger) (*Config, error) {
 		logger = zap.NewNop()
 	}
 
-	cfg := &Config{Path: path}
+	cfg := &Config{Path: path, ACLs: make(map[string][]Element)}
 
 	if err := loadFile(path, cfg, logger); err != nil {
 		return nil, err
 	}
+
+	// Resolve named-acl references now that every file (and therefore every acl
+	// definition) has been loaded. Undefined and cyclic references are dropped
+	// fail-closed with a WARN; defined references gain a pointer to their target
+	// element list so the query hot path does no map lookups.
+	cfg.resolveACLReferences(logger)
 
 	// Resolve top-level zones: reject mixing with explicit views, otherwise
 	// synthesize the implicit _default view. This must run before
@@ -194,8 +206,8 @@ func (cfg *Config) resolveTopLevelZones(logger *zap.Logger) error {
 	warnDuplicateTopLevelZones(cfg.topLevelZones, logger)
 
 	// `any;` is a constant, well-formed match-clients body: it yields exactly one
-	// AnyRule and never drops a token, so the dropped slice is ignored here.
-	anyRules, _, err := ParseMatchClients([]byte("any;"), first.Source, first.Line)
+	// `any` element.
+	anyRules, err := ParseMatchClients([]byte("any;"), first.Source, first.Line)
 	if err != nil {
 		// A parse failure here would indicate a programming error, not bad user input.
 		return fmt.Errorf("synthesize _default view: %w", err)
@@ -306,6 +318,14 @@ func loadFile(path string, cfg *Config, logger *zap.Logger) error {
 				includePath = filepath.Join(fileDir, includePath)
 			}
 			if err := loadFile(includePath, cfg, logger); err != nil {
+				return err
+			}
+
+		case "acl":
+			// Top-level `acl "<name>" { <address-match-list>; };` — parsed and
+			// stored in the named registry (Change A skipped it). Its body uses
+			// the same grammar as match-clients.
+			if err := parseACL(lx, cfg, path, logger); err != nil {
 				return err
 			}
 
@@ -423,22 +443,12 @@ func parseView(lx *lexer, path string, opts OptionsBlock, logger *zap.Logger) (V
 			if lx.peek().kind == tokenSemicolon {
 				lx.next()
 			}
-			rules, dropped, err := ParseMatchClients(body, path, startLine)
+			// Named-acl references, `!` negation, and nested groups are now
+			// parsed into elements. Undefined references are dropped fail-closed
+			// (with a WARN) at the build-phase resolve step, not here.
+			rules, err := ParseMatchClients(body, path, startLine)
 			if err != nil {
 				return View{}, err
-			}
-			// A rule ShadowDNS cannot evaluate (named-acl reference, `!`
-			// negation, nested group) was dropped: WARN naming the view and
-			// token. It is fail-closed — never added to MatchClients, so the
-			// view-matcher treats it as never-matching. A view whose entire
-			// match-clients set is dropped ends up with empty Rules and serves
-			// nothing, rather than being widened to `any`.
-			for _, d := range dropped {
-				// Use the `scope` field (= the view name) so dropped rules,
-				// skipped directives, and skipped zones are all queryable by one
-				// field across the loader's logs.
-				logger.Sugar().Warnw("dropping unevaluable match-clients rule (fail-closed: it never matches)",
-					"token", d.Token, "scope", viewName, "line", d.Line, "file", path)
 			}
 			v.MatchClients = rules
 
@@ -580,7 +590,8 @@ func parseZone(lx *lexer, path string, opts OptionsBlock) (Zone, error) {
 }
 
 // warnShadowedViews inspects the view list and emits a Warn log for any non-last
-// view that contains an AnyRule (because subsequent views would be unreachable).
+// view that contains a top-level `any` element (because subsequent views would
+// be unreachable).
 func warnShadowedViews(views []View, logger *zap.Logger) {
 	for i, v := range views {
 		if i == len(views)-1 {
@@ -601,14 +612,118 @@ func warnShadowedViews(views []View, logger *zap.Logger) {
 	}
 }
 
-// viewHasAny reports whether a view's MatchClients list contains an AnyRule.
+// viewHasAny reports whether a view's MatchClients list contains a top-level,
+// non-negated `any` element (the shadowing heuristic: such a view accepts every
+// client, so any later view is unreachable). It intentionally inspects only the
+// top level — references and nested groups are not unwound for this warning.
 func viewHasAny(v View) bool {
-	for _, r := range v.MatchClients {
-		if _, ok := r.(AnyRule); ok {
+	for _, el := range v.MatchClients {
+		if el.Kind == ElemAny && !el.Negated {
 			return true
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// Named acl: parsing and reference resolution
+// ---------------------------------------------------------------------------
+
+// parseACL parses a top-level `acl "<name>" { <address-match-list>; };` block
+// and stores the parsed element list in cfg.ACLs. The lexer has just consumed
+// the "acl" keyword. A duplicate acl name keeps the last definition and logs a
+// WARN naming the acl (mirroring the duplicate-zone tolerance).
+func parseACL(lx *lexer, cfg *Config, path string, logger *zap.Logger) error {
+	nameTok := lx.next()
+	if nameTok.kind != tokenString && nameTok.kind != tokenWord {
+		return fmt.Errorf("%s:%d: expected acl name, got %q", path, nameTok.line, nameTok.value)
+	}
+	name := nameTok.value
+
+	body, startLine, err := readBracedBodyRaw(lx, path)
+	if err != nil {
+		return err
+	}
+	// Consume the trailing ';' after the closing '}'.
+	if lx.peek().kind == tokenSemicolon {
+		lx.next()
+	}
+
+	elems, err := ParseMatchClients(body, path, startLine)
+	if err != nil {
+		return err
+	}
+
+	if _, exists := cfg.ACLs[name]; exists {
+		logger.Sugar().Warnw("duplicate acl definition; the last definition takes effect",
+			"acl", name, "line", nameTok.line, "file", path)
+	}
+	cfg.ACLs[name] = elems
+	return nil
+}
+
+// resolveACLReferences resolves every named-acl reference (in acl bodies and in
+// view match-clients) to its target element list, after all files have loaded.
+// Undefined names are dropped (fail-closed, WARN); reference cycles are broken
+// (WARN); defined references gain a Sub pointer so the query hot path does no
+// map lookups.
+func (cfg *Config) resolveACLReferences(logger *zap.Logger) {
+	r := &aclResolver{registry: cfg.ACLs, state: make(map[string]int8, len(cfg.ACLs)), logger: logger}
+	for name := range cfg.ACLs {
+		r.resolveACL(name)
+	}
+	for i := range cfg.Views {
+		cfg.Views[i].MatchClients = r.resolveList(cfg.Views[i].MatchClients, cfg.Views[i].Name)
+	}
+}
+
+// aclResolver drives reference resolution with cycle detection.
+type aclResolver struct {
+	registry map[string][]Element
+	state    map[string]int8 // 0 unvisited, 1 resolving, 2 done
+	logger   *zap.Logger
+}
+
+// resolveACL resolves the named acl's element list in place (storing the final,
+// filtered list back into the registry), so a later reference can point at it.
+func (r *aclResolver) resolveACL(name string) {
+	if r.state[name] != 0 {
+		return // done, or currently resolving (cycle handled at the ref site)
+	}
+	r.state[name] = 1
+	r.registry[name] = r.resolveList(r.registry[name], name)
+	r.state[name] = 2
+}
+
+// resolveList resolves references and nested groups within elems, returning a
+// filtered list with undefined and cyclic references dropped. scope names the
+// enclosing acl or view for the WARN.
+func (r *aclResolver) resolveList(elems []Element, scope string) []Element {
+	var out []Element
+	for _, el := range elems {
+		switch el.Kind {
+		case ElemRef:
+			if _, ok := r.registry[el.RefName]; !ok {
+				r.logger.Sugar().Warnw("dropping match-clients reference to undefined acl (fail-closed: it never matches)",
+					"token", el.RefName, "scope", scope)
+				continue
+			}
+			if r.state[el.RefName] == 1 {
+				r.logger.Sugar().Warnw("breaking acl reference cycle (fail-closed: it never matches)",
+					"token", el.RefName, "scope", scope)
+				continue
+			}
+			r.resolveACL(el.RefName)
+			el.Sub = r.registry[el.RefName]
+			out = append(out, el)
+		case ElemGroup:
+			el.Sub = r.resolveList(el.Sub, scope)
+			out = append(out, el)
+		default:
+			out = append(out, el)
+		}
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
