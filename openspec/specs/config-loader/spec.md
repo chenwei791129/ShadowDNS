@@ -214,7 +214,7 @@ tests:
 ---
 ### Requirement: Parse view and zone declarations from master.zones
 
-The config-loader SHALL parse `view "<name>" { match-clients { ... }; zone "<domain>" { type master; file "<path>"; }; ... };` blocks from any file included by `named.conf` (e.g., `master.zones`). For each view, it SHALL preserve the declaration order of `match-clients` rules and of the zones within that view. The config-loader SHALL also accept `zone "<domain>" { type master; file "<path>"; };` blocks declared at the top level (outside any view block) of `named.conf` or any included file, applying the same zone-body rules as zones inside views: a declared `type` other than `master` SHALL fail with the existing unsupported-type error; relative `file` paths SHALL be resolved with the same parse-time semantics as in-view zones (against `options.directory` when the `options` block precedes the zone declaration, otherwise against the directory of the declaring file); and a zone body that omits `type` or `file` SHALL be tolerated exactly as the same omission is tolerated inside a view block. Duplicate zone names among top-level zones SHALL be tolerated identically to duplicate zone names declared within a single view — no new fatal validation is introduced; the implicit-view synthesis additionally logs a warning for top-level duplicates (see the Synthesize requirement).
+The config-loader SHALL parse `view "<name>" { match-clients { ... }; zone "<domain>" { type master; file "<path>"; }; ... };` blocks from any file included by `named.conf` (e.g., `master.zones`). For each view, it SHALL preserve the declaration order of `match-clients` rules and of the zones within that view. The config-loader SHALL also accept `zone "<domain>" { type master; file "<path>"; };` blocks declared at the top level (outside any view block) of `named.conf` or any included file, applying the same zone-body rules as zones inside views: a declared `type` other than `master` SHALL cause that zone to be skipped — dropped from its view (or from the top-level set), not served, and its `file` not opened — and logged at INFO, rather than failing; relative `file` paths SHALL be resolved with the same parse-time semantics as in-view zones (against `options.directory` when the `options` block precedes the zone declaration, otherwise against the directory of the declaring file); and a zone body that omits `type` or `file` SHALL be tolerated exactly as the same omission is tolerated inside a view block. Duplicate zone names among top-level zones SHALL be tolerated identically to duplicate zone names declared within a single view — no new fatal validation is introduced; the implicit-view synthesis additionally logs a warning for top-level duplicates (see the Synthesize requirement).
 
 #### Scenario: Multiple views with ordered rules
 
@@ -236,42 +236,77 @@ The config-loader SHALL parse `view "<name>" { match-clients { ... }; zone "<dom
 - **WHEN** a viewless `named.conf` declares an `options` block with `directory "/etc/namedb";` followed by a top-level zone with `file "master/example.com.fwd"`
 - **THEN** the loader resolves the zone file path as `/etc/namedb/master/example.com.fwd`
 
-#### Scenario: Top-level zone with unsupported type fails
+#### Scenario: Top-level zone with unsupported type is skipped, not fatal
 
-- **WHEN** a viewless `named.conf` declares a top-level zone with `type slave;`
-- **THEN** the loader returns the same unsupported-type fatal error as a zone inside a view declaring `type slave;`
+- **WHEN** a viewless `named.conf` declares a top-level zone with `type hint;` (for example the root zone in `named.conf.default-zones`) or `type slave;`
+- **THEN** the loader skips that zone — it is dropped, not served, and its `file` is not opened — AND logs an INFO entry AND continues loading without a fatal error
+
+#### Scenario: In-view zone with unsupported type is skipped
+
+- **WHEN** a `view` block declares one zone with `type master;` and another with `type forward;`
+- **THEN** the loader retains the `master` zone AND skips the `forward` zone AND does not return a fatal error
 
 
 <!-- @trace
-source: implicit-default-view
+source: bind-config-tolerant-parsing
 updated: 2026-06-13
 code:
-  - docs/reference/cli.md
-  - cmd/shadowdns/main.go
   - internal/config/match.go
-  - docs/getting-started.md
-  - internal/config/zones.go
-  - docs/configuration/geoip.md
-  - README.md
-  - docs/reference/cli.zh.md
-  - docs/configuration/named-conf.md
+  - testdata/integration/bindcompat/db.0
   - docs/configuration/named-conf.zh.md
-  - docs/guides/ecs.md
-  - docs/configuration/geoip.zh.md
-  - internal/view/matcher.go
+  - scripts/smoke.sh
+  - testdata/integration/master/cnames/example.com_cname
+  - internal/config/options.go
+  - testdata/integration/bindcompat/db.127
+  - internal/config/zones.go
+  - testdata/integration/db.backup.example.overrides
+  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/cnames/db.example.com.cname
+  - testdata/integration/master/backup.example_view-other.fwd
+  - docs/getting-started.md
+  - testdata/integration/bindcompat/shadowdns.yaml
+  - testdata/integration/master/backup.example_overrides
+  - testdata/integration/named.conf.local
+  - testdata/integration/master.zones
+  - docs/migration.md
+  - testdata/integration/db.backup.example-th
+  - testdata/integration/bindcompat/README.md
+  - packaging/named.conf.options.example
   - docs/getting-started.zh.md
-  - docs/guides/ecs.zh.md
-  - internal/metrics/metrics.go
+  - testdata/integration/bindcompat/named.conf
+  - testdata/integration/db.include-test.example
+  - testdata/integration/bindcompat/named.conf.local
+  - nfpm.yaml
+  - testdata/integration/db.example.com-other
+  - docs/migration.zh.md
+  - docs/configuration/named-conf.md
+  - scripts/gen-container-testdata.go
+  - scripts/test-deb.sh
+  - testdata/integration/db.backup.example-other
+  - testdata/integration/bindcompat/named.conf.default-zones
+  - testdata/integration/bindcompat/db.255
+  - testdata/integration/master/example.com_include.fwd
+  - testdata/integration/named.conf
+  - testdata/integration/bindcompat/db.local
+  - testdata/integration/master/backup.example_view-th.fwd
+  - packaging/named.conf.local.example
+  - testdata/integration/named.conf.options
+  - testdata/integration/README.md
+  - testdata/integration/db.example.com-th
+  - testdata/integration/bindcompat/named.conf.options
+  - packaging/named.conf.example
+  - testdata/integration/master/example.com_view-th.fwd
+  - README.md
 tests:
-  - cmd/shadowdns/main_test.go
-  - internal/metrics/metrics_reload_test.go
-  - test/integration/viewless_test.go
-  - test/integration/geoip_optional_test.go
+  - test/integration/bind_compat_test.go
+  - internal/prunebackup/lexer_test.go
+  - internal/view/matcher_test.go
+  - test/integration/listenon_test.go
+  - test/integration/query_test.go
+  - test/integration/prune_backup_test.go
   - internal/config/match_test.go
   - internal/config/zones_test.go
   - test/integration/helpers_test.go
-  - internal/metrics/metrics_test.go
-  - cmd/shadowdns/main_reload_test.go
 -->
 
 ---
@@ -286,6 +321,8 @@ The config-loader SHALL recognize the following rule forms inside `match-clients
 - `any;` — catch-all
 
 The loader SHALL accept rules written either one per line or as multiple rules on the same line separated by `;`.
+
+A token that does not match any recognized rule form — including a named-acl reference (a bare word that is neither `any`, a `geoip` form, an IP, nor a CIDR prefix), a `!` negation prefix, or a nested `{ ... }` group — SHALL be dropped rather than causing a fatal error. The loader SHALL log a WARN entry naming the dropped token and the enclosing view, and the dropped rule SHALL be treated as never-matching by the view-matcher (fail-closed). A malformed instance of a recognized form (for example `geoip asnum` whose value carries no leading AS number) SHALL remain a fatal error, because it is a recognized form written incorrectly rather than an unsupported construct.
 
 #### Scenario: Country code rule is recognized
 
@@ -312,81 +349,72 @@ The loader SHALL accept rules written either one per line or as multiple rules o
 - **WHEN** a line reads `geoip country CN; geoip country HK; geoip country MO;`
 - **THEN** the loader produces three separate country rules in left-to-right order
 
+#### Scenario: Named-acl reference is dropped, not fatal
+
+- **WHEN** a `match-clients` block contains `internal-net;` where `internal-net` is a bare word that is neither `any`, a `geoip` form, an IP, nor a CIDR prefix
+- **THEN** the loader drops that rule AND logs a WARN entry naming the token and the view AND does not return a fatal error AND the dropped rule never matches any client
+
+
 <!-- @trace
-source: shadowdns-foundation
-updated: 2026-04-14
+source: bind-config-tolerant-parsing
+updated: 2026-06-13
 code:
-  - cmd/shadowdns/main.go
-  - testdata/integration/named.conf
-  - testdata/integration/db.example.com-th
-  - internal/view/geoip_asn.go
-  - go.mod
-  - internal/config/zones.go
-  - internal/zone/zone.go
-  - internal/config/options.go
-  - internal/view/geoip_country.go
-  - .spectra.yaml
-  - internal/alias/detect.go
-  - internal/zone/classify.go
-  - testdata/integration/named.conf.local
-  - internal/alias/override.go
-  - internal/server/listener.go
-  - internal/transfer/notify.go
-  - internal/view/matcher.go
-  - internal/view/netmatch.go
-  - internal/transfer/axfr.go
-  - Makefile
-  - README.md
-  - internal/view/loader.go
   - internal/config/match.go
-  - testdata/integration/README.md
-  - internal/dnsutil/dnsutil.go
-  - internal/zone/parser.go
-  - internal/transfer/acl.go
-  - testdata/integration/db.example.com-other
-  - docs/benchmark.md
-  - go.sum
-  - testdata/integration/aliases.yaml
-  - internal/server/server.go
-  - testdata/integration/db.backup.example-th
-  - docs/migration.md
-  - internal/config/aliases.go
+  - testdata/integration/bindcompat/db.0
+  - docs/configuration/named-conf.zh.md
   - scripts/smoke.sh
-  - testdata/integration/geoip/.gitkeep
-  - internal/server/build.go
-  - internal/alias/rewrite.go
-  - internal/alias/soa.go
-  - internal/server/handler.go
+  - testdata/integration/master/cnames/example.com_cname
+  - internal/config/options.go
+  - testdata/integration/bindcompat/db.127
+  - internal/config/zones.go
+  - testdata/integration/db.backup.example.overrides
+  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/cnames/db.example.com.cname
+  - testdata/integration/master/backup.example_view-other.fwd
+  - docs/getting-started.md
+  - testdata/integration/bindcompat/shadowdns.yaml
+  - testdata/integration/master/backup.example_overrides
+  - testdata/integration/named.conf.local
+  - testdata/integration/master.zones
+  - docs/migration.md
+  - testdata/integration/db.backup.example-th
+  - testdata/integration/bindcompat/README.md
+  - packaging/named.conf.options.example
+  - docs/getting-started.zh.md
+  - testdata/integration/bindcompat/named.conf
+  - testdata/integration/db.include-test.example
+  - testdata/integration/bindcompat/named.conf.local
+  - nfpm.yaml
+  - testdata/integration/db.example.com-other
+  - docs/migration.zh.md
+  - docs/configuration/named-conf.md
+  - scripts/gen-container-testdata.go
+  - scripts/test-deb.sh
   - testdata/integration/db.backup.example-other
+  - testdata/integration/bindcompat/named.conf.default-zones
+  - testdata/integration/bindcompat/db.255
+  - testdata/integration/master/example.com_include.fwd
+  - testdata/integration/named.conf
+  - testdata/integration/bindcompat/db.local
+  - testdata/integration/master/backup.example_view-th.fwd
+  - packaging/named.conf.local.example
+  - testdata/integration/named.conf.options
+  - testdata/integration/README.md
+  - testdata/integration/db.example.com-th
+  - testdata/integration/bindcompat/named.conf.options
+  - packaging/named.conf.example
+  - testdata/integration/master/example.com_view-th.fwd
+  - README.md
 tests:
-  - internal/view/testhelper_test.go
-  - internal/view/geoip_country_test.go
-  - internal/dnsutil/dnsutil_test.go
-  - internal/zone/zone_test.go
-  - internal/transfer/axfr_test.go
-  - test/integration/backup_test.go
-  - internal/view/netmatch_test.go
-  - internal/view/geoip_asn_test.go
-  - test/integration/query_test.go
-  - internal/config/options_test.go
-  - internal/view/loader_test.go
-  - internal/zone/parser_test.go
-  - internal/zone/classify_test.go
-  - internal/config/aliases_test.go
-  - internal/alias/rewrite_test.go
-  - test/integration/negative_test.go
-  - internal/alias/detect_test.go
-  - internal/alias/override_test.go
-  - internal/server/server_test.go
+  - test/integration/bind_compat_test.go
+  - internal/prunebackup/lexer_test.go
   - internal/view/matcher_test.go
-  - test/integration/axfr_test.go
+  - test/integration/listenon_test.go
+  - test/integration/query_test.go
+  - test/integration/prune_backup_test.go
+  - internal/config/match_test.go
   - internal/config/zones_test.go
   - test/integration/helpers_test.go
-  - internal/config/match_test.go
-  - internal/transfer/acl_test.go
-  - cmd/shadowdns/main_test.go
-  - internal/alias/soa_test.go
-  - internal/transfer/notify_test.go
 -->
 
 ---
@@ -1085,4 +1113,102 @@ tests:
   - test/integration/query_test.go
   - test/integration/prune_backup_test.go
   - internal/prunebackup/lexer_test.go
+-->
+
+---
+### Requirement: Tolerate unrecognized directives at top level and view scope
+
+The config-loader SHALL skip any directive it does not recognize at the top level of `named.conf` (or any included file) and inside a `view { ... }` block, rather than failing. Only genuine syntax errors — an unbalanced brace, a missing terminating `;`, or an unterminated block — SHALL remain fatal. A skipped directive that opens a `{ ... }` block SHALL have its entire balanced block consumed; a skipped single-value directive SHALL be consumed up to and including its terminating `;`. Some top-level block directives carry a name or address token between the keyword and the opening brace (e.g. `acl "internal" { ... };`, `key "rndc-key" { ... };`, `controls { ... };`, `server 192.0.2.1 { ... };`, `masters myset { ... };`); the loader SHALL consume any such tokens before consuming the block.
+
+The config-loader SHALL classify each skipped directive for logging:
+
+- Access-control directives — `allow-query`, `allow-recursion`, `allow-transfer`, `allow-update`, `allow-notify`, `blackhole` — SHALL be logged at WARN with a message stating that ShadowDNS does not enforce the directive.
+- Recursion-related directives — `recursion`, `forwarders`, `dnssec-validation` — SHALL be logged at INFO.
+- All other skipped directives SHALL be logged at DEBUG or not logged.
+
+#### Scenario: Top-level acl block is skipped, not fatal
+
+- **WHEN** `named.conf` contains `acl "internal" { 192.0.2.0/24; };` at the top level followed by valid `view` declarations
+- **THEN** the loader skips the `acl` block AND loads the views successfully AND does not return a fatal error
+
+#### Scenario: Top-level controls and key blocks are skipped
+
+- **WHEN** `named.conf` contains `key "rndc-key" { algorithm hmac-sha256; secret "..."; };` and `controls { inet 127.0.0.1 allow { localhost; }; };` at the top level
+- **THEN** the loader skips both blocks AND continues parsing without a fatal error
+
+#### Scenario: View-scope allow-query is skipped and logged at WARN
+
+- **WHEN** a `view "internal"` block contains `allow-query { any; };` alongside `match-clients` and `zone` declarations
+- **THEN** the loader skips the `allow-query` directive AND logs a WARN entry naming `allow-query` AND loads the view's zones
+
+#### Scenario: Recursion directive at top level is skipped and logged at INFO
+
+- **WHEN** `named.conf` or an included file contains a top-level directive in the recursion family that ShadowDNS does not act on
+- **THEN** the loader skips it AND logs an INFO entry rather than WARN
+
+#### Scenario: Unbalanced brace remains fatal
+
+- **WHEN** a skipped top-level block has an unbalanced `{` with no matching `}` before end of file
+- **THEN** the loader returns a fatal error citing the file path and line number
+
+<!-- @trace
+source: bind-config-tolerant-parsing
+updated: 2026-06-13
+code:
+  - internal/config/match.go
+  - testdata/integration/bindcompat/db.0
+  - docs/configuration/named-conf.zh.md
+  - scripts/smoke.sh
+  - testdata/integration/master/cnames/example.com_cname
+  - internal/config/options.go
+  - testdata/integration/bindcompat/db.127
+  - internal/config/zones.go
+  - testdata/integration/db.backup.example.overrides
+  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/cnames/db.example.com.cname
+  - testdata/integration/master/backup.example_view-other.fwd
+  - docs/getting-started.md
+  - testdata/integration/bindcompat/shadowdns.yaml
+  - testdata/integration/master/backup.example_overrides
+  - testdata/integration/named.conf.local
+  - testdata/integration/master.zones
+  - docs/migration.md
+  - testdata/integration/db.backup.example-th
+  - testdata/integration/bindcompat/README.md
+  - packaging/named.conf.options.example
+  - docs/getting-started.zh.md
+  - testdata/integration/bindcompat/named.conf
+  - testdata/integration/db.include-test.example
+  - testdata/integration/bindcompat/named.conf.local
+  - nfpm.yaml
+  - testdata/integration/db.example.com-other
+  - docs/migration.zh.md
+  - docs/configuration/named-conf.md
+  - scripts/gen-container-testdata.go
+  - scripts/test-deb.sh
+  - testdata/integration/db.backup.example-other
+  - testdata/integration/bindcompat/named.conf.default-zones
+  - testdata/integration/bindcompat/db.255
+  - testdata/integration/master/example.com_include.fwd
+  - testdata/integration/named.conf
+  - testdata/integration/bindcompat/db.local
+  - testdata/integration/master/backup.example_view-th.fwd
+  - packaging/named.conf.local.example
+  - testdata/integration/named.conf.options
+  - testdata/integration/README.md
+  - testdata/integration/db.example.com-th
+  - testdata/integration/bindcompat/named.conf.options
+  - packaging/named.conf.example
+  - testdata/integration/master/example.com_view-th.fwd
+  - README.md
+tests:
+  - test/integration/bind_compat_test.go
+  - internal/prunebackup/lexer_test.go
+  - internal/view/matcher_test.go
+  - test/integration/listenon_test.go
+  - test/integration/query_test.go
+  - test/integration/prune_backup_test.go
+  - internal/config/match_test.go
+  - internal/config/zones_test.go
+  - test/integration/helpers_test.go
 -->
