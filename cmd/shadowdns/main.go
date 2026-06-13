@@ -255,8 +255,15 @@ func reload(
 	// handles are nil on the no-GeoIP branch (LoadGeoIP returns both or
 	// neither) — nothing to release then.
 	defer func() {
-		if err != nil && newCountry != nil {
+		if err == nil {
+			return
+		}
+		// Close each handle on its own non-nil check rather than relying on
+		// LoadGeoIP's both-or-neither return invariant from a distance.
+		if newCountry != nil {
 			warnClose(newCountry, "new country mmdb after failed reload", logger)
+		}
+		if newASN != nil {
 			warnClose(newASN, "new ASN mmdb after failed reload", logger)
 		}
 	}()
