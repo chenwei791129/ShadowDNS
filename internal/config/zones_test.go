@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // ---------------------------------------------------------------------------
@@ -798,6 +801,405 @@ view "view-a" {
 	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
 	if err != nil {
 		t.Fatalf("recursion no inside view should be accepted, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Top-level zones + implicit _default view (implicit-default-view)
+// ---------------------------------------------------------------------------
+
+// Task 1.1-a: a top-level zone is parsed with the same zone-body rules as an
+// in-view zone (name, type, absolute file path).
+func TestLoadNamedConf_TopLevelZoneParsed(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+zone "example.com" {
+	type master;
+	file "/etc/namedb/master/example.com.fwd";
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Views) != 1 {
+		t.Fatalf("expected 1 synthesized view, got %d", len(cfg.Views))
+	}
+	zones := cfg.Views[0].Zones
+	if len(zones) != 1 {
+		t.Fatalf("expected 1 zone, got %d", len(zones))
+	}
+	if zones[0].Name != "example.com" {
+		t.Errorf("zone name: got %q, want example.com", zones[0].Name)
+	}
+	if zones[0].Type != ZoneTypeMaster {
+		t.Errorf("zone type: got %q, want master", zones[0].Type)
+	}
+	if zones[0].File != "/etc/namedb/master/example.com.fwd" {
+		t.Errorf("zone file: got %q", zones[0].File)
+	}
+}
+
+// Task 1.1-b: a top-level zone with an unsupported type fails with the same
+// error as the same type declared inside a view.
+func TestLoadNamedConf_TopLevelZoneTypeSlave(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+zone "example.com" {
+	type slave;
+	file "/etc/namedb/master/example.com.fwd";
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err == nil {
+		t.Fatal("expected error for top-level zone type slave, got nil")
+	}
+	if !strings.Contains(err.Error(), "example.com") {
+		t.Errorf("error should mention zone name 'example.com', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "slave") {
+		t.Errorf("error should mention type 'slave', got: %v", err)
+	}
+}
+
+// Task 1.1-c (spec scenario "Top-level zone file path resolves like an in-view
+// zone"): a relative file path is resolved against options.directory when the
+// options block precedes the zone.
+func TestLoadNamedConf_TopLevelZoneRelativePathWithOptions(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+zone "example.com" {
+	type master;
+	file "master/example.com.fwd";
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "/etc/namedb/master/example.com.fwd"
+	if got := cfg.Views[0].Zones[0].File; got != want {
+		t.Errorf("zone file: got %q, want %q", got, want)
+	}
+}
+
+// Task 1.1-d: a top-level zone body that omits type and file is tolerated
+// exactly as the same omission is tolerated inside a view.
+func TestLoadNamedConf_TopLevelZoneMissingTypeFileTolerated(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+zone "example.com" {
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("missing type/file should be tolerated, got: %v", err)
+	}
+	if len(cfg.Views) != 1 || len(cfg.Views[0].Zones) != 1 {
+		t.Fatalf("expected 1 view with 1 zone, got %d views", len(cfg.Views))
+	}
+	z := cfg.Views[0].Zones[0]
+	if z.Type != "" || z.File != "" {
+		t.Errorf("expected empty type/file, got type=%q file=%q", z.Type, z.File)
+	}
+}
+
+// Task 1.2-a (spec scenario "Viewless configuration is served via the implicit
+// _default view"): two top-level zones synthesize a single _default view whose
+// match-clients equals parsing `match-clients { any; };` and whose zones keep
+// declaration order.
+func TestLoadNamedConf_ViewlessSynthesizesDefaultView(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+zone "example.com" {
+	type master;
+	file "/etc/namedb/master/example.com.fwd";
+};
+
+zone "example.net" {
+	type master;
+	file "/etc/namedb/master/example.net.fwd";
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Views) != 1 {
+		t.Fatalf("expected 1 view, got %d", len(cfg.Views))
+	}
+	v := cfg.Views[0]
+	if v.Name != "_default" {
+		t.Errorf("view name: got %q, want _default", v.Name)
+	}
+	// The synthesized rule set must be value-identical to parsing `any;`.
+	wantRules, perr := ParseMatchClients([]byte("any;"), "test", 1)
+	if perr != nil {
+		t.Fatalf("ParseMatchClients(any): %v", perr)
+	}
+	if !reflect.DeepEqual(v.MatchClients, wantRules) {
+		t.Errorf("match-clients: got %+v, want %+v (== parsing `any;`)", v.MatchClients, wantRules)
+	}
+	if len(v.Zones) != 2 {
+		t.Fatalf("expected 2 zones, got %d", len(v.Zones))
+	}
+	if v.Zones[0].Name != "example.com" || v.Zones[1].Name != "example.net" {
+		t.Errorf("zone order: got %q,%q want example.com,example.net", v.Zones[0].Name, v.Zones[1].Name)
+	}
+}
+
+// Task 1.2-b (spec scenario "Configuration with no views and no zones stays
+// empty"): an options-only config synthesizes nothing.
+func TestLoadNamedConf_NoViewsNoZonesStaysEmpty(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Views) != 0 {
+		t.Fatalf("expected 0 views (no synthesis), got %d", len(cfg.Views))
+	}
+}
+
+// Task 1.2-c (spec scenario "Explicitly declared view named _default is treated
+// as a regular view"): an explicit view "_default" with no top-level zones is
+// returned unchanged and nothing extra is synthesized.
+func TestLoadNamedConf_ExplicitDefaultViewTreatedAsRegular(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+view "_default" {
+	match-clients { any; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Views) != 1 {
+		t.Fatalf("expected exactly 1 view (no extra synthesis), got %d", len(cfg.Views))
+	}
+	if cfg.Views[0].Name != "_default" {
+		t.Errorf("view name: got %q, want _default", cfg.Views[0].Name)
+	}
+	if len(cfg.Views[0].Zones) != 1 {
+		t.Errorf("expected 1 zone in explicit view, got %d", len(cfg.Views[0].Zones))
+	}
+}
+
+// Task 1.2-d (spec scenario "Duplicate top-level zone names warn once per name
+// without failing"): zone "example.com" on lines 5 and 9 succeeds, keeps both
+// entries, and logs exactly one warning naming both positions.
+func TestLoadNamedConf_DuplicateTopLevelZoneNamesWarnOnce(t *testing.T) {
+	dir := t.TempDir()
+
+	core, obs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	// "example.com" name token lands on line 5 and again on line 9.
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+zone "example.com" {
+	type master;
+	file "/etc/namedb/master/a.fwd";
+};
+zone "example.com" {
+	type master;
+	file "/etc/namedb/master/b.fwd";
+};
+`
+	confPath := filepath.Join(dir, "named.conf")
+	writeFile(t, confPath, namedConf)
+
+	cfg, err := LoadNamedConf(confPath, logger)
+	if err != nil {
+		t.Fatalf("duplicate top-level zone names must not be fatal, got: %v", err)
+	}
+	if len(cfg.Views) != 1 || len(cfg.Views[0].Zones) != 2 {
+		t.Fatalf("expected 1 view with 2 zone entries (both retained), got %d views", len(cfg.Views))
+	}
+	if cfg.Views[0].Zones[0].File == cfg.Views[0].Zones[1].File {
+		t.Error("both duplicate entries should be retained with their own files")
+	}
+
+	warns := obs.FilterMessageSnippet("duplicate top-level zone").All()
+	if len(warns) != 1 {
+		t.Fatalf("expected exactly 1 duplicate warning, got %d: %+v", len(warns), obs.All())
+	}
+	ctx := warns[0].ContextMap()
+	if ctx["zone"] != "example.com" {
+		t.Errorf("warning zone field: got %v, want example.com", ctx["zone"])
+	}
+	decls, _ := ctx["declarations"].(string)
+	if !strings.Contains(decls, confPath+":5") || !strings.Contains(decls, confPath+":9") {
+		t.Errorf("warning should list both declaration positions (lines 5 and 9), got: %q", decls)
+	}
+	if !strings.Contains(warns[0].Message, "last declaration takes effect") {
+		t.Errorf("warning should state last declaration takes effect at serving time, got: %q", warns[0].Message)
+	}
+}
+
+// Task 1.3-a (spec scenario "Top-level zone declared before a view fails"): a
+// top-level zone followed by a view is a fatal mixing error naming the zone and
+// its source:line.
+func TestLoadNamedConf_MixZoneBeforeViewFails(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+zone "example.com" {
+	type master;
+	file "/etc/namedb/master/example.com.fwd";
+};
+
+view "view-other" {
+	match-clients { any; };
+	zone "example.net" {
+		type master;
+		file "/etc/namedb/master/example.net.fwd";
+	};
+};
+`
+	confPath := filepath.Join(dir, "named.conf")
+	writeFile(t, confPath, namedConf)
+
+	_, err := LoadNamedConf(confPath, zap.NewNop())
+	if err == nil {
+		t.Fatal("expected fatal error for mixing top-level zone with a view, got nil")
+	}
+	if !strings.Contains(err.Error(), "example.com") {
+		t.Errorf("error should name the top-level zone example.com, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), confPath+":5") {
+		t.Errorf("error should include source:line (%s:5), got: %v", confPath, err)
+	}
+}
+
+// Task 1.3-b: a view followed by a top-level zone is a fatal mixing error
+// regardless of declaration order (view first here).
+func TestLoadNamedConf_MixViewBeforeZoneFails(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+view "view-other" {
+	match-clients { any; };
+	zone "example.net" {
+		type master;
+		file "/etc/namedb/master/example.net.fwd";
+	};
+};
+
+zone "example.com" {
+	type master;
+	file "/etc/namedb/master/example.com.fwd";
+};
+`
+	confPath := filepath.Join(dir, "named.conf")
+	writeFile(t, confPath, namedConf)
+
+	_, err := LoadNamedConf(confPath, zap.NewNop())
+	if err == nil {
+		t.Fatal("expected fatal error for view-then-top-level-zone, got nil")
+	}
+	if !strings.Contains(err.Error(), "example.com") {
+		t.Errorf("error should name the top-level zone example.com, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), confPath+":13") {
+		t.Errorf("error should include source:line (%s:13), got: %v", confPath, err)
+	}
+}
+
+// Task 1.3-c (spec scenario "Mixing across included files fails regardless of
+// order"): a view in an included file plus a top-level zone in the root file is
+// fatal even though the zone is parsed after all views.
+func TestLoadNamedConf_MixAcrossIncludeFilesFails(t *testing.T) {
+	dir := t.TempDir()
+
+	masterZones := `view "view-other" {
+	match-clients { any; };
+	zone "example.net" {
+		type master;
+		file "/etc/namedb/master/example.net.fwd";
+	};
+};
+`
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+include "master.zones";
+
+zone "example.com" {
+	type master;
+	file "/etc/namedb/master/example.com.fwd";
+};
+`
+	writeFile(t, filepath.Join(dir, "master.zones"), masterZones)
+	confPath := filepath.Join(dir, "named.conf")
+	writeFile(t, confPath, namedConf)
+
+	_, err := LoadNamedConf(confPath, zap.NewNop())
+	if err == nil {
+		t.Fatal("expected fatal error mixing across files, got nil")
+	}
+	if !strings.Contains(err.Error(), "example.com") {
+		t.Errorf("error should name top-level zone example.com, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), confPath) {
+		t.Errorf("error should reference the named.conf source path, got: %v", err)
 	}
 }
 

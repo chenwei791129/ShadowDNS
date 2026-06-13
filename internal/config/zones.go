@@ -51,7 +51,20 @@ type Config struct {
 	// QueryLog == nil because of a specific disable condition). When QueryLog
 	// is nil and QueryLogDisabledReason is empty, no logging{} block was found.
 	QueryLogDisabledReason string
+
+	// topLevelZones accumulates zones declared outside any view block during
+	// loadFile, in declaration order across all included files. It is a
+	// load-time scratch field only: after loadFile completes, LoadNamedConf
+	// either folds these into a synthesized _default view (viewless configs) or
+	// rejects them (mixed with explicit views). It is never read by consumers
+	// of Config.
+	topLevelZones []Zone
 }
+
+// defaultViewName is the name BIND gives the implicit view that holds top-level
+// zones when no explicit view block is present. ShadowDNS synthesizes a view
+// with this name for BIND-compatible viewless configurations.
+const defaultViewName = "_default"
 
 // ---------------------------------------------------------------------------
 // Top-level directives rejected at startup (case-insensitive).
@@ -90,10 +103,89 @@ func LoadNamedConf(path string, logger *zap.Logger) (*Config, error) {
 		return nil, err
 	}
 
+	// Resolve top-level zones: reject mixing with explicit views, otherwise
+	// synthesize the implicit _default view. This must run before
+	// warnShadowedViews so that shadow-warning sees the final view list.
+	if err := cfg.resolveTopLevelZones(logger); err != nil {
+		return nil, err
+	}
+
 	// Warn when a non-last view uses `any` (subsequent views would be unreachable).
 	warnShadowedViews(cfg.Views, logger)
 
 	return cfg, nil
+}
+
+// resolveTopLevelZones post-processes zones declared outside any view block,
+// implementing BIND-compatible viewless behavior:
+//
+//   - >=1 view AND >=1 top-level zone → fatal mixing error (order-independent),
+//     naming the first top-level zone with its source:line.
+//   - 0 views AND >=1 top-level zone → synthesize a single _default view
+//     (match-clients any) holding every top-level zone in declaration order,
+//     warning once per duplicated zone name.
+//   - 0 top-level zones → no-op (preserves existing behavior, including the
+//     empty-config case and explicitly declared view "_default").
+func (cfg *Config) resolveTopLevelZones(logger *zap.Logger) error {
+	if len(cfg.topLevelZones) == 0 {
+		return nil
+	}
+	first := cfg.topLevelZones[0]
+
+	if len(cfg.Views) > 0 {
+		return fmt.Errorf("%s:%d: zone %q declared at top level but %d view(s) are defined; when any view is present all zones must be declared inside views",
+			first.Source, first.Line, first.Name, len(cfg.Views))
+	}
+
+	warnDuplicateTopLevelZones(cfg.topLevelZones, logger)
+
+	anyRules, err := ParseMatchClients([]byte("any;"), first.Source, first.Line)
+	if err != nil {
+		// `any;` is a constant, well-formed match-clients body; a parse failure
+		// here would indicate a programming error, not bad user input.
+		return fmt.Errorf("synthesize _default view: %w", err)
+	}
+	cfg.Views = append(cfg.Views, View{
+		Name:         defaultViewName,
+		MatchClients: anyRules,
+		Zones:        cfg.topLevelZones,
+		Line:         first.Line,
+		Source:       first.Source,
+	})
+	return nil
+}
+
+// warnDuplicateTopLevelZones logs exactly one warning per top-level zone name
+// declared two or more times, listing every declaration position. Duplicates
+// are tolerated (not fatal): BuildState's per-view map keeps the last
+// declaration, so the warning states that the last declaration wins at serving
+// time. Groups are reported in first-declaration order for deterministic logs.
+func warnDuplicateTopLevelZones(zones []Zone, logger *zap.Logger) {
+	type group struct {
+		name  string
+		sites []string
+	}
+	indexByName := make(map[string]int, len(zones))
+	var groups []group
+	for _, z := range zones {
+		site := fmt.Sprintf("%s:%d", z.Source, z.Line)
+		if idx, ok := indexByName[z.Name]; ok {
+			groups[idx].sites = append(groups[idx].sites, site)
+		} else {
+			indexByName[z.Name] = len(groups)
+			groups = append(groups, group{name: z.Name, sites: []string{site}})
+		}
+	}
+	for _, g := range groups {
+		if len(g.sites) < 2 {
+			continue
+		}
+		logger.Sugar().Warnw(
+			"duplicate top-level zone name; the last declaration takes effect at serving time",
+			"zone", g.name,
+			"declarations", strings.Join(g.sites, ", "),
+		)
+	}
 }
 
 // loadFile reads a single file (named.conf or any included file) and appends
@@ -160,6 +252,17 @@ func loadFile(path string, cfg *Config, logger *zap.Logger) error {
 				return err
 			}
 			cfg.Views = append(cfg.Views, v)
+
+		case "zone":
+			// Top-level zone (outside any view). Reuse parseZone so zone-body
+			// rules (type master only, relative-path resolution against
+			// cfg.Options.Directory, missing type/file tolerance) match in-view
+			// zones exactly. Accumulate for post-processing in LoadNamedConf.
+			z, err := parseZone(lx, path, cfg.Options)
+			if err != nil {
+				return err
+			}
+			cfg.topLevelZones = append(cfg.topLevelZones, z)
 
 		case "logging":
 			// logging { ... }; — parse and extract query log configuration.
