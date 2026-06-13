@@ -1861,6 +1861,47 @@ view "internal" {
 	}
 }
 
+// A '}' that appears inside a comment within an acl (or match-clients) body must
+// NOT terminate the block early. readBracedBodyRaw balances braces by token, so
+// the comment's brace is skipped and the body is captured in full.
+func TestLoadNamedConf_StrayBraceInCommentDoesNotTruncateAcl(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+acl "internal" {
+	// allowed nets follow } (this stray brace must not close the block)
+	192.0.2.0/24;
+	198.51.100.0/24;
+};
+
+view "v" {
+	match-clients { internal; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("a stray '}' inside a comment must not break parsing, got: %v", err)
+	}
+	got := cfg.ACLs["internal"]
+	if len(got) != 2 {
+		t.Fatalf("acl body was truncated by the comment's '}': expected 2 elements, got %d: %+v", len(got), got)
+	}
+	for i, el := range got {
+		if el.Kind != ElemLeaf {
+			t.Errorf("element[%d]: expected a CIDR leaf, got %+v", i, el)
+		}
+	}
+}
+
 // A relative zone file path must resolve against the options{} directory even
 // when the options block is declared in a file INCLUDED AFTER the zone — the
 // directory is finalized before paths are resolved.

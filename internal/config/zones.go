@@ -930,26 +930,26 @@ func readBracedBodyRaw(lx *lexer, path string) ([]byte, int, error) {
 	}
 	startLine := openTok.line
 	bodyStart := lx.pos
+	// Track brace depth by TOKENS, not raw bytes: a '{' or '}' inside a comment
+	// or quoted string must not affect nesting. lx.next() skips comments and
+	// reads quoted strings whole, so only structural braces reach this loop (and
+	// it keeps lx.line accurate across multi-line comments and strings).
 	depth := 1
-	for depth > 0 {
-		if lx.pos >= len(lx.input) {
+	for {
+		tok := lx.next()
+		switch tok.kind {
+		case tokenEOF:
 			return nil, 0, fmt.Errorf("%s:%d: unterminated block", path, openTok.line)
-		}
-		ch := lx.input[lx.pos]
-		switch ch {
-		case '\n':
-			lx.line++
-		case '{':
+		case tokenLBrace:
 			depth++
-		case '}':
+		case tokenRBrace:
 			depth--
+			if depth == 0 {
+				// lx.pos now points just past the closing '}'; exclude it.
+				return lx.input[bodyStart : lx.pos-1], startLine, nil
+			}
 		}
-		lx.pos++
 	}
-	// lx.pos now points past the closing '}'.
-	bodyEnd := lx.pos - 1 // exclude the closing '}'
-	body := lx.input[bodyStart:bodyEnd]
-	return body, startLine, nil
 }
 
 // countLines counts the 1-based line number at a given byte offset in data.
