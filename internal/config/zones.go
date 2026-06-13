@@ -72,16 +72,65 @@ type Config struct {
 const defaultViewName = "_default"
 
 // ---------------------------------------------------------------------------
-// Top-level directives rejected at startup (case-insensitive).
+// Tiered logging classification for skipped directives. Keys are lowercase;
+// callers lower-case the directive (strings.ToLower) before lookup.
 // ---------------------------------------------------------------------------
 
-var rejectedTopLevel = map[string]bool{
-	"dnssec-enable": true,
-	"allow-update":  true,
-	"controls":      true,
-	"key":           true,
-	"acl":           true,
-	"server":        true,
+// accessControlDirectives are access-control statements ShadowDNS does not
+// enforce. Skipping one is logged at WARN so the operator knows the ACL is not
+// applied (the migration guide documents ShadowDNS's access-control model).
+var accessControlDirectives = map[string]bool{
+	"allow-query":     true,
+	"allow-recursion": true,
+	"allow-transfer":  true,
+	"allow-update":    true,
+	"allow-notify":    true,
+	"blackhole":       true,
+}
+
+// recursionFamilyDirectives are recursion-related statements ShadowDNS ignores
+// (it is authoritative-only). Encountering one on a BIND drop-in config is
+// expected, so skipping it is logged at INFO rather than WARN to avoid noise on
+// blessed configs at every startup/reload.
+var recursionFamilyDirectives = map[string]bool{
+	"recursion":         true,
+	"forwarders":        true,
+	"dnssec-validation": true,
+}
+
+// logSkippedDirective logs a skipped directive at the level dictated by the
+// tiered logging strategy: access-control directives at WARN (ShadowDNS does
+// not enforce them), recursion-family directives at INFO, everything else at
+// DEBUG. scope names where the directive was skipped — "top level" or a view
+// name.
+func logSkippedDirective(logger *zap.Logger, directive, scope, path string, line int) {
+	switch {
+	case accessControlDirectives[directive]:
+		logger.Sugar().Warnw("ShadowDNS does not enforce this access-control directive; skipping",
+			"directive", directive, "scope", scope, "line", line, "file", path)
+	case recursionFamilyDirectives[directive]:
+		logger.Sugar().Infow("ignoring recursion-related directive (ShadowDNS is authoritative-only)",
+			"directive", directive, "scope", scope, "line", line, "file", path)
+	default:
+		logger.Sugar().Debugw("skipping unrecognized directive",
+			"directive", directive, "scope", scope, "line", line, "file", path)
+	}
+}
+
+// zoneIsSkipped reports whether a parsed zone declares an explicit type other
+// than master and must therefore be dropped (not served). A zone that omits
+// `type` (z.Type == "") is tolerated and kept, preserving the pre-existing
+// missing-type behavior shared by in-view and top-level zones.
+func zoneIsSkipped(z Zone) bool {
+	return z.Type != "" && z.Type != ZoneTypeMaster
+}
+
+// logSkippedZone logs a dropped non-master zone at INFO. scope names where the
+// zone was declared — "top level" or a view name — using the same `scope` field
+// as logSkippedDirective so log queries are uniform across both.
+func logSkippedZone(logger *zap.Logger, z Zone, scope, path string) {
+	logger.Sugar().Infow("skipping zone with unsupported type (only 'master' is served)",
+		"zone", z.Name, "type", z.Type, "scope", scope, "line", z.Line, "file", path)
 }
 
 // ---------------------------------------------------------------------------
@@ -144,10 +193,11 @@ func (cfg *Config) resolveTopLevelZones(logger *zap.Logger) error {
 
 	warnDuplicateTopLevelZones(cfg.topLevelZones, logger)
 
-	anyRules, err := ParseMatchClients([]byte("any;"), first.Source, first.Line)
+	// `any;` is a constant, well-formed match-clients body: it yields exactly one
+	// AnyRule and never drops a token, so the dropped slice is ignored here.
+	anyRules, _, err := ParseMatchClients([]byte("any;"), first.Source, first.Line)
 	if err != nil {
-		// `any;` is a constant, well-formed match-clients body; a parse failure
-		// here would indicate a programming error, not bad user input.
+		// A parse failure here would indicate a programming error, not bad user input.
 		return fmt.Errorf("synthesize _default view: %w", err)
 	}
 	cfg.Views = append(cfg.Views, View{
@@ -268,12 +318,19 @@ func loadFile(path string, cfg *Config, logger *zap.Logger) error {
 
 		case "zone":
 			// Top-level zone (outside any view). Reuse parseZone so zone-body
-			// rules (type master only, relative-path resolution against
-			// cfg.Options.Directory, missing type/file tolerance) match in-view
-			// zones exactly. Accumulate for post-processing in LoadNamedConf.
+			// rules (relative-path resolution against cfg.Options.Directory,
+			// missing type/file tolerance) match in-view zones exactly.
+			// Accumulate for post-processing in LoadNamedConf.
 			z, err := parseZone(lx, path, cfg.Options)
 			if err != nil {
 				return err
+			}
+			// A zone with an explicit non-master type is dropped (not served,
+			// file never opened), matching the in-view rule. Common in
+			// named.conf.default-zones (the root `type hint` zone).
+			if zoneIsSkipped(z) {
+				logSkippedZone(logger, z, "top level", path)
+				continue
 			}
 			cfg.topLevelZones = append(cfg.topLevelZones, z)
 
@@ -301,12 +358,15 @@ func loadFile(path string, cfg *Config, logger *zap.Logger) error {
 			lx.line = countLines(data, 0, endOff)
 
 		default:
-			// Check reject list (task 2.6).
-			if rejectedTopLevel[directive] {
-				return fmt.Errorf("%s:%d: unsupported directive %q at top level", path, tok.line, tok.value)
+			// Skip-unknown posture: any directive ShadowDNS does not act on at
+			// the top level (acl, key, controls, server, statistics-channels,
+			// trusted-keys, …) is consumed and skipped, not fatal. Only a genuine
+			// syntax error (unbalanced brace, missing ';') surfaces from the skip
+			// helper. The tiered logger classifies the directive.
+			logSkippedDirective(logger, directive, "top level", path, tok.line)
+			if err := lx.skipNamedDirective(path); err != nil {
+				return err
 			}
-			// Unknown directive — return error (could be extended later).
-			return fmt.Errorf("%s:%d: unsupported directive %q at top level", path, tok.line, tok.value)
 		}
 	}
 
@@ -363,9 +423,22 @@ func parseView(lx *lexer, path string, opts OptionsBlock, logger *zap.Logger) (V
 			if lx.peek().kind == tokenSemicolon {
 				lx.next()
 			}
-			rules, err := ParseMatchClients(body, path, startLine)
+			rules, dropped, err := ParseMatchClients(body, path, startLine)
 			if err != nil {
 				return View{}, err
+			}
+			// A rule ShadowDNS cannot evaluate (named-acl reference, `!`
+			// negation, nested group) was dropped: WARN naming the view and
+			// token. It is fail-closed — never added to MatchClients, so the
+			// view-matcher treats it as never-matching. A view whose entire
+			// match-clients set is dropped ends up with empty Rules and serves
+			// nothing, rather than being widened to `any`.
+			for _, d := range dropped {
+				// Use the `scope` field (= the view name) so dropped rules,
+				// skipped directives, and skipped zones are all queryable by one
+				// field across the loader's logs.
+				logger.Sugar().Warnw("dropping unevaluable match-clients rule (fail-closed: it never matches)",
+					"token", d.Token, "scope", viewName, "line", d.Line, "file", path)
 			}
 			v.MatchClients = rules
 
@@ -374,19 +447,13 @@ func parseView(lx *lexer, path string, opts OptionsBlock, logger *zap.Logger) (V
 			if err != nil {
 				return View{}, err
 			}
+			// Drop a zone with an explicit non-master type (e.g. type forward),
+			// matching the top-level rule: not served, file never opened.
+			if zoneIsSkipped(z) {
+				logSkippedZone(logger, z, viewName, path)
+				continue
+			}
 			v.Zones = append(v.Zones, z)
-
-		case "recursion":
-			// Accepted but ignored (global authoritative-only mode).
-			val := lx.next()
-			if val.kind == tokenEOF {
-				return View{}, fmt.Errorf("%s:%d: unexpected EOF reading recursion value", path, val.line)
-			}
-			semi := lx.next()
-			if semi.kind != tokenSemicolon {
-				return View{}, fmt.Errorf("%s:%d: expected ';' after recursion value, got %q", path, val.line, semi.value)
-			}
-			logger.Sugar().Debugw("recursion directive inside view ignored", "view", viewName, "file", path)
 
 		case "rate-limit":
 			// Rate limiting is supported only at the global options scope (v1).
@@ -402,7 +469,14 @@ func parseView(lx *lexer, path string, opts OptionsBlock, logger *zap.Logger) (V
 			}
 
 		default:
-			return View{}, fmt.Errorf("%s:%d: unsupported directive %q inside view %q", path, tok.line, tok.value, viewName)
+			// Skip-unknown posture inside a view: an unrecognized view-scope
+			// directive (allow-query, allow-recursion, recursion, …) is consumed
+			// and skipped, not fatal. The tiered logger classifies it (access
+			// control → WARN, recursion family → INFO, else DEBUG).
+			logSkippedDirective(logger, directive, viewName, path, tok.line)
+			if err := lx.skipNamedDirective(path); err != nil {
+				return View{}, err
+			}
 		}
 	}
 
@@ -462,10 +536,10 @@ func parseZone(lx *lexer, path string, opts OptionsBlock) (Zone, error) {
 			if semi.kind != tokenSemicolon {
 				return Zone{}, fmt.Errorf("%s:%d: expected ';' after zone type, got %q", path, valTok.line, semi.value)
 			}
-			// Only "master" zone type is supported.
-			if zoneType != ZoneTypeMaster {
-				return Zone{}, fmt.Errorf("%s:%d: zone %q has unsupported type %q (only 'master' is supported)", path, tok.line, zoneName, zoneType)
-			}
+			// Record the declared type as-is. Only "master" is served; a zone
+			// with any other explicit type is dropped by the caller (see
+			// zoneIsSkipped) rather than being fatal, so a BIND config's
+			// non-master zones (hint/forward/slave/…) load without error.
 			z.Type = zoneType
 
 		case "file":
@@ -489,10 +563,14 @@ func parseZone(lx *lexer, path string, opts OptionsBlock) (Zone, error) {
 			z.File = filePath
 
 		default:
-			// Skip unknown zone directives (e.g. forwarders after type forward
-			// may appear — but the type check above will have already errored).
-			// For other unknowns, skip until ';' or balanced block.
-			if err := lx.skipOptionValue(path); err != nil {
+			// Skip unknown zone-body directives. Use skipNamedDirective (not
+			// skipOptionValue) because a non-master zone is now parsed in full
+			// before the caller drops it via zoneIsSkipped, so its body can
+			// contain the `keyword <name> { ... };` shape (e.g. a slave zone's
+			// `masters <name> { ... };`). skipOptionValue would mis-scan the
+			// first ';' inside that block and desync the token stream; only
+			// skipNamedDirective consumes the leading name token before the '{'.
+			if err := lx.skipNamedDirective(path); err != nil {
 				return Zone{}, err
 			}
 		}

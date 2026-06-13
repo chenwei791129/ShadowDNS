@@ -8,7 +8,7 @@ import (
 
 // TestCountryRuleUppercase verifies that an explicit uppercase country code is parsed correctly.
 func TestCountryRuleUppercase(t *testing.T) {
-	rules, err := ParseMatchClients([]byte("geoip country TH;"), "test.conf", 1)
+	rules, _, err := ParseMatchClients([]byte("geoip country TH;"), "test.conf", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestCountryRuleUppercase(t *testing.T) {
 
 // TestCountryRuleLowercaseNormalized verifies that a lowercase country code is uppercased.
 func TestCountryRuleLowercaseNormalized(t *testing.T) {
-	rules, err := ParseMatchClients([]byte("geoip country th;"), "test.conf", 1)
+	rules, _, err := ParseMatchClients([]byte("geoip country th;"), "test.conf", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestCountryRuleLowercaseNormalized(t *testing.T) {
 
 // TestASNRuleValid verifies that a well-formed asnum rule extracts the numeric AS.
 func TestASNRuleValid(t *testing.T) {
-	rules, err := ParseMatchClients([]byte(`geoip asnum "AS4134 Chinanet";`), "test.conf", 1)
+	rules, _, err := ParseMatchClients([]byte(`geoip asnum "AS4134 Chinanet";`), "test.conf", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestASNRuleValid(t *testing.T) {
 
 // TestASNRuleUnparseable verifies that a malformed asnum value (no leading AS number) returns an error.
 func TestASNRuleUnparseable(t *testing.T) {
-	_, err := ParseMatchClients([]byte(`geoip asnum "Chinanet";`), "myfile.conf", 5)
+	_, _, err := ParseMatchClients([]byte(`geoip asnum "Chinanet";`), "myfile.conf", 5)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -78,7 +78,7 @@ func TestASNRuleUnparseable(t *testing.T) {
 // and a CIDR prefix becomes a CIDRRule with the correct prefix length.
 func TestIPRuleAndCIDRRuleDistinguished(t *testing.T) {
 	body := "192.0.2.8;\n198.51.100.0/26;"
-	rules, err := ParseMatchClients([]byte(body), "test.conf", 1)
+	rules, _, err := ParseMatchClients([]byte(body), "test.conf", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestIPRuleAndCIDRRuleDistinguished(t *testing.T) {
 // on the same line are all parsed in order.
 func TestMultipleRulesOnSingleLine(t *testing.T) {
 	body := "geoip country CN; geoip country HK; geoip country MO;"
-	rules, err := ParseMatchClients([]byte(body), "test.conf", 1)
+	rules, _, err := ParseMatchClients([]byte(body), "test.conf", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestMultipleRulesOnSingleLine(t *testing.T) {
 
 // TestAnyRule verifies that `any;` produces an AnyRule.
 func TestAnyRule(t *testing.T) {
-	rules, err := ParseMatchClients([]byte("any;"), "test.conf", 1)
+	rules, _, err := ParseMatchClients([]byte("any;"), "test.conf", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestAnyRule(t *testing.T) {
 // TestCommentsAreSkipped verifies that line comments do not produce rules.
 func TestCommentsAreSkipped(t *testing.T) {
 	body := "// foo\n geoip country US;"
-	rules, err := ParseMatchClients([]byte(body), "test.conf", 1)
+	rules, _, err := ParseMatchClients([]byte(body), "test.conf", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -160,12 +160,13 @@ func TestCommentsAreSkipped(t *testing.T) {
 	}
 }
 
-// TestUnknownRuleFormReturnsError verifies that an unrecognised rule form
-// returns a descriptive error.
-func TestUnknownRuleFormReturnsError(t *testing.T) {
-	_, err := ParseMatchClients([]byte("geoip whatever;"), "rules.conf", 10)
+// TestMalformedGeoIPFormReturnsError verifies that a malformed instance of a
+// recognized form (a `geoip` sub-command written incorrectly) stays fatal — it
+// is a recognized form written wrong, not an unsupported construct.
+func TestMalformedGeoIPFormReturnsError(t *testing.T) {
+	_, _, err := ParseMatchClients([]byte("geoip whatever;"), "rules.conf", 10)
 	if err == nil {
-		t.Fatal("expected error for unknown rule, got nil")
+		t.Fatal("expected error for malformed geoip rule, got nil")
 	}
 	if !strings.Contains(err.Error(), "rules.conf") {
 		t.Errorf("error should contain path, got: %v", err)
@@ -175,10 +176,50 @@ func TestUnknownRuleFormReturnsError(t *testing.T) {
 	}
 }
 
+// TestUnrecognizedTokenIsDropped verifies that a token matching no recognized
+// rule form (a named-acl reference) is dropped — returned in dropped with its
+// token and line, not appended to rules, and not fatal.
+func TestUnrecognizedTokenIsDropped(t *testing.T) {
+	rules, dropped, err := ParseMatchClients([]byte("internal-net;"), "rules.conf", 7)
+	if err != nil {
+		t.Fatalf("named-acl reference must be dropped, not fatal, got: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Errorf("dropped token must not produce a rule, got %+v", rules)
+	}
+	if len(dropped) != 1 {
+		t.Fatalf("expected exactly 1 dropped rule, got %d: %+v", len(dropped), dropped)
+	}
+	if dropped[0].Token != "internal-net" {
+		t.Errorf("dropped token: got %q, want internal-net", dropped[0].Token)
+	}
+	if dropped[0].Line != 7 {
+		t.Errorf("dropped line: got %d, want 7", dropped[0].Line)
+	}
+}
+
+// TestDroppedRuleAlongsideValidRule verifies that a dropped rule does not
+// suppress a valid sibling: the CIDR survives while the named-acl is dropped.
+func TestDroppedRuleAlongsideValidRule(t *testing.T) {
+	rules, dropped, err := ParseMatchClients([]byte("internal-net; 192.0.2.0/24;"), "rules.conf", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("expected the CIDR rule to survive, got %d rules: %+v", len(rules), rules)
+	}
+	if _, ok := rules[0].(CIDRRule); !ok {
+		t.Errorf("surviving rule: got %T, want CIDRRule", rules[0])
+	}
+	if len(dropped) != 1 || dropped[0].Token != "internal-net" {
+		t.Errorf("expected internal-net dropped, got %+v", dropped)
+	}
+}
+
 // TestHashCommentIsSkipped verifies that # comments are also stripped.
 func TestHashCommentIsSkipped(t *testing.T) {
 	body := "# hash comment\ngeoip country JP;"
-	rules, err := ParseMatchClients([]byte(body), "test.conf", 1)
+	rules, _, err := ParseMatchClients([]byte(body), "test.conf", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,7 +238,7 @@ func TestHashCommentIsSkipped(t *testing.T) {
 // TestBlockCommentIsSkipped verifies that /* ... */ comments are stripped.
 func TestBlockCommentIsSkipped(t *testing.T) {
 	body := "/* block comment */ geoip country DE;"
-	rules, err := ParseMatchClients([]byte(body), "test.conf", 1)
+	rules, _, err := ParseMatchClients([]byte(body), "test.conf", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -215,7 +256,7 @@ func TestBlockCommentIsSkipped(t *testing.T) {
 
 // TestEmptyBodyProducesNoRules verifies that an empty body is accepted without error.
 func TestEmptyBodyProducesNoRules(t *testing.T) {
-	rules, err := ParseMatchClients([]byte(""), "test.conf", 1)
+	rules, _, err := ParseMatchClients([]byte(""), "test.conf", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -367,7 +408,7 @@ func TestFullBlockExample(t *testing.T) {
     198.51.100.0/26;
     any;
 `
-	rules, err := ParseMatchClients([]byte(body), "example.conf", 10)
+	rules, _, err := ParseMatchClients([]byte(body), "example.conf", 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

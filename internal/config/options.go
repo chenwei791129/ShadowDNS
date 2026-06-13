@@ -490,6 +490,42 @@ func (lx *lexer) skipOptionValue(path string) error {
 	}
 }
 
+// skipNamedDirective consumes a top-level or view-scope directive whose keyword
+// has just been read, handling both shapes a BIND statement can take:
+//
+//   - `keyword [name|address ...] { ... };` — a block optionally preceded by a
+//     name or address token (e.g. acl "internal" { ... };, controls { ... };,
+//     server 192.0.2.1 { ... };, masters myset { ... };). Any leading tokens are
+//     consumed, then the balanced block (and its trailing ';') is skipped.
+//   - `keyword value [value ...];` — a single- or multi-token value statement
+//     (e.g. dnssec-validation auto;, check-names master ignore;), consumed
+//     through the terminating ';'.
+//
+// It differs from skipOptionValue, which assumes the value follows immediately:
+// here a name/address token may sit between the keyword and the opening '{', and
+// skipOptionValue would mis-scan the first ';' inside the block. Only a genuine
+// syntax error (EOF mid-directive, or a '}' where a token/';'/'{' was expected)
+// is returned.
+func (lx *lexer) skipNamedDirective(path string) error {
+	for {
+		tok := lx.peek()
+		switch tok.kind {
+		case tokenLBrace:
+			// Delegate to the balanced-brace skipper (it consumes the trailing ';').
+			return lx.skipBalancedBraceBlock(path)
+		case tokenSemicolon:
+			lx.next() // bare `keyword;` or end of a value statement
+			return nil
+		case tokenWord, tokenString:
+			lx.next() // a name/address/value token; keep scanning for '{' or ';'
+		case tokenEOF:
+			return fmt.Errorf("%s:%d: unexpected end of input while skipping directive", path, tok.line)
+		default: // tokenRBrace
+			return fmt.Errorf("%s:%d: unexpected '}' while skipping directive", path, tok.line)
+		}
+	}
+}
+
 // skipBalancedBraceBlock consumes a `{ ... };` block (with arbitrary nesting).
 func (lx *lexer) skipBalancedBraceBlock(path string) error {
 	open := lx.next() // consume '{'

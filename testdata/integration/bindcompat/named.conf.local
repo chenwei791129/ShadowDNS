@@ -1,0 +1,17 @@
+// Operator-added statements a real /etc/bind/named.conf.local commonly carries.
+// ShadowDNS does not act on any of these, but a BIND drop-in must load them
+// without a fatal error: the tolerant parser skips each one (acl/key/controls
+// are top-level blocks with the keyword [name] { ... }; shape).
+acl "internal" {
+	192.0.2.0/24;
+	198.51.100.0/24;
+};
+
+key "rndc-key" {
+	algorithm hmac-sha256;
+	secret "AAAAAAAAAAAAAAAAAAAAAA==";
+};
+
+controls {
+	inet 127.0.0.1 port 953 allow { localhost; } keys { "rndc-key"; };
+};

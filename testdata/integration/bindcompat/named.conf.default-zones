@@ -1,0 +1,28 @@
+// Stock /etc/bind/named.conf.default-zones. The root hint zone uses
+// `type hint`, which ShadowDNS does not serve: the tolerant parser drops it
+// (and never opens its `file`, hence db.root is intentionally absent from the
+// fixture). The localhost/reverse zones are `type master` and load normally.
+zone "." {
+	type hint;
+	file "db.root";
+};
+
+zone "localhost" {
+	type master;
+	file "db.local";
+};
+
+zone "127.in-addr.arpa" {
+	type master;
+	file "db.127";
+};
+
+zone "0.in-addr.arpa" {
+	type master;
+	file "db.0";
+};
+
+zone "255.in-addr.arpa" {
+	type master;
+	file "db.255";
+};

@@ -30,6 +30,16 @@ type CIDRRule struct{ Prefix netip.Prefix }
 // AnyRule is a catch-all that matches all traffic.
 type AnyRule struct{}
 
+// DroppedRule records a match-clients token the loader could not evaluate and
+// therefore dropped (fail-closed). It carries the raw token and the line it was
+// declared on so the caller (which holds the view name and logger) can WARN.
+// A dropped rule is never added to a view's MatchClients, so the view-matcher
+// treats it as never-matching.
+type DroppedRule struct {
+	Token string
+	Line  int
+}
+
 func (CountryRule) isMatchRule() {}
 func (ASNRule) isMatchRule()     {}
 func (IPRule) isMatchRule()      {}
@@ -68,8 +78,14 @@ var reASN = regexp.MustCompile(`^AS(\d+)(\s|$)`)
 // Rules within the body MAY be one-per-line or multiple-per-line separated by ;.
 // Comments (// ..., # ..., /* ... */) inside the body are ignored.
 //
+// A token that matches no recognized rule form (a named-acl reference, a `!`
+// negation, a nested group) is not appended to rules; it is returned in dropped
+// so the caller can WARN with the enclosing view name. A dropped rule is
+// fail-closed: it never matches. A malformed instance of a recognized form (e.g.
+// a `geoip` sub-command written incorrectly) remains a fatal error.
+//
 // The function does not panic on any input.
-func ParseMatchClients(body []byte, path string, startLine int) (rules []MatchRule, err error) {
+func ParseMatchClients(body []byte, path string, startLine int) (rules []MatchRule, dropped []DroppedRule, err error) {
 	// Strip block comments /* ... */ first (they may span lines).
 	stripped := removeBlockComments(string(body))
 
@@ -90,14 +106,18 @@ func ParseMatchClients(body []byte, path string, startLine int) (rules []MatchRu
 			if token == "" {
 				continue
 			}
-			rule, parseErr := parseOneRule(token, path, lineNum)
+			rule, drop, parseErr := parseOneRule(token, path, lineNum)
 			if parseErr != nil {
-				return nil, parseErr
+				return nil, nil, parseErr
+			}
+			if drop {
+				dropped = append(dropped, DroppedRule{Token: token, Line: lineNum})
+				continue
 			}
 			rules = append(rules, rule)
 		}
 	}
-	return rules, nil
+	return rules, dropped, nil
 }
 
 // removeBlockComments strips /* ... */ comments from s, preserving newlines
@@ -162,23 +182,33 @@ func indexOutsideQuotes(s, needle string) int {
 }
 
 // parseOneRule parses a single rule token (trimmed, without the trailing ;).
-func parseOneRule(token, path string, lineNum int) (MatchRule, error) {
+// It returns (rule, false, nil) for a recognized form; (nil, true, nil) for a
+// token matching no recognized form (a named-acl reference, a `!` negation, a
+// nested group fragment), which is dropped and treated fail-closed; and
+// (nil, false, err) for a malformed instance of a recognized form (e.g. a geoip
+// sub-command written incorrectly), which stays fatal.
+func parseOneRule(token, path string, lineNum int) (rule MatchRule, dropped bool, err error) {
 	switch {
 	case token == "any":
-		return AnyRule{}, nil
+		return AnyRule{}, false, nil
 
 	case strings.HasPrefix(token, "geoip "):
-		return parseGeoIPRule(token, path, lineNum)
+		// `geoip` is a recognized form; a malformed instance is fatal, not
+		// dropped. On error the caller discards the (zero) rule.
+		r, gErr := parseGeoIPRule(token, path, lineNum)
+		return r, false, gErr
 
 	default:
 		// Try CIDR first, then bare IP.
-		if prefix, err := netip.ParsePrefix(token); err == nil {
-			return CIDRRule{Prefix: prefix}, nil
+		if prefix, pErr := netip.ParsePrefix(token); pErr == nil {
+			return CIDRRule{Prefix: prefix}, false, nil
 		}
-		if addr, err := netip.ParseAddr(token); err == nil {
-			return IPRule{IP: addr}, nil
+		if addr, aErr := netip.ParseAddr(token); aErr == nil {
+			return IPRule{IP: addr}, false, nil
 		}
-		return nil, fmt.Errorf("%s:%d: unknown rule %q", path, lineNum, token)
+		// Unrecognized form: drop it (fail-closed). The view-matcher never
+		// promotes a dropped rule to a match.
+		return nil, true, nil
 	}
 }
 

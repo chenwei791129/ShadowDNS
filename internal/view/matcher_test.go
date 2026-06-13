@@ -106,6 +106,71 @@ func TestMatcher_NoMatchReturnsEmptyString(t *testing.T) {
 	}
 }
 
+// --- fail-closed for dropped (unevaluable) match-clients rules ----------------
+//
+// When the config-loader drops a match-clients rule it cannot evaluate (a
+// named-acl reference, `!` negation, or nested group), that rule never reaches
+// the matcher: the view's Rules slice simply omits it. A view whose entire
+// match-clients set was dropped therefore arrives here with empty Rules. These
+// tests pin the fail-closed contract: an empty/reduced rule set can only narrow,
+// never widen, the clients a view serves — a dropped rule is never promoted to
+// `any`.
+
+// droppedOnlyView models a view whose only match-clients rule was dropped: its
+// Rules slice is empty.
+func droppedOnlyView(name string) NamedRuleSet {
+	return NamedRuleSet{Name: name, Rules: nil}
+}
+
+// Scenario "View with only a dropped rule matches no client": the view is not
+// selected and evaluation proceeds to subsequent views.
+func TestMatcher_DroppedOnlyViewMatchesNoClient(t *testing.T) {
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			droppedOnlyView("internal"),     // match-clients { internal-net; } — dropped
+			ipView("other", "198.51.100.7"), // a later view that does match
+		},
+	}
+	got := m.Resolve(netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("198.51.100.7"))
+	if got != "other" {
+		t.Errorf("expected evaluation to fall through the dropped-rule view to 'other', got %q", got)
+	}
+}
+
+// Scenario "Dropped rule does not widen a view with other rules": a view with a
+// surviving CIDR rule (the dropped rule absent) is not selected for a client
+// outside the CIDR.
+func TestMatcher_DroppedRuleDoesNotWidenView(t *testing.T) {
+	// match-clients { internal-net; 192.0.2.0/24; } → internal-net dropped, only
+	// the CIDR survives.
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			cidrView("internal", "192.0.2.0/24"),
+		},
+	}
+	// Source IP is outside the surviving CIDR; the dropped rule must not match.
+	got := m.Resolve(netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("198.51.100.7"))
+	if got != "" {
+		t.Errorf("dropped rule must never match; expected no-view result, got %q", got)
+	}
+}
+
+// Scenario "Dropped rule is never treated as a catch-all": with no later `any`
+// view, a client matching no other view gets the explicit no-view result ("",
+// which the caller turns into REFUSED), not the dropped-rule view.
+func TestMatcher_DroppedRuleNeverCatchAll(t *testing.T) {
+	m := &Matcher{
+		Views: []NamedRuleSet{
+			droppedOnlyView("internal"),
+			ipView("other", "192.0.2.1"),
+		},
+	}
+	got := m.Resolve(netip.MustParseAddr("203.0.113.9"), netip.MustParseAddr("203.0.113.9"))
+	if got != "" {
+		t.Errorf("a dropped rule must never act as a catch-all; expected no-view result, got %q", got)
+	}
+}
+
 func TestMatcher_FirstRuleInViewDecides(t *testing.T) {
 	// View "mixed" has two rules: IP 192.0.2.2 first, then AnyRule.
 	// Client IP is 192.0.2.1, which matches no IP rule but would match AnyRule

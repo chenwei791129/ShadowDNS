@@ -104,6 +104,26 @@ func newNoGeoIPTestServer(t *testing.T, confDir string) (*server.Server, func())
 	return serveConfDir(t, confDir, nil, nil, nil)
 }
 
+// serveBindCompat copies the viewless bindcompat fixture (a Debian/BIND-style
+// named.conf split with default-zones) into a fresh dir and serves it through
+// the production chain with no GeoIP — the fixture declares no geo rules. The
+// fixture uses relative includes and relative zone `file` paths, both of which
+// resolve against the copied dir, so no path substitution is needed.
+func serveBindCompat(t *testing.T) (*server.Server, func()) {
+	t.Helper()
+
+	src, err := filepath.Abs(filepath.Join(fixtureDir, "bindcompat"))
+	if err != nil {
+		t.Fatalf("abs bindcompat dir: %v", err)
+	}
+	// CopyFS creates confDir; it must not pre-exist, so nest it under TempDir.
+	confDir := filepath.Join(t.TempDir(), "bindcompat")
+	if err := os.CopyFS(confDir, os.DirFS(src)); err != nil {
+		t.Fatalf("copy bindcompat fixture: %v", err)
+	}
+	return newNoGeoIPTestServer(t, confDir)
+}
+
 // serveConfDir is the single production-wiring chain shared by the fixture
 // helpers: LoadNamedConf → shadowdnscfg.Load → BuildState → NewServer →
 // bindAndServe. country/asn may both be nil to run without GeoIP. The

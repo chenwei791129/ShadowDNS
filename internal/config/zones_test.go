@@ -633,7 +633,8 @@ view "view-last" {
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-// Test 2.6-1: zone type slave returns error mentioning zone name and type.
+// Task 2.1: an in-view zone with type slave is skipped (dropped, not served),
+// not fatal. The view retains its master zones and loses only the slave one.
 func TestLoadNamedConf_ZoneTypeSlave(t *testing.T) {
 	dir := t.TempDir()
 
@@ -643,27 +644,28 @@ func TestLoadNamedConf_ZoneTypeSlave(t *testing.T) {
 
 view "view-a" {
 	match-clients { any; };
-	zone "x.com" {
+	zone "example.org" {
 		type slave;
-		file "/etc/namedb/master/x.com.fwd";
+		file "/etc/namedb/master/example.org.fwd";
 	};
 };
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
-	if err == nil {
-		t.Fatal("expected error for zone type slave, got nil")
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("zone type slave must be skipped, not fatal, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "x.com") {
-		t.Errorf("error should mention zone name 'x.com', got: %v", err)
+	if len(cfg.Views) != 1 {
+		t.Fatalf("expected 1 view, got %d", len(cfg.Views))
 	}
-	if !strings.Contains(err.Error(), "slave") {
-		t.Errorf("error should mention type 'slave', got: %v", err)
+	if len(cfg.Views[0].Zones) != 0 {
+		t.Errorf("slave zone must be dropped, got %d zones: %+v", len(cfg.Views[0].Zones), cfg.Views[0].Zones)
 	}
 }
 
-// Test 2.6-2: zone type forward returns error mentioning zone name and type.
+// Task 2.1: an in-view zone with type forward is skipped, not fatal, even with a
+// forwarders block in its body (consumed by the existing zone-body skipper).
 func TestLoadNamedConf_ZoneTypeForward(t *testing.T) {
 	dir := t.TempDir()
 
@@ -673,27 +675,76 @@ func TestLoadNamedConf_ZoneTypeForward(t *testing.T) {
 
 view "view-a" {
 	match-clients { any; };
-	zone "x.com" {
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+	zone "example.org" {
 		type forward;
-		forwarders { 8.8.8.8; };
+		forwarders { 192.0.2.53; };
 	};
 };
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
-	if err == nil {
-		t.Fatal("expected error for zone type forward, got nil")
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("zone type forward must be skipped, not fatal, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "x.com") {
-		t.Errorf("error should mention zone name 'x.com', got: %v", err)
+	if len(cfg.Views) != 1 {
+		t.Fatalf("expected 1 view, got %d", len(cfg.Views))
 	}
-	if !strings.Contains(err.Error(), "forward") {
-		t.Errorf("error should mention type 'forward', got: %v", err)
+	// The master zone is retained; the forward zone is dropped.
+	if len(cfg.Views[0].Zones) != 1 {
+		t.Fatalf("expected only the master zone retained, got %d zones: %+v", len(cfg.Views[0].Zones), cfg.Views[0].Zones)
+	}
+	if cfg.Views[0].Zones[0].Name != "example.com" {
+		t.Errorf("retained zone: got %q, want example.com", cfg.Views[0].Zones[0].Name)
 	}
 }
 
-// Test 2.6-3: Top-level dnssec-enable returns error.
+// Task 2.1 (regression): a dropped non-master zone is now parsed in full (it no
+// longer fatals at the `type` line), so its body directives must keep the token
+// stream in sync. A `masters <name> { ... };` directive has a name token before
+// the opening brace — the same shape that desyncs the value-only skipper. The
+// following view must still parse, proving the zone-body skip stayed in sync.
+func TestLoadNamedConf_DroppedZoneBodyKeepsTokenSync(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+view "view-a" {
+	match-clients { any; };
+	zone "secondary.example" {
+		type slave;
+		masters mymasters { 192.0.2.1; };
+		file "/etc/namedb/slave/secondary.example";
+	};
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("a dropped slave zone with a masters block must not desync the parser, got: %v", err)
+	}
+	if len(cfg.Views) != 1 {
+		t.Fatalf("expected 1 view, got %d", len(cfg.Views))
+	}
+	// The slave zone is dropped; the master zone after it must still be parsed.
+	if len(cfg.Views[0].Zones) != 1 || cfg.Views[0].Zones[0].Name != "example.com" {
+		t.Errorf("expected only example.com retained (slave dropped, no desync), got %+v", cfg.Views[0].Zones)
+	}
+}
+
+// Task 1.1: a top-level dnssec-enable directive is skipped, not fatal; the views
+// after it still load.
 func TestLoadNamedConf_TopLevelDnssecEnable(t *testing.T) {
 	dir := t.TempDir()
 
@@ -713,18 +764,22 @@ view "view-a" {
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
-	if err == nil {
-		t.Fatal("expected error for dnssec-enable, got nil")
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("dnssec-enable must be skipped, not fatal, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "dnssec-enable") {
-		t.Errorf("error should mention 'dnssec-enable', got: %v", err)
+	if len(cfg.Views) != 1 || cfg.Views[0].Name != "view-a" {
+		t.Fatalf("expected view-a to load after a skipped directive, got %+v", cfg.Views)
 	}
 }
 
-// Test 2.6-4: Top-level allow-update returns error.
+// Task 1.1 + 3.1: a top-level allow-update access-control directive is skipped,
+// not fatal, and logged at WARN (ShadowDNS does not enforce it).
 func TestLoadNamedConf_TopLevelAllowUpdate(t *testing.T) {
 	dir := t.TempDir()
+
+	core, obs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
 
 	namedConf := `options {
 	directory "/etc/namedb";
@@ -742,16 +797,23 @@ view "view-a" {
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
-	if err == nil {
-		t.Fatal("expected error for allow-update, got nil")
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), logger)
+	if err != nil {
+		t.Fatalf("allow-update must be skipped, not fatal, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "allow-update") {
-		t.Errorf("error should mention 'allow-update', got: %v", err)
+	if len(cfg.Views) != 1 {
+		t.Fatalf("expected 1 view to load, got %d", len(cfg.Views))
+	}
+	warns := obs.FilterField(zap.String("directive", "allow-update")).All()
+	if len(warns) != 1 {
+		t.Fatalf("expected exactly 1 WARN naming allow-update, got %d: %+v", len(warns), obs.All())
+	}
+	if warns[0].Level != zapcore.WarnLevel {
+		t.Errorf("allow-update should log at WARN, got %v", warns[0].Level)
 	}
 }
 
-// Test 2.6-5: Inside view, unknown directive returns error.
+// Task 1.1: an unrecognized directive inside a view is skipped, not fatal.
 func TestLoadNamedConf_UnknownDirectiveInsideView(t *testing.T) {
 	dir := t.TempDir()
 
@@ -770,12 +832,12 @@ view "view-a" {
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
-	if err == nil {
-		t.Fatal("expected error for unknown directive inside view, got nil")
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("unknown directive inside view must be skipped, not fatal, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "unknown-directive") {
-		t.Errorf("error should mention directive name 'unknown-directive', got: %v", err)
+	if len(cfg.Views) != 1 || len(cfg.Views[0].Zones) != 1 {
+		t.Fatalf("expected view-a with its zone to load past the skipped directive, got %+v", cfg.Views)
 	}
 }
 
@@ -846,8 +908,9 @@ zone "example.com" {
 	}
 }
 
-// Task 1.1-b: a top-level zone with an unsupported type fails with the same
-// error as the same type declared inside a view.
+// Task 2.1: a top-level zone with an unsupported type is skipped (dropped, not
+// served), not fatal, just like the same type declared inside a view. With no
+// servable top-level zone left, no _default view is synthesized.
 func TestLoadNamedConf_TopLevelZoneTypeSlave(t *testing.T) {
 	dir := t.TempDir()
 
@@ -862,15 +925,12 @@ zone "example.com" {
 `
 	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
 
-	_, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
-	if err == nil {
-		t.Fatal("expected error for top-level zone type slave, got nil")
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("top-level zone type slave must be skipped, not fatal, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "example.com") {
-		t.Errorf("error should mention zone name 'example.com', got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "slave") {
-		t.Errorf("error should mention type 'slave', got: %v", err)
+	if len(cfg.Views) != 0 {
+		t.Errorf("a dropped top-level zone must not synthesize a _default view, got %d views: %+v", len(cfg.Views), cfg.Views)
 	}
 }
 
@@ -963,7 +1023,7 @@ zone "example.net" {
 		t.Errorf("view name: got %q, want _default", v.Name)
 	}
 	// The synthesized rule set must be value-identical to parsing `any;`.
-	wantRules, perr := ParseMatchClients([]byte("any;"), "test", 1)
+	wantRules, _, perr := ParseMatchClients([]byte("any;"), "test", 1)
 	if perr != nil {
 		t.Fatalf("ParseMatchClients(any): %v", perr)
 	}
@@ -1282,6 +1342,279 @@ zone "example.com" {
 	}
 	if !strings.Contains(err.Error(), confPath) {
 		t.Errorf("error should reference the named.conf source path, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Skip-unknown posture (tolerant parsing): top level, view scope, skip helper
+// ---------------------------------------------------------------------------
+
+// Task 1.1 (spec scenarios "Top-level acl block is skipped" / "controls and key
+// blocks are skipped"): top-level acl/key/controls blocks are skipped and the
+// following view loads.
+func TestLoadNamedConf_TopLevelBlocksSkipped(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+acl "internal" { 192.0.2.0/24; };
+key "rndc-key" { algorithm hmac-sha256; secret "AAAA"; };
+controls { inet 192.0.2.1 allow { localhost; }; };
+
+view "view-a" {
+	match-clients { any; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("top-level acl/key/controls must be skipped, not fatal, got: %v", err)
+	}
+	if len(cfg.Views) != 1 || cfg.Views[0].Name != "view-a" {
+		t.Fatalf("expected view-a to load after skipped blocks, got %+v", cfg.Views)
+	}
+	if len(cfg.Views[0].Zones) != 1 || cfg.Views[0].Zones[0].Name != "example.com" {
+		t.Errorf("view-a should retain example.com, got %+v", cfg.Views[0].Zones)
+	}
+}
+
+// Task 1.2: the skip helper keeps the token stream in sync across every top-level
+// block shape — `keyword { ... };` (controls), `keyword "name" { ... };`
+// (acl/key), `keyword <IP> { ... };` (server), and `keyword <name> { ... };`
+// (masters), including nested braces. The view declared after all of them must
+// parse with its name and zone intact; any mis-synced skip would corrupt it.
+func TestLoadNamedConf_SkipHelperShapes(t *testing.T) {
+	dir := t.TempDir()
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+acl "internal" { 192.0.2.0/24; 198.51.100.0/24; };
+key "rndc-key" { algorithm hmac-sha256; secret "AAAA"; };
+controls { inet 192.0.2.1 allow { localhost; } keys { "rndc-key"; }; };
+server 192.0.2.2 { bogus no; };
+masters mymasters { 192.0.2.3; };
+
+view "view-a" {
+	match-clients { any; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("every skip-helper shape must keep token sync, not fatal, got: %v", err)
+	}
+	if len(cfg.Views) != 1 {
+		t.Fatalf("expected exactly 1 view after skipping 5 top-level blocks, got %d: %+v", len(cfg.Views), cfg.Views)
+	}
+	if cfg.Views[0].Name != "view-a" {
+		t.Errorf("view name after skips: got %q, want view-a (token desync)", cfg.Views[0].Name)
+	}
+	if len(cfg.Views[0].Zones) != 1 || cfg.Views[0].Zones[0].Name != "example.com" {
+		t.Errorf("view zone after skips: got %+v, want [example.com]", cfg.Views[0].Zones)
+	}
+	if len(cfg.Views[0].MatchClients) != 1 {
+		t.Errorf("view match-clients after skips: got %+v, want one any rule", cfg.Views[0].MatchClients)
+	}
+}
+
+// Task 1.1 + 3.1 (spec scenario "View-scope allow-query is skipped and logged at
+// WARN"): a view-scope allow-query is skipped, logged at WARN, and the view's
+// zones still load.
+func TestLoadNamedConf_ViewAllowQuerySkippedWARN(t *testing.T) {
+	dir := t.TempDir()
+
+	core, obs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+view "internal" {
+	match-clients { any; };
+	allow-query { any; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), logger)
+	if err != nil {
+		t.Fatalf("view-scope allow-query must be skipped, not fatal, got: %v", err)
+	}
+	if len(cfg.Views) != 1 || len(cfg.Views[0].Zones) != 1 {
+		t.Fatalf("expected the view's zone to load past allow-query, got %+v", cfg.Views)
+	}
+	warns := obs.FilterField(zap.String("directive", "allow-query")).All()
+	if len(warns) != 1 {
+		t.Fatalf("expected exactly 1 WARN naming allow-query, got %d: %+v", len(warns), obs.All())
+	}
+	if ctx := warns[0].ContextMap(); ctx["scope"] != "internal" {
+		t.Errorf("allow-query WARN should name the enclosing view, got scope=%v", ctx["scope"])
+	}
+}
+
+// Task 1.1 (spec scenario "Unbalanced brace remains fatal"): a skipped top-level
+// block with an unbalanced '{' is fatal, citing the file path.
+func TestLoadNamedConf_UnbalancedBraceFatal(t *testing.T) {
+	dir := t.TempDir()
+
+	// acl block opens '{' but never closes before EOF.
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+acl "internal" { 192.0.2.0/24;
+`
+	confPath := filepath.Join(dir, "named.conf")
+	writeFile(t, confPath, namedConf)
+
+	_, err := LoadNamedConf(confPath, zap.NewNop())
+	if err == nil {
+		t.Fatal("expected fatal error for unbalanced brace, got nil")
+	}
+	if !strings.Contains(err.Error(), confPath) {
+		t.Errorf("error should cite the file path, got: %v", err)
+	}
+}
+
+// Task 2.1 + 3.1 (spec scenario "Top-level zone with unsupported type is
+// skipped"): a top-level `zone "." { type hint; }` is skipped and logged at
+// INFO; a sibling master zone is retained and synthesized into the _default view.
+func TestLoadNamedConf_TopLevelTypeHintSkippedINFO(t *testing.T) {
+	dir := t.TempDir()
+
+	core, obs := observer.New(zapcore.InfoLevel)
+	logger := zap.New(core)
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+zone "." {
+	type hint;
+	file "/etc/namedb/db.root";
+};
+
+zone "example.com" {
+	type master;
+	file "/etc/namedb/master/example.com.fwd";
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), logger)
+	if err != nil {
+		t.Fatalf("top-level type hint must be skipped, not fatal, got: %v", err)
+	}
+	if len(cfg.Views) != 1 {
+		t.Fatalf("expected 1 synthesized view holding the master zone, got %d: %+v", len(cfg.Views), cfg.Views)
+	}
+	if len(cfg.Views[0].Zones) != 1 || cfg.Views[0].Zones[0].Name != "example.com" {
+		t.Errorf("expected only example.com served (hint dropped), got %+v", cfg.Views[0].Zones)
+	}
+	infos := obs.FilterField(zap.String("type", "hint")).All()
+	if len(infos) != 1 {
+		t.Fatalf("expected exactly 1 INFO for the skipped hint zone, got %d: %+v", len(infos), obs.All())
+	}
+	if infos[0].Level != zapcore.InfoLevel {
+		t.Errorf("skipped non-master zone should log at INFO, got %v", infos[0].Level)
+	}
+}
+
+// Task 3.1 (spec scenario "Recursion directive at top level is skipped and
+// logged at INFO"): a recursion-family directive is logged at INFO, not WARN.
+// Here a view-scope `recursion no;` exercises the recursion-family classifier.
+func TestLoadNamedConf_RecursionFamilyINFO(t *testing.T) {
+	dir := t.TempDir()
+
+	core, obs := observer.New(zapcore.InfoLevel)
+	logger := zap.New(core)
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+view "view-a" {
+	match-clients { any; };
+	recursion no;
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	if _, err := LoadNamedConf(filepath.Join(dir, "named.conf"), logger); err != nil {
+		t.Fatalf("recursion no inside view must be skipped, not fatal, got: %v", err)
+	}
+	entries := obs.FilterField(zap.String("directive", "recursion")).All()
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly 1 log naming recursion, got %d: %+v", len(entries), obs.All())
+	}
+	if entries[0].Level != zapcore.InfoLevel {
+		t.Errorf("recursion-family directive should log at INFO, got %v", entries[0].Level)
+	}
+}
+
+// Task 2.2 (spec scenario "Named-acl reference is dropped, not fatal"): a
+// match-clients named-acl reference is dropped (the view ends up with empty
+// rules — fail-closed), not fatal, and logged at WARN naming the token and view.
+func TestLoadNamedConf_MatchClientsNamedAclDropped(t *testing.T) {
+	dir := t.TempDir()
+
+	core, obs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+view "internal" {
+	match-clients { internal-net; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), logger)
+	if err != nil {
+		t.Fatalf("named-acl reference must be dropped, not fatal, got: %v", err)
+	}
+	if len(cfg.Views) != 1 {
+		t.Fatalf("expected 1 view, got %d", len(cfg.Views))
+	}
+	// Fail-closed: the only rule was dropped, so the view matches no client.
+	if len(cfg.Views[0].MatchClients) != 0 {
+		t.Errorf("dropped rule must not survive in MatchClients (fail-closed), got %+v", cfg.Views[0].MatchClients)
+	}
+	warns := obs.FilterField(zap.String("token", "internal-net")).All()
+	if len(warns) != 1 {
+		t.Fatalf("expected exactly 1 WARN naming the dropped token, got %d: %+v", len(warns), obs.All())
+	}
+	if ctx := warns[0].ContextMap(); ctx["scope"] != "internal" {
+		t.Errorf("dropped-rule WARN should name the enclosing view in scope, got scope=%v", ctx["scope"])
 	}
 }
 

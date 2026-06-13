@@ -1,0 +1,8 @@
+// Stock-style options block. No directory is set, so relative zone `file`
+// paths resolve against the directory of the declaring file (the copied
+// fixture dir) — and no geoip-directory is set, so the config loads with no
+// GeoIP database.
+options {
+	listen-on { any; };
+	recursion no;
+};
