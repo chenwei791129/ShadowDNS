@@ -82,10 +82,11 @@ type Element struct {
 	Sub []Element
 }
 
-// maxElementDepth bounds recursion through resolved references and nested groups.
+// MaxElementDepth bounds recursion through resolved references and nested groups.
 // References are resolved to a finite DAG at build time (cycles are broken), so
-// this is a defensive backstop, not a functional limit.
-const maxElementDepth = 64
+// this is a defensive backstop, not a functional limit. It is the single source
+// of truth shared by the config-side geo-rule scan and the view-matcher.
+const MaxElementDepth = 64
 
 // FirstGeoRuleView scans all views' match-clients in declaration order and
 // reports the first view containing a geo-class leaf (CountryRule or ASNRule),
@@ -105,7 +106,7 @@ func FirstGeoRuleView(views []View) (viewName, source string, line int, found bo
 // listHasGeoLeaf reports whether elems contains a geo-class leaf, recursing into
 // nested groups and resolved references.
 func listHasGeoLeaf(elems []Element, depth int) bool {
-	if depth > maxElementDepth {
+	if depth > MaxElementDepth {
 		return false
 	}
 	for _, el := range elems {
@@ -280,10 +281,10 @@ func parseGeoIPElement(lx *lexer, path string, startLine int) (Element, error) {
 	switch strings.ToLower(sub.value) {
 	case "country":
 		val := lx.next()
-		if val.kind != tokenWord && val.kind != tokenString {
-			return Element{}, fmt.Errorf("%s:%d: geoip country missing code", path, lineNo(startLine, val.line))
+		code := ""
+		if val.kind == tokenWord || val.kind == tokenString {
+			code = strings.TrimSpace(val.value)
 		}
-		code := strings.TrimSpace(val.value)
 		if code == "" {
 			return Element{}, fmt.Errorf("%s:%d: geoip country missing code", path, lineNo(startLine, val.line))
 		}

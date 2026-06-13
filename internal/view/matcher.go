@@ -32,10 +32,6 @@ type Matcher struct {
 	LocalnetsNets []netip.Prefix
 }
 
-// maxElementDepth bounds recursion through resolved references and nested groups
-// (a defensive backstop; the config-loader resolves references to a finite DAG).
-const maxElementDepth = 64
-
 // Resolve returns the name of the first view whose match-clients list accepts
 // the client, or "" (empty string) when no view accepts. The empty result is the
 // explicit "no-view" sentinel — the caller is responsible for producing REFUSED.
@@ -71,7 +67,7 @@ func (m *Matcher) Resolve(srcIP, geoIP netip.Addr) string {
 // rejects (returns false). If no element fires, the list does not accept
 // (default deny). MUST NOT panic.
 func (m *Matcher) listAccepts(elems []config.Element, srcIP, geoIP netip.Addr, depth int) bool {
-	if depth > maxElementDepth {
+	if depth > config.MaxElementDepth {
 		return false
 	}
 	for _, el := range elems {
