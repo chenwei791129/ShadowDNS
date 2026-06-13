@@ -70,5 +70,5 @@ shadowdns completion bash|zsh|fish
 
 | Signal | 行為 |
 |--------|------|
-| `SIGHUP` | 熱重載：重新讀取 `named.conf`、`shadowdns.yaml`、zone file 與 GeoIP mmdb。失敗時保持先前狀態。 |
+| `SIGHUP` | 熱重載：重新讀取 `named.conf`、`shadowdns.yaml` 與 zone file；有設定 `geoip-directory` 時也重新讀取 GeoIP mmdb。失敗時保持先前狀態。 |
 | `SIGUSR1` | 重開 `--log-file` 與 query log 檔案 descriptor（供 logrotate postrotate 使用）。 |

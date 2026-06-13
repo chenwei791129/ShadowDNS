@@ -5,7 +5,7 @@
 ## 前置條件
 
 - Go 1.26+
-- MaxMind GeoLite2 資料庫（Country + ASN，見步驟 3）
+- MaxMind GeoLite2 資料庫（Country + ASN，見步驟 3 —— 僅在 view 使用 `geoip` 規則時需要）
 - 既有的 BIND 設定（`named.conf` 與 zone file）
 
 ## 1. 取得原始碼
@@ -25,14 +25,14 @@ make build
 
 ## 3. 準備 GeoIP 資料庫
 
-ShadowDNS 從 `named.conf` 的 `geoip-directory` 選項讀取 mmdb 目錄（預設 `/usr/local/share/GeoIP/`）。以下兩個檔案**必須存在**，缺一就拒絕啟動：
+ShadowDNS 從 `named.conf` 的 `geoip-directory` 選項讀取 mmdb 目錄（例如 `/usr/local/share/GeoIP/`）。有設定 `geoip-directory` 時，以下兩個檔案**必須存在**，缺一就拒絕啟動：
 
 ```text
 /usr/local/share/GeoIP/GeoLite2-Country.mmdb
 /usr/local/share/GeoIP/GeoLite2-ASN.mmdb
 ```
 
-請從 [MaxMind](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data) 下載。詳見 [GeoIP 資料庫](configuration/geoip.md)。
+請從 [MaxMind](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data) 下載。若沒有任何 view 使用 `geoip country` / `geoip asnum` 規則，可不設定 `geoip-directory` 並跳過此步驟 —— ShadowDNS 會在沒有任何 mmdb 的情況下直接啟動。詳見 [GeoIP 資料庫](configuration/geoip.md)。
 
 ## 4. 啟動 ShadowDNS
 

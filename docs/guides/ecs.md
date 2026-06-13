@@ -43,6 +43,14 @@ Additional rules:
 
 ---
 
+## Without GeoIP databases
+
+GeoIP loading is conditional (see [GeoIP Databases](../configuration/geoip.md#running-without-geoip)): a configuration with no `geoip-directory` and no geo rules runs without any mmdb file. In that state ECS has **no effect on view selection** — there are no country/ASN rules to evaluate, and IP/CIDR/`any` rules always use the real source IP — so the only ECS behavior that remains is the [response echo](#response-echo) below.
+
+To keep this state auditable, ShadowDNS emits a **Warn** log when `--ecs-enable` is active but no GeoIP databases are loaded: once at startup, and again on any reload that ends in that state.
+
+---
+
 ## Response echo
 
 For a valid ECS query, the response OPT record carries exactly one ECS option that echoes the query's FAMILY, SOURCE PREFIX-LENGTH, and ADDRESS, with **SCOPE PREFIX-LENGTH set equal to the query's SOURCE PREFIX-LENGTH**. The echo applies to every response assembled by the standard answer path — NOERROR, NXDOMAIN, and the REFUSED returned to clients matching no view.

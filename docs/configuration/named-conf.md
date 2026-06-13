@@ -6,6 +6,8 @@ ShadowDNS reads your existing BIND `named.conf` directly — no format conversio
 
 The `options` block supports: `directory`, `geoip-directory`, `listen-on`, `listen-on-v6`, `allow-transfer`, `recursion`, `minimal-responses`, `version`, `hostname`, `transfer-format`, `notify`.
 
+`geoip-directory` is required **only when geo rules are used**: if any view's `match-clients` contains `geoip country` / `geoip asnum` rules, it must be set, and a config violating this fails at startup with an error naming the first offending view. When set (even without geo rules), the mmdb files are loaded and validated as usual; an absent `geoip-directory` and an empty one (`geoip-directory "";`) are equivalent and count as unset. See [GeoIP Databases](geoip.md) for details.
+
 ### listen-on (IPv4)
 
 - Supports `listen-on { any; };` and explicit IPv4 address lists, binding each address individually.

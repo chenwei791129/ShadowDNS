@@ -171,16 +171,16 @@ make build
 
 The binary is written to `bin/shadowdns-<GOOS>-<GOARCH>` (e.g., `bin/shadowdns-linux-amd64` on Linux/amd64, `bin/shadowdns-darwin-arm64` on Apple Silicon).
 
-**3. Place GeoIP databases in your GeoIP directory.**
+**3. Place GeoIP databases in your GeoIP directory (only if views use `geoip` rules).**
 
-ShadowDNS reads the directory from `geoip-directory` in `named.conf` (default: `/usr/local/share/GeoIP/`). The following files must be present:
+ShadowDNS reads the directory from `geoip-directory` in `named.conf` (e.g., `/usr/local/share/GeoIP/`). When `geoip-directory` is set, the following files must be present:
 
 ```text
 /usr/local/share/GeoIP/GeoLite2-Country.mmdb
 /usr/local/share/GeoIP/GeoLite2-ASN.mmdb
 ```
 
-Download these from [MaxMind](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data). ShadowDNS will refuse to start if either file is missing.
+Download these from [MaxMind](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data). ShadowDNS will refuse to start if either file is missing. If no view uses `geoip country` / `geoip asnum` rules, leave `geoip-directory` unset and skip this step — ShadowDNS starts without any mmdb files.
 
 **4. Run ShadowDNS.**
 
@@ -286,7 +286,7 @@ startup), enabling `time() - <gauge>` staleness alerts.
 
 ### GeoIP databases
 
-The `geoip-directory` option in `named.conf` specifies where ShadowDNS looks for mmdb files. Both files are required:
+The `geoip-directory` option in `named.conf` specifies where ShadowDNS looks for mmdb files. It is optional: when it is unset (absent or empty), no mmdb files are loaded, and startup fails only if some view's `match-clients` uses `geoip country` / `geoip asnum` rules (the error names the first offending view with its source file and line). When `geoip-directory` is set, both files are required:
 
 | File                       | Used for                    |
 |----------------------------|-----------------------------|

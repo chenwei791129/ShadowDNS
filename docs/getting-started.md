@@ -5,7 +5,7 @@ This page walks you through the shortest path to getting ShadowDNS running: buil
 ## Prerequisites
 
 - Go 1.26+
-- MaxMind GeoLite2 databases (Country + ASN, see step 3)
+- MaxMind GeoLite2 databases (Country + ASN, see step 3 — only needed when views use `geoip` rules)
 - An existing BIND configuration (`named.conf` and zone files)
 
 ## 1. Get the Source
@@ -25,14 +25,14 @@ The resulting binary is located at `bin/shadowdns-<GOOS>-<GOARCH>` (e.g., `bin/s
 
 ## 3. Prepare the GeoIP Databases
 
-ShadowDNS reads the mmdb directory from the `geoip-directory` option in `named.conf` (default `/usr/local/share/GeoIP/`). The following two files **must exist** — if either is missing, startup is refused:
+ShadowDNS reads the mmdb directory from the `geoip-directory` option in `named.conf` (e.g., `/usr/local/share/GeoIP/`). When `geoip-directory` is set, the following two files **must exist** — if either is missing, startup is refused:
 
 ```text
 /usr/local/share/GeoIP/GeoLite2-Country.mmdb
 /usr/local/share/GeoIP/GeoLite2-ASN.mmdb
 ```
 
-Download them from [MaxMind](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data). See [GeoIP Databases](configuration/geoip.md) for details.
+Download them from [MaxMind](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data). If no view uses `geoip country` / `geoip asnum` rules, leave `geoip-directory` unset and skip this step — ShadowDNS then starts without any mmdb files. See [GeoIP Databases](configuration/geoip.md) for details.
 
 ## 4. Start ShadowDNS
 

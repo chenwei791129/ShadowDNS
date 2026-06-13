@@ -70,5 +70,5 @@ Generates the autocompletion script for the specified shell. The `.deb` package 
 
 | Signal | Behavior |
 |--------|------|
-| `SIGHUP` | Hot reload: re-reads `named.conf`, `shadowdns.yaml`, zone files, and the GeoIP mmdb files. On failure, the previous state is kept. |
+| `SIGHUP` | Hot reload: re-reads `named.conf`, `shadowdns.yaml`, zone files, and — when `geoip-directory` is set — the GeoIP mmdb files. On failure, the previous state is kept. |
 | `SIGUSR1` | Reopens the `--log-file` and query log file descriptors (for logrotate postrotate use). |
