@@ -63,6 +63,17 @@ func LocalInterfaceNets() (localhost, localnets []netip.Prefix, err error) {
 			// (fail-open). A point-to-point/tunnel interface carrying a /0 address
 			// is the realistic trigger for the ones == 0 case.
 			ones, bits := ipNet.Mask.Size()
+			// An IPv4 address can be returned with a 128-bit (IPv4-mapped) mask.
+			// addr was just Unmap()'d to 32 bits, so translate the prefix length
+			// into the IPv4 space (drop the 96-bit v4-mapped prefix) to keep ones
+			// within addr.BitLen(); otherwise addr.Prefix(ones) would error and
+			// the network would be silently dropped from localnets.
+			if addr.Is4() && bits == 128 {
+				if ones < 96 {
+					continue
+				}
+				ones, bits = ones-96, 32
+			}
 			if bits == 0 || ones == 0 {
 				continue
 			}
