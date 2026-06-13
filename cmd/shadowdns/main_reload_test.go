@@ -23,9 +23,11 @@ import (
 	"time"
 
 	"github.com/maxmind/mmdbwriter/mmdbtype"
+	"github.com/miekg/dns"
 	dto "github.com/prometheus/client_model/go"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/querylog"
@@ -242,7 +244,9 @@ func TestReloadGeoIP(t *testing.T) {
 		t.Errorf("failure counter = %v, want %v", got, failuresBefore+1)
 	}
 
-	// --- empty geoip-directory is an explicit configuration error ---
+	// --- empty geoip-directory counts as unset: with no geo rules in the
+	// fixture (the view matches `any;`), the reload proceeds with nil
+	// handles instead of failing (geoip-optional semantics) ---
 	orig := readNamedConf(t, dir)
 	patched := strings.Replace(orig, fmt.Sprintf("geoip-directory %q;", geoDir), `geoip-directory "";`, 1)
 	if patched == orig {
@@ -251,9 +255,239 @@ func TestReloadGeoIP(t *testing.T) {
 	if werr := os.WriteFile(filepath.Join(dir, "named.conf"), []byte(patched), 0o644); werr != nil {
 		t.Fatalf("write named.conf: %v", werr)
 	}
-	err = reload(context.Background(), opts, srv, geo, qlState, zap.NewNop())
-	if err == nil || !strings.Contains(err.Error(), "geoip-directory") {
-		t.Errorf("empty geoip-directory: err = %v, want explicit geoip-directory configuration error", err)
+	if err := reload(context.Background(), opts, srv, geo, qlState, zap.NewNop()); err != nil {
+		t.Errorf("empty geoip-directory with no geo rules must reload successfully, got: %v", err)
+	}
+	if geo.country != nil || geo.asn != nil {
+		t.Error("GeoIP handles must be nil after reloading with empty geoip-directory and no geo rules")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// geoip-optional: reload transition states
+// ---------------------------------------------------------------------------
+
+// observedReload runs reload() with an observer-backed logger and returns the
+// captured logs alongside the reload error.
+func observedReload(t *testing.T, opts runOptions, srv *server.Server, geo *geoipRuntime, qlState *atomic.Pointer[queryLogState]) (*observer.ObservedLogs, error) {
+	t.Helper()
+	logger, logs := newObservedLogger()
+	err := reload(context.Background(), opts, srv, geo, qlState, logger)
+	return logs, err
+}
+
+// requireReloadCompleteGeoIPEnabled asserts the reload-completion log entry
+// carries the geoip_enabled boolean field with the expected value.
+func requireReloadCompleteGeoIPEnabled(t *testing.T, logs *observer.ObservedLogs, want bool) {
+	t.Helper()
+	entries := logs.FilterMessage("reload complete").All()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 'reload complete' entry, got %d", len(entries))
+	}
+	requireBoolField(t, entries[0], "geoip_enabled", want)
+}
+
+// countECSWarnings returns the number of warn-level entries mentioning ECS.
+func countECSWarnings(logs *observer.ObservedLogs) int {
+	n := 0
+	for _, e := range logs.All() {
+		if e.Level == zapcore.WarnLevel && strings.Contains(e.Message, "ECS") {
+			n++
+		}
+	}
+	return n
+}
+
+// TestReload_EnablesGeoIP covers the no-geo→geo transition: a server started
+// without GeoIP reloads a config that adds geoip-directory and a geo-rule
+// view; queries must then route through the new mmdb. The failure direction
+// (mmdb missing) must keep the previous GeoIP-less state.
+func TestReload_EnablesGeoIP(t *testing.T) {
+	dir, masterZones := setupGeoIPOptionalTestDir(t, "", "any;")
+	srv, geo, qlState, opts := startReloadTestServer(t, dir)
+	defer geo.closeAll(zap.NewNop())
+	m := metrics.New()
+	srv.Metrics = m
+
+	// --- failure direction first: directory set but no mmdb → keep-old ---
+	emptyGeoDir := filepath.Join(dir, "geoip")
+	if err := os.MkdirAll(emptyGeoDir, 0o755); err != nil {
+		t.Fatalf("mkdir geoip: %v", err)
+	}
+	writeNamedConfFixture(t, dir, masterZones, fmt.Sprintf("geoip-directory %q;", emptyGeoDir))
+	prevState := srv.CurrentState()
+	if _, err := observedReload(t, opts, srv, geo, qlState); err == nil {
+		t.Fatal("expected reload failure when geoip-directory has no mmdb files")
+	}
+	if geo.country != nil || geo.asn != nil {
+		t.Error("GeoIP handles installed despite reload failure; previous GeoIP-less state must be kept")
+	}
+	if srv.CurrentState() != prevState {
+		t.Error("state swapped despite reload failure")
+	}
+	if got := reloadCounterValue(t, m, "failure"); got != 1 {
+		t.Errorf("failure counter = %v, want 1", got)
+	}
+
+	// --- success direction: mmdb present, view switches to a geo rule ---
+	// 127.0.0.0/8 carries iso JP so the in-process test query (source
+	// 127.0.0.1) can only succeed through the freshly opened mmdb.
+	buildMMDBPair(t, emptyGeoDir, "127.0.0.0/8",
+		mmdbtype.Map{"country": mmdbtype.Map{"iso_code": mmdbtype.String("JP")}},
+		mmdbtype.Map{"autonomous_system_number": mmdbtype.Uint32(64500)},
+	)
+	writeMasterZonesFixture(t, dir, "view-th", "geoip country JP;")
+	logs, err := observedReload(t, opts, srv, geo, qlState)
+	if err != nil {
+		t.Fatalf("reload enabling GeoIP: %v", err)
+	}
+	if geo.country == nil || geo.asn == nil {
+		t.Fatal("GeoIP handles not installed by the enabling reload")
+	}
+	requireReloadCompleteGeoIPEnabled(t, logs, true)
+	if series := geoipGaugeSeries(t, m); len(series) != 2 {
+		t.Errorf("geoip_db_info series = %v, want country and asn", series)
+	}
+	// The view now matches only via `geoip country JP;`: a NOERROR answer
+	// proves the query path resolves views through the new mmdb.
+	resp := reloadQuery(t, srv, "example.com.", dns.TypeA)
+	requireARecord(t, resp, "203.0.113.10")
+}
+
+// TestReload_DisablesGeoIP covers the geo→no-geo transition: the superseded
+// handles follow the deferred-by-one-generation close lifecycle, the metric
+// series disappear, the completion log reports geoip_enabled=false, and the
+// ECS warning fires when --ecs-enable is active. A consecutive geo↔no-geo
+// round must not panic the deferred-close rotation.
+func TestReload_DisablesGeoIP(t *testing.T) {
+	dir := setupReloadTestDir(t)
+	geoDir := filepath.Join(dir, "geoip")
+	buildDataMMDBs(t, geoDir, "JP", 64500)
+	geoConf := readNamedConf(t, dir)
+	noGeoConf := strings.Replace(geoConf, fmt.Sprintf("geoip-directory %q;", geoDir), "", 1)
+	if noGeoConf == geoConf {
+		t.Fatal("failed to remove geoip-directory from named.conf fixture")
+	}
+
+	srv, geo, qlState, opts := startReloadTestServer(t, dir)
+	defer geo.closeAll(zap.NewNop())
+	opts.ECSEnable = true
+	m := metrics.New()
+	srv.Metrics = m
+	m.SetGeoIPInfo(geoipBuildEpochs(geo.country, geo.asn))
+
+	testIP := netip.MustParseAddr("203.0.113.50")
+	gen1 := geo.country
+
+	// --- disable: nil handles serve, series deleted, old gen deferred ---
+	if err := os.WriteFile(filepath.Join(dir, "named.conf"), []byte(noGeoConf), 0o644); err != nil {
+		t.Fatalf("write named.conf: %v", err)
+	}
+	logs, err := observedReload(t, opts, srv, geo, qlState)
+	if err != nil {
+		t.Fatalf("reload disabling GeoIP: %v", err)
+	}
+	if geo.country != nil || geo.asn != nil {
+		t.Error("GeoIP handles must be nil after the disabling reload")
+	}
+	if geo.prevCountry != gen1 {
+		t.Error("superseded country handle is not parked in the deferred-close slot")
+	}
+	if iso, ok := gen1.Lookup(testIP); !ok || iso != "JP" {
+		t.Errorf("superseded handle lookup = (%q, %v); it must remain open until the next reload", iso, ok)
+	}
+	if series := geoipGaugeSeries(t, m); len(series) != 0 {
+		t.Errorf("geoip_db_info series = %v, want none after GeoIP is disabled", series)
+	}
+	requireReloadCompleteGeoIPEnabled(t, logs, false)
+	if got := countECSWarnings(logs); got != 1 {
+		t.Errorf("ECS-without-GeoIP warnings = %d, want 1", got)
+	}
+	// Queries still resolve through the any-rule view with nil handles.
+	resp := reloadQuery(t, srv, "example.com.", dns.TypeA)
+	requireARecord(t, resp, "203.0.113.10")
+
+	// --- consecutive switch round: re-enable, then disable again ---
+	if err := os.WriteFile(filepath.Join(dir, "named.conf"), []byte(geoConf), 0o644); err != nil {
+		t.Fatalf("restore named.conf: %v", err)
+	}
+	logs, err = observedReload(t, opts, srv, geo, qlState)
+	if err != nil {
+		t.Fatalf("reload re-enabling GeoIP: %v", err)
+	}
+	if geo.country == nil {
+		t.Fatal("GeoIP handles not installed by the re-enabling reload")
+	}
+	requireReloadCompleteGeoIPEnabled(t, logs, true)
+	if got := countECSWarnings(logs); got != 0 {
+		t.Errorf("ECS warnings on a GeoIP-enabled reload = %d, want 0", got)
+	}
+	// gen1 was the deferred generation; the re-enabling reload closes it.
+	if _, ok := gen1.Lookup(testIP); ok {
+		t.Error("generation 1 still answers lookups after the next reload; it must be closed")
+	}
+
+	gen3 := geo.country
+	if err := os.WriteFile(filepath.Join(dir, "named.conf"), []byte(noGeoConf), 0o644); err != nil {
+		t.Fatalf("write named.conf: %v", err)
+	}
+	if _, err := observedReload(t, opts, srv, geo, qlState); err != nil {
+		t.Fatalf("reload disabling GeoIP again: %v", err)
+	}
+	if geo.country != nil {
+		t.Error("GeoIP handles must be nil after the second disabling reload")
+	}
+	if geo.prevCountry != gen3 {
+		t.Error("generation 3 should now sit in the deferred-close slot")
+	}
+}
+
+// TestReload_GeoRulesWithoutDirectory_FailsKeepOld verifies that a reloaded
+// config declaring geo rules without geoip-directory fails with the explicit
+// configuration error naming the view, keeps the previous state, and counts a
+// reload failure.
+func TestReload_GeoRulesWithoutDirectory_FailsKeepOld(t *testing.T) {
+	dir := setupReloadTestDir(t)
+	geoDir := filepath.Join(dir, "geoip")
+	srv, geo, qlState, opts := startReloadTestServer(t, dir)
+	defer geo.closeAll(zap.NewNop())
+	m := metrics.New()
+	srv.Metrics = m
+
+	// Remove geoip-directory and switch the view to a geo rule.
+	conf := readNamedConf(t, dir)
+	noGeoDirConf := strings.Replace(conf, fmt.Sprintf("geoip-directory %q;", geoDir), "", 1)
+	if noGeoDirConf == conf {
+		t.Fatal("failed to remove geoip-directory from named.conf fixture")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "named.conf"), []byte(noGeoDirConf), 0o644); err != nil {
+		t.Fatalf("write named.conf: %v", err)
+	}
+	masterZones := filepath.Join(dir, "master.zones")
+	mz, err := os.ReadFile(masterZones)
+	if err != nil {
+		t.Fatalf("read master.zones: %v", err)
+	}
+	patched := strings.Replace(string(mz), "any;", "geoip country TH;", 1)
+	if patched == string(mz) {
+		t.Fatal("failed to switch master.zones match-clients to a geo rule")
+	}
+	if err := os.WriteFile(masterZones, []byte(patched), 0o644); err != nil {
+		t.Fatalf("write master.zones: %v", err)
+	}
+
+	prevState := srv.CurrentState()
+	gen1 := geo.country
+	rerr := reload(context.Background(), opts, srv, geo, qlState, zap.NewNop())
+	requireGeoRuleConfigError(t, rerr, "view-other", masterZones)
+	if srv.CurrentState() != prevState {
+		t.Error("state swapped despite reload failure")
+	}
+	if geo.country != gen1 {
+		t.Error("GeoIP handles changed despite reload failure")
+	}
+	if got := reloadCounterValue(t, m, "failure"); got != 1 {
+		t.Errorf("failure counter = %v, want 1", got)
 	}
 }
 

@@ -28,7 +28,6 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/logging"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
-	"github.com/chenwei791129/ShadowDNS/internal/view"
 	"github.com/chenwei791129/ShadowDNS/internal/zone"
 )
 
@@ -71,6 +70,18 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	// Several tests send SIGHUP/SIGUSR1 to this very process (reload
+	// integration, shutdown-order races, the reload subcommand, log reopen).
+	// Each registers its own signal.Notify channel, but a kernel-pending
+	// signal can be delivered AFTER that test's signal.Stop restored the
+	// default disposition — which terminates the whole test binary
+	// ("signal: hangup"). Keep one absorber channel registered for the
+	// binary's lifetime so the default disposition is never restored;
+	// per-test channels still receive their signals.
+	sigAbsorber := make(chan os.Signal, 1)
+	signal.Notify(sigAbsorber, syscall.SIGHUP, syscall.SIGUSR1)
+	defer signal.Stop(sigAbsorber)
+
 	dir, err := os.MkdirTemp("", "shadowdns-main-test-*")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "failed to create build temp dir:", err)
@@ -408,6 +419,47 @@ func TestReload_FailurePreservesOldState(t *testing.T) {
 // reload test helpers
 // ---------------------------------------------------------------------------
 
+// writeMasterZonesFixture (re)writes the master.zones fixture with a single
+// view named viewName whose match-clients body is matchClients. The view is
+// declared on line 1 so error-location assertions can pin ":1".
+func writeMasterZonesFixture(t *testing.T, dir, viewName, matchClients string) (masterZones string) {
+	t.Helper()
+	zoneFile := filepath.Join(dir, "example.com.zone")
+	masterZones = filepath.Join(dir, "master.zones")
+	masterZonesContent := `view "` + viewName + `" {
+    match-clients { ` + matchClients + ` };
+    recursion no;
+    zone "example.com" {
+        type master;
+        file "` + zoneFile + `";
+    };
+};
+`
+	if err := os.WriteFile(masterZones, []byte(masterZonesContent), 0o644); err != nil {
+		t.Fatalf("write master.zones: %v", err)
+	}
+	return masterZones
+}
+
+// writeNamedConfFixture (re)writes the named.conf fixture; geoipDirective is
+// inserted verbatim into the options block ("" omits the option entirely).
+func writeNamedConfFixture(t *testing.T, dir, masterZones, geoipDirective string) {
+	t.Helper()
+	namedConf := filepath.Join(dir, "named.conf")
+	namedConfContent := `options {
+    directory "` + dir + `";
+    ` + geoipDirective + `
+    listen-on { any; };
+    recursion no;
+};
+
+include "` + masterZones + `";
+`
+	if err := os.WriteFile(namedConf, []byte(namedConfContent), 0o644); err != nil {
+		t.Fatalf("write named.conf: %v", err)
+	}
+}
+
 func setupReloadTestDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -423,33 +475,8 @@ func setupReloadTestDir(t *testing.T) string {
 		t.Fatalf("write zone: %v", err)
 	}
 
-	masterZones := filepath.Join(dir, "master.zones")
-	masterZonesContent := `view "view-other" {
-    match-clients { any; };
-    recursion no;
-    zone "example.com" {
-        type master;
-        file "` + zoneFile + `";
-    };
-};
-`
-	if err := os.WriteFile(masterZones, []byte(masterZonesContent), 0o644); err != nil {
-		t.Fatalf("write master.zones: %v", err)
-	}
-
-	namedConf := filepath.Join(dir, "named.conf")
-	namedConfContent := `options {
-    directory "` + dir + `";
-    geoip-directory "` + geoIPDir + `";
-    listen-on { any; };
-    recursion no;
-};
-
-include "` + masterZones + `";
-`
-	if err := os.WriteFile(namedConf, []byte(namedConfContent), 0o644); err != nil {
-		t.Fatalf("write named.conf: %v", err)
-	}
+	masterZones := writeMasterZonesFixture(t, dir, "view-other", "any;")
+	writeNamedConfFixture(t, dir, masterZones, `geoip-directory "`+geoIPDir+`";`)
 
 	shadowConf := filepath.Join(dir, "shadowdns.yaml")
 	if err := os.WriteFile(shadowConf, []byte("aliases: {}\n"), 0o644); err != nil {
@@ -478,7 +505,9 @@ func startReloadTestServer(t *testing.T, dir string) (*server.Server, *geoipRunt
 
 	aliases := config.AliasMap{}
 
-	country, asn, err := view.LoadGeoIP(cfg.Options.GeoIPDirectory, logger)
+	// The production conditional loader keeps this helper usable for both
+	// geo and no-geo fixtures: nil handles when geoip-directory is unset.
+	country, asn, err := loadGeoIPIfRequired(cfg, logger)
 	if err != nil {
 		t.Fatalf("load geoip: %v", err)
 	}
@@ -1855,5 +1884,283 @@ func TestECSEnableFlag_RegisteredWithDefaultFalse(t *testing.T) {
 	}
 	if flag.DefValue != "false" {
 		t.Errorf("--ecs-enable default = %q, want %q", flag.DefValue, "false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// conditional GeoIP loading tests (geoip-optional)
+// ---------------------------------------------------------------------------
+
+// setupGeoIPOptionalTestDir builds a minimal config dir whose named.conf has
+// no geoip-directory unless geoipDirective is non-empty (the directive line is
+// inserted verbatim, e.g. `geoip-directory "";`). matchClients is the body of
+// the single view's match-clients block. No mmdb file is created anywhere.
+// The view "view-th" is declared on line 1 of master.zones.
+func setupGeoIPOptionalTestDir(t *testing.T, geoipDirective, matchClients string) (dir, masterZones string) {
+	t.Helper()
+	dir = t.TempDir()
+
+	zoneFile := filepath.Join(dir, "example.com.zone")
+	if err := os.WriteFile(zoneFile, []byte(minimalZone), 0o644); err != nil {
+		t.Fatalf("write zone: %v", err)
+	}
+
+	masterZones = writeMasterZonesFixture(t, dir, "view-th", matchClients)
+	writeNamedConfFixture(t, dir, masterZones, geoipDirective)
+
+	shadowConf := filepath.Join(dir, "shadowdns.yaml")
+	if err := os.WriteFile(shadowConf, []byte("aliases: {}\n"), 0o644); err != nil {
+		t.Fatalf("write shadowdns.yaml: %v", err)
+	}
+	return dir, masterZones
+}
+
+// TestRun_NoGeoRules_StartsWithoutMMDB verifies that a configuration with only
+// non-geo match-clients rules and no geoip-directory starts successfully on a
+// host with no mmdb files at all.
+func TestRun_NoGeoRules_StartsWithoutMMDB(t *testing.T) {
+	dir, _ := setupGeoIPOptionalTestDir(t, "", "any;")
+
+	// Reaching readiness is the whole assertion: startup must not require mmdb.
+	_, teardown := runUntilReadyObserved(t, runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
+		ListenAddr:    "127.0.0.1:0",
+	})
+	teardown()
+}
+
+// requireGeoRuleConfigError asserts that err is the explicit configuration
+// error for geo rules without geoip-directory: it must name the offending
+// view, its source file, and its line number — and must not be a file-open
+// error.
+func requireGeoRuleConfigError(t *testing.T, err error, viewName, masterZones string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected geo-rule configuration error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `view "`+viewName+`"`) {
+		t.Errorf("error should name the offending view, got: %s", msg)
+	}
+	if !strings.Contains(msg, masterZones+":1") {
+		t.Errorf("error should contain source path and line %q, got: %s", masterZones+":1", msg)
+	}
+	if !strings.Contains(msg, "geoip-directory") {
+		t.Errorf("error should mention geoip-directory, got: %s", msg)
+	}
+	if strings.Contains(msg, "no such file or directory") {
+		t.Errorf("error must be a configuration error, not a file-open error, got: %s", msg)
+	}
+}
+
+// TestRun_GeoRulesWithoutDirectory_FailsWithSourceLine verifies that a view
+// using a geoip country rule without geoip-directory fails startup with an
+// explicit configuration error naming the view and its source location.
+func TestRun_GeoRulesWithoutDirectory_FailsWithSourceLine(t *testing.T) {
+	dir, masterZones := setupGeoIPOptionalTestDir(t, "", "geoip country TH;")
+
+	opts := runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
+		ListenAddr:    "127.0.0.1:0",
+		Logger:        zap.NewNop(),
+	}
+
+	err := run(context.Background(), opts)
+	requireGeoRuleConfigError(t, err, "view-th", masterZones)
+}
+
+// TestRun_EmptyGeoIPDirectory_BehavesAsUnset verifies that
+// `geoip-directory "";` behaves exactly like an absent option: geo rules
+// produce the same explicit configuration error, never a relative-path
+// file-open error.
+func TestRun_EmptyGeoIPDirectory_BehavesAsUnset(t *testing.T) {
+	dir, masterZones := setupGeoIPOptionalTestDir(t, `geoip-directory "";`, "geoip country TH;")
+
+	opts := runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
+		ListenAddr:    "127.0.0.1:0",
+		Logger:        zap.NewNop(),
+	}
+
+	err := run(context.Background(), opts)
+	requireGeoRuleConfigError(t, err, "view-th", masterZones)
+}
+
+// runUntilReadyObserved starts run() with an observer-backed logger, waits for
+// readiness, then waits for the "shadowdns ready" entry to be recorded before
+// returning it together with the full observed logs and a teardown func.
+func runUntilReadyObserved(t *testing.T, opts runOptions) (*observer.ObservedLogs, func()) {
+	t.Helper()
+	logger, logs := newObservedLogger()
+	opts.Logger = logger
+	ready := make(chan struct{})
+	opts.ReadyCh = ready
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, opts) }()
+
+	waitReady(t, ready)
+	// ReadyCh is closed just before the ready log line is emitted; poll
+	// briefly for the entry instead of assuming it landed already.
+	deadline := time.Now().Add(2 * time.Second)
+	for logs.FilterMessage("shadowdns ready").Len() == 0 {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("shadowdns ready log entry not observed within 2s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	return logs, func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("run did not return within 2s after cancel")
+		}
+	}
+}
+
+// requireBoolField asserts that the single observed entry carries the boolean
+// field with the expected value.
+func requireBoolField(t *testing.T, entry observer.LoggedEntry, field string, want bool) {
+	t.Helper()
+	got, ok := entry.ContextMap()[field]
+	if !ok {
+		t.Fatalf("log entry %q is missing field %q", entry.Message, field)
+	}
+	if got != want {
+		t.Errorf("log entry %q field %q = %v, want %v", entry.Message, field, got, want)
+	}
+}
+
+// TestRun_ReadyLogReportsGeoIPEnabledField verifies the readiness log carries
+// geoip_enabled=false without GeoIP and geoip_enabled=true with it.
+func TestRun_ReadyLogReportsGeoIPEnabledField(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		dir, _ := setupGeoIPOptionalTestDir(t, "", "any;")
+		logs, teardown := runUntilReadyObserved(t, runOptions{
+			NamedConfPath: filepath.Join(dir, "named.conf"),
+			ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
+			ListenAddr:    "127.0.0.1:0",
+		})
+		defer teardown()
+		entries := logs.FilterMessage("shadowdns ready").All()
+		requireBoolField(t, entries[0], "geoip_enabled", false)
+	})
+
+	t.Run("enabled", func(t *testing.T) {
+		dir := setupReloadTestDir(t)
+		logs, teardown := runUntilReadyObserved(t, runOptions{
+			NamedConfPath: filepath.Join(dir, "named.conf"),
+			ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
+			ListenAddr:    "127.0.0.1:0",
+		})
+		defer teardown()
+		entries := logs.FilterMessage("shadowdns ready").All()
+		requireBoolField(t, entries[0], "geoip_enabled", true)
+	})
+}
+
+// TestRun_DryRun_NoGeoIP_SucceedsAndReportsState verifies --dry-run succeeds
+// without mmdb files when no geo rule exists and its summary log carries
+// geoip_enabled=false.
+func TestRun_DryRun_NoGeoIP_SucceedsAndReportsState(t *testing.T) {
+	dir, _ := setupGeoIPOptionalTestDir(t, "", "any;")
+
+	logger, logs := newObservedLogger()
+	opts := runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
+		ListenAddr:    "127.0.0.1:0",
+		DryRun:        true,
+		Logger:        logger,
+	}
+
+	if err := run(context.Background(), opts); err != nil {
+		t.Fatalf("dry-run should succeed without GeoIP, got: %v", err)
+	}
+	entries := logs.FilterMessage("dry-run: configuration loaded successfully").All()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 dry-run summary log entry, got %d", len(entries))
+	}
+	requireBoolField(t, entries[0], "geoip_enabled", false)
+}
+
+// TestRun_DryRun_GeoRulesWithoutDirectory_Fails verifies --dry-run fails under
+// exactly the same GeoIP conditions as a real startup, with the same explicit
+// configuration error.
+func TestRun_DryRun_GeoRulesWithoutDirectory_Fails(t *testing.T) {
+	dir, masterZones := setupGeoIPOptionalTestDir(t, "", "geoip country TH;")
+
+	opts := runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
+		ListenAddr:    "127.0.0.1:0",
+		DryRun:        true,
+		Logger:        zap.NewNop(),
+	}
+
+	err := run(context.Background(), opts)
+	requireGeoRuleConfigError(t, err, "view-th", masterZones)
+}
+
+// TestRun_ECSWithoutGeoIP_WarnsAtStartup verifies that --ecs-enable with no
+// GeoIP database loaded logs exactly one warning and the server still starts,
+// and that no such warning is emitted when GeoIP is loaded.
+func TestRun_ECSWithoutGeoIP_WarnsAtStartup(t *testing.T) {
+	t.Run("warns without GeoIP", func(t *testing.T) {
+		dir, _ := setupGeoIPOptionalTestDir(t, "", "any;")
+		logs, teardown := runUntilReadyObserved(t, runOptions{
+			NamedConfPath: filepath.Join(dir, "named.conf"),
+			ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
+			ListenAddr:    "127.0.0.1:0",
+			ECSEnable:     true,
+		})
+		defer teardown()
+		if got := countECSWarnings(logs); got != 1 {
+			t.Errorf("expected exactly 1 ECS-without-GeoIP warning, got %d", got)
+		}
+	})
+
+	t.Run("no warning with GeoIP loaded", func(t *testing.T) {
+		dir := setupReloadTestDir(t)
+		logs, teardown := runUntilReadyObserved(t, runOptions{
+			NamedConfPath: filepath.Join(dir, "named.conf"),
+			ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
+			ListenAddr:    "127.0.0.1:0",
+			ECSEnable:     true,
+		})
+		defer teardown()
+		if got := countECSWarnings(logs); got != 0 {
+			t.Errorf("expected no ECS warning when GeoIP is loaded, got %d", got)
+		}
+	})
+}
+
+// TestRun_NoGeoIP_MetricsHasNoGeoIPDBInfoSeries verifies that the metrics
+// endpoint exposes no shadowdns_geoip_db_info series when GeoIP is not loaded.
+func TestRun_NoGeoIP_MetricsHasNoGeoIPDBInfoSeries(t *testing.T) {
+	dir, _ := setupGeoIPOptionalTestDir(t, "", "any;")
+	addr := freePort(t)
+
+	_, teardown := runUntilReadyObserved(t, runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
+		ListenAddr:    "127.0.0.1:0",
+		MetricsAddr:   addr,
+	})
+	defer teardown()
+
+	code, body := httpGet(t, "http://"+addr+"/metrics")
+	if code != 200 {
+		t.Fatalf("GET /metrics: got %d, want 200", code)
+	}
+	if strings.Contains(string(body), "shadowdns_geoip_db_info") {
+		t.Errorf("metrics endpoint must expose no shadowdns_geoip_db_info series without GeoIP, but found one")
 	}
 }

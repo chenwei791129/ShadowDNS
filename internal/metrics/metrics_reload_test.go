@@ -142,8 +142,10 @@ func TestSetGeoIPInfo_DifferentialUpdate(t *testing.T) {
 }
 
 // TestSetGeoIPInfo_NilReceiver verifies that the reload path can call
-// SetGeoIPInfo when metrics are disabled (srv.Metrics == nil) without panic.
+// SetGeoIPInfo when metrics are disabled (srv.Metrics == nil) without panic,
+// including the empty-map call used when GeoIP is not loaded.
 func TestSetGeoIPInfo_NilReceiver(t *testing.T) {
 	var m *metrics.Metrics
 	m.SetGeoIPInfo(map[string]uint{"country": 1700000000, "asn": 1700100000})
+	m.SetGeoIPInfo(map[string]uint{})
 }

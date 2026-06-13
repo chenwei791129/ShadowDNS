@@ -667,7 +667,7 @@ tests:
 ---
 ### Requirement: GeoIP databases are reloaded on SIGHUP
 
-The server SHALL re-open the GeoIP country and ASN mmdb files from the `geoip-directory` path on every SIGHUP reload. The new `*CountryDB` and `*ASNDB` handles SHALL be used when building the new server state. After the state swap, the superseded DB handles SHALL NOT be closed immediately — in-flight queries can still resolve views against the previous state, and closing an mmdb unmaps its memory (use-after-munmap is a fatal, unrecoverable crash). Superseded handles SHALL instead be retained and closed at the start of the next reload, or at process shutdown after the reload goroutine has been joined, whichever comes first (deferred-by-one-generation close). If either mmdb cannot be opened, the reload SHALL fail and the server SHALL retain the previous server state and the previous DB handles. If the reloaded named.conf carries an empty `geoip-directory`, the reload SHALL fail with an explicit configuration error (mirroring the startup validation) rather than a relative-path file-open error.
+The reload sequence SHALL apply the same conditional GeoIP requirement as startup, with `geoip-directory` counting as unset when absent or set to the empty string: when the reloaded named.conf sets `geoip-directory` to a non-empty path, the server SHALL re-open the GeoIP country and ASN mmdb files from that path; when `geoip-directory` is unset and at least one view's match-clients contains a country or ASN rule, the reload SHALL fail with an explicit configuration error naming the first such view with its source file path and line number — never a relative-path file-open error (this preserves the previous guarantee that an empty `geoip-directory` fails as an explicit configuration error mirroring the startup validation); when `geoip-directory` is unset and no view declares a country or ASN rule, the reload SHALL proceed with nil GeoIP handles. The reload-completion log SHALL carry a boolean field named `geoip_enabled` reporting whether the new state has GeoIP databases loaded. When new handles are opened, they SHALL be used when building the new server state. After the state swap, the superseded DB handles SHALL NOT be closed immediately — in-flight queries can still resolve views against the previous state, and closing an mmdb unmaps its memory (use-after-munmap is a fatal, unrecoverable crash). Superseded handles SHALL instead be retained and closed at the start of the next reload, or at process shutdown after the reload goroutine has been joined, whichever comes first (deferred-by-one-generation close); this lifecycle applies equally when the replacing generation is nil (GeoIP disabled by the reload). If either mmdb cannot be opened, the reload SHALL fail and the server SHALL retain the previous server state and the previous DB handles.
 
 #### Scenario: GeoIP databases reloaded after mmdb file update
 
@@ -703,29 +703,49 @@ The server SHALL re-open the GeoIP country and ASN mmdb files from the `geoip-di
 | reload #2 succeeds | closed | prev (open, deferred) | current (open) |
 | shutdown (after reload-goroutine join) | closed | closed | closed |
 
-<!-- @trace
-source: reload-coverage-and-metrics
-updated: 2026-06-11
--->
+#### Scenario: Reload enables GeoIP on a server started without it
+
+- **WHEN** a server started without GeoIP databases (no geo rules, no `geoip-directory`) is reloaded with a named.conf that adds `geoip-directory` and views with country rules
+- **THEN** the reload SHALL open the mmdb files, build the new state with them, and subsequent queries SHALL use GeoIP view matching
+- **THEN** the reload-completion log SHALL carry `geoip_enabled=true`
+- **THEN** if either mmdb cannot be opened, the reload SHALL fail and the server SHALL keep serving with the previous (GeoIP-less) state
+
+#### Scenario: Reload disables GeoIP on a server started with it
+
+- **WHEN** a server running with loaded GeoIP databases is reloaded with a named.conf that removes every country/ASN rule and removes `geoip-directory`
+- **THEN** the reload SHALL succeed, the new state SHALL resolve views with nil GeoIP handles, and the superseded handles SHALL follow the deferred-by-one-generation close lifecycle
+- **THEN** the reload-completion log SHALL carry `geoip_enabled=false`
+
+#### Scenario: Reload with geo rules but no geoip-directory fails keep-old
+
+- **WHEN** the reloaded named.conf declares a view with `geoip country TH;` but no `geoip-directory`
+- **THEN** `reload()` SHALL return an error naming that view with its source file and line, the previous server state SHALL remain active, and `shadowdns_reload_total{result="failure"}` SHALL increment
 
 <!-- @trace
-source: reload-coverage-and-metrics
-updated: 2026-06-11
+source: geoip-optional
+updated: 2026-06-13
 code:
-  - README.md
-  - internal/metrics/metrics.go
-  - internal/logging/reopen.go
-  - internal/server/server.go
-  - internal/server/handler.go
+  - docs/configuration/geoip.zh.md
+  - docs/reference/cli.zh.md
+  - internal/config/match.go
   - cmd/shadowdns/main.go
+  - docs/guides/ecs.zh.md
+  - docs/guides/ecs.md
+  - internal/metrics/metrics.go
+  - docs/configuration/named-conf.md
+  - docs/configuration/geoip.md
+  - docs/configuration/named-conf.zh.md
+  - docs/reference/cli.md
+  - internal/view/matcher.go
+  - README.md
+  - docs/getting-started.zh.md
+  - docs/getting-started.md
 tests:
+  - internal/config/match_test.go
+  - test/integration/helpers_test.go
+  - test/integration/geoip_optional_test.go
+  - internal/metrics/metrics_test.go
   - cmd/shadowdns/main_test.go
-  - cmd/shadowdns/querylog_test.go
   - cmd/shadowdns/main_reload_test.go
   - internal/metrics/metrics_reload_test.go
-  - cmd/shadowdns/main_ephemeral_test.go
-  - internal/server/handler_querylog_test.go
-  - internal/logging/reopen_test.go
-  - internal/metrics/metrics_test.go
-  - internal/server/handler_ratelimit_test.go
 -->

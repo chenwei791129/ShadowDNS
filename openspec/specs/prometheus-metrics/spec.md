@@ -267,7 +267,7 @@ tests:
 ---
 ### Requirement: Expose GeoIP database metadata
 
-The system SHALL expose a gauge metric `shadowdns_geoip_db_info` with labels `database` and `build_time`, set to the constant value 1. The `database` label SHALL be `country` or `asn`. The `build_time` label SHALL contain the database build timestamp formatted as ISO 8601 (UTC). The metadata SHALL be read from `maxminddb.Reader.Metadata.BuildEpoch`.
+When GeoIP databases are loaded, the system SHALL expose a gauge metric `shadowdns_geoip_db_info` with labels `database` and `build_time`, set to the constant value 1. The `database` label SHALL be `country` or `asn`. The `build_time` label SHALL contain the database build timestamp formatted as ISO 8601 (UTC). The metadata SHALL be read from `maxminddb.Reader.Metadata.BuildEpoch`. When no GeoIP database is loaded, the system SHALL expose no `shadowdns_geoip_db_info` series. The metric setter SHALL treat each invocation's database set as the complete desired set: any previously exposed series whose `database` label is absent from the current set SHALL be deleted (so a reload that disables GeoIP removes the stale series), and for a database present in the set with a new `build_time`, the series carrying the previous `build_time` SHALL be deleted, so at most one `build_time` series exists per `database` label at any time.
 
 #### Scenario: GeoIP country database info
 
@@ -276,35 +276,47 @@ The system SHALL expose a gauge metric `shadowdns_geoip_db_info` with labels `da
 
 #### Scenario: GeoIP ASN database info
 
-- **WHEN** the metrics endpoint is scraped
-- **THEN** `shadowdns_geoip_db_info{database="asn",build_time="<ISO8601>"}` has value 1
+- **WHEN** an ASN database is loaded and the metrics endpoint is scraped
+- **THEN** `shadowdns_geoip_db_info{database="asn",build_time="<ISO8601>"}` has value 1, where `<ISO8601>` is the loaded database's build epoch formatted as ISO 8601 UTC
+
+#### Scenario: No series exposed when GeoIP is not loaded
+
+- **WHEN** the server runs without GeoIP databases (no geo rules, no `geoip-directory`) and the metrics endpoint is scraped
+- **THEN** the response contains no `shadowdns_geoip_db_info` series
+
+#### Scenario: Series deleted after a reload disables GeoIP
+
+- **WHEN** a server running with loaded GeoIP databases completes a reload that removes GeoIP (no geo rules, no `geoip-directory`)
+- **THEN** the `shadowdns_geoip_db_info` series for both `country` and `asn` SHALL be deleted from the metrics endpoint
+
 
 <!-- @trace
-source: prometheus-metrics
-updated: 2026-04-14
-code: []
-tests: []
--->
-
-
-<!-- @trace
-source: prometheus-metrics
-updated: 2026-04-14
+source: geoip-optional
+updated: 2026-06-13
 code:
+  - docs/configuration/geoip.zh.md
+  - docs/reference/cli.zh.md
+  - internal/config/match.go
   - cmd/shadowdns/main.go
-  - internal/server/server.go
-  - internal/view/geoip_country.go
-  - internal/view/geoip_asn.go
-  - go.mod
-  - internal/metrics/writer.go
-  - internal/server/handler.go
+  - docs/guides/ecs.zh.md
+  - docs/guides/ecs.md
   - internal/metrics/metrics.go
+  - docs/configuration/named-conf.md
+  - docs/configuration/geoip.md
+  - docs/configuration/named-conf.zh.md
+  - docs/reference/cli.md
+  - internal/view/matcher.go
+  - README.md
+  - docs/getting-started.zh.md
+  - docs/getting-started.md
 tests:
-  - internal/view/geoip_country_test.go
-  - internal/metrics/writer_test.go
+  - internal/config/match_test.go
+  - test/integration/helpers_test.go
+  - test/integration/geoip_optional_test.go
   - internal/metrics/metrics_test.go
-  - internal/server/server_test.go
-  - internal/view/geoip_asn_test.go
+  - cmd/shadowdns/main_test.go
+  - cmd/shadowdns/main_reload_test.go
+  - internal/metrics/metrics_reload_test.go
 -->
 
 ---

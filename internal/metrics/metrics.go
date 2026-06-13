@@ -218,13 +218,15 @@ func (m *Metrics) SetZoneCounts(rootCounts, backupCounts map[string]int) {
 	m.prevZoneViews = current
 }
 
-// SetGeoIPInfo sets the shadowdns_geoip_db_info gauge for each database.
-// Expected keys are "country" and "asn"; values are Unix epoch timestamps
-// from maxminddb.Metadata.BuildEpoch. A stale series carrying the previous
-// build_time for the same database is deleted, so at most one build_time
-// series exists per database label (mirrors SetZoneCounts' differential
-// update). Safe to call on a nil receiver — the reload path runs with
-// metrics disabled too.
+// SetGeoIPInfo declares the COMPLETE desired set of shadowdns_geoip_db_info
+// series. Expected keys are "country" and "asn"; values are Unix epoch
+// timestamps from maxminddb.Metadata.BuildEpoch. Databases present in the
+// previous call but absent from buildEpochs have their series deleted, and a
+// stale series carrying the previous build_time for the same database is also
+// deleted, so at most one build_time series exists per database label (mirrors
+// SetZoneCounts' differential update). Pass an empty map when GeoIP is not
+// loaded to remove all series. Safe to call on a nil receiver — the reload
+// path runs with metrics disabled too.
 func (m *Metrics) SetGeoIPInfo(buildEpochs map[string]uint) {
 	if m == nil {
 		return
@@ -239,6 +241,13 @@ func (m *Metrics) SetGeoIPInfo(buildEpochs map[string]uint) {
 			m.geoipDBInfo.DeleteLabelValues(db, prev)
 		}
 		m.prevGeoIPLabels[db] = ts
+	}
+	// Remove databases that existed previously but are absent now.
+	for db, prev := range m.prevGeoIPLabels {
+		if _, ok := buildEpochs[db]; !ok {
+			m.geoipDBInfo.DeleteLabelValues(db, prev)
+			delete(m.prevGeoIPLabels, db)
+		}
 	}
 }
 

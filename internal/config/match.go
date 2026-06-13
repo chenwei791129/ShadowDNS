@@ -36,6 +36,27 @@ func (IPRule) isMatchRule()      {}
 func (CIDRRule) isMatchRule()    {}
 func (AnyRule) isMatchRule()     {}
 
+// FirstGeoRuleView scans all views' match-clients in declaration order and
+// reports the first view containing a geo-class rule (CountryRule or ASNRule).
+// It returns that view's Name, Source, and Line, and whether such a view was
+// found. Callers use this to decide whether a GeoIP database is required and
+// to point error messages at the offending view.
+func FirstGeoRuleView(views []View) (viewName, source string, line int, found bool) {
+	for _, v := range views {
+		for _, r := range v.MatchClients {
+			// IMPORTANT: any newly added geo-class match rule type (i.e. a
+			// rule that requires GeoIP/mmdb data to evaluate) MUST be added
+			// to this type switch. Forgetting it silently degrades to
+			// "geo rules exist but no mmdb is required".
+			switch r.(type) {
+			case CountryRule, ASNRule:
+				return v.Name, v.Source, v.Line, true
+			}
+		}
+	}
+	return "", "", 0, false
+}
+
 // reASN matches a leading "AS<number>" pattern inside an asnum quoted value.
 var reASN = regexp.MustCompile(`^AS(\d+)(\s|$)`)
 

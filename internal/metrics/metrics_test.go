@@ -269,6 +269,71 @@ func TestSetGeoIPInfo_SetsGauge(t *testing.T) {
 	}
 }
 
+// geoipSeries gathers metrics and returns the shadowdns_geoip_db_info series
+// as a database → build_time map. A missing or empty family yields an empty map
+// (a Vec with zero label sets does not appear in Gather output).
+func geoipSeries(t *testing.T, m *metrics.Metrics) map[string]string {
+	t.Helper()
+	families := gatherMetrics(t, m)
+	series := map[string]string{}
+	mf, ok := families["shadowdns_geoip_db_info"]
+	if !ok {
+		return series
+	}
+	for _, metric := range mf.GetMetric() {
+		labels := labelMap(metric.GetLabel())
+		series[labels["database"]] = labels["build_time"]
+	}
+	return series
+}
+
+// TestSetGeoIPInfo_EmptyMapRemovesAllSeries verifies the complete-desired-set
+// semantics: after databases were exported, a call with an empty map removes
+// every shadowdns_geoip_db_info series.
+func TestSetGeoIPInfo_EmptyMapRemovesAllSeries(t *testing.T) {
+	m := metrics.New()
+
+	m.SetGeoIPInfo(map[string]uint{
+		"country": 1700000000,
+		"asn":     1700100000,
+	})
+
+	m.SetGeoIPInfo(map[string]uint{})
+
+	if series := geoipSeries(t, m); len(series) != 0 {
+		t.Errorf("expected zero geoip_db_info series after empty-map call, got %v", series)
+	}
+}
+
+// TestSetGeoIPInfo_RemovesAbsentDatabase verifies that a database present in
+// the previous call but absent from the current map has its series deleted,
+// while the remaining database keeps exactly one series with the new build_time.
+func TestSetGeoIPInfo_RemovesAbsentDatabase(t *testing.T) {
+	m := metrics.New()
+
+	m.SetGeoIPInfo(map[string]uint{
+		"country": 1700000000,
+		"asn":     1700100000,
+	})
+
+	m.SetGeoIPInfo(map[string]uint{
+		"country": 1700200000, // 2023-11-17T05:46:40Z
+	})
+
+	series := geoipSeries(t, m)
+	if len(series) != 1 {
+		t.Fatalf("expected exactly one geoip_db_info series, got %v", series)
+	}
+	if bt, ok := series["country"]; !ok {
+		t.Error("missing geoip_db_info series for database=country")
+	} else if bt != "2023-11-17T05:46:40Z" {
+		t.Errorf("country build_time = %q, want 2023-11-17T05:46:40Z", bt)
+	}
+	if _, ok := series["asn"]; ok {
+		t.Error("stale geoip_db_info series for database=asn should have been deleted")
+	}
+}
+
 // TestHandler_ReturnsHTTP200 verifies that Handler() returns an http.Handler that
 // responds with HTTP 200 and a Prometheus text/plain content type.
 func TestHandler_ReturnsHTTP200(t *testing.T) {

@@ -224,6 +224,139 @@ func TestEmptyBodyProducesNoRules(t *testing.T) {
 	}
 }
 
+// TestFirstGeoRuleViewNoGeoRules verifies that views containing only
+// non-geo rules (any/IP/CIDR) report found=false.
+func TestFirstGeoRuleViewNoGeoRules(t *testing.T) {
+	views := []View{
+		{
+			Name:         "internal",
+			MatchClients: []MatchRule{AnyRule{}, IPRule{IP: netip.MustParseAddr("192.0.2.8")}},
+			Line:         3,
+			Source:       "named.conf",
+		},
+		{
+			Name:         "external",
+			MatchClients: []MatchRule{CIDRRule{Prefix: netip.MustParsePrefix("198.51.100.0/26")}},
+			Line:         12,
+			Source:       "named.conf",
+		},
+	}
+	name, source, line, found := FirstGeoRuleView(views)
+	if found {
+		t.Fatalf("expected found=false, got true (view=%q source=%q line=%d)", name, source, line)
+	}
+}
+
+// TestFirstGeoRuleViewCountryRule verifies that a view with a CountryRule is
+// reported with its name, source, and line.
+func TestFirstGeoRuleViewCountryRule(t *testing.T) {
+	views := []View{
+		{
+			Name:         "plain",
+			MatchClients: []MatchRule{AnyRule{}},
+			Line:         1,
+			Source:       "named.conf",
+		},
+		{
+			Name:         "geo-view",
+			MatchClients: []MatchRule{CountryRule{Code: "JP"}},
+			Line:         20,
+			Source:       "views.conf",
+		},
+	}
+	name, source, line, found := FirstGeoRuleView(views)
+	if !found {
+		t.Fatal("expected found=true, got false")
+	}
+	if name != "geo-view" {
+		t.Errorf("expected view name %q, got %q", "geo-view", name)
+	}
+	if source != "views.conf" {
+		t.Errorf("expected source %q, got %q", "views.conf", source)
+	}
+	if line != 20 {
+		t.Errorf("expected line 20, got %d", line)
+	}
+}
+
+// TestFirstGeoRuleViewASNRule verifies that a view with an ASNRule counts as
+// a geo rule.
+func TestFirstGeoRuleViewASNRule(t *testing.T) {
+	views := []View{
+		{
+			Name:         "asn-view",
+			MatchClients: []MatchRule{ASNRule{ASN: 64500}},
+			Line:         7,
+			Source:       "asn.conf",
+		},
+	}
+	name, source, line, found := FirstGeoRuleView(views)
+	if !found {
+		t.Fatal("expected found=true, got false")
+	}
+	if name != "asn-view" {
+		t.Errorf("expected view name %q, got %q", "asn-view", name)
+	}
+	if source != "asn.conf" {
+		t.Errorf("expected source %q, got %q", "asn.conf", source)
+	}
+	if line != 7 {
+		t.Errorf("expected line 7, got %d", line)
+	}
+}
+
+// TestFirstGeoRuleViewDeclarationOrder verifies that when multiple views
+// contain geo rules, the first view in declaration order wins — including a
+// geo rule that appears after non-geo rules within the same view's
+// MatchClients.
+func TestFirstGeoRuleViewDeclarationOrder(t *testing.T) {
+	views := []View{
+		{
+			Name:         "no-geo",
+			MatchClients: []MatchRule{IPRule{IP: netip.MustParseAddr("203.0.113.1")}},
+			Line:         2,
+			Source:       "named.conf",
+		},
+		{
+			Name: "first-geo",
+			// Geo rule appears after a non-geo rule within the same view.
+			MatchClients: []MatchRule{AnyRule{}, CountryRule{Code: "KR"}},
+			Line:         10,
+			Source:       "first.conf",
+		},
+		{
+			Name:         "second-geo",
+			MatchClients: []MatchRule{ASNRule{ASN: 64501}},
+			Line:         30,
+			Source:       "second.conf",
+		},
+	}
+	name, source, line, found := FirstGeoRuleView(views)
+	if !found {
+		t.Fatal("expected found=true, got false")
+	}
+	if name != "first-geo" {
+		t.Errorf("expected first view in declaration order %q, got %q", "first-geo", name)
+	}
+	if source != "first.conf" {
+		t.Errorf("expected source %q, got %q", "first.conf", source)
+	}
+	if line != 10 {
+		t.Errorf("expected line 10, got %d", line)
+	}
+}
+
+// TestFirstGeoRuleViewEmptyViews verifies that nil and empty view slices
+// report found=false.
+func TestFirstGeoRuleViewEmptyViews(t *testing.T) {
+	for _, views := range [][]View{nil, {}} {
+		name, source, line, found := FirstGeoRuleView(views)
+		if found {
+			t.Errorf("views=%#v: expected found=false, got true (view=%q source=%q line=%d)", views, name, source, line)
+		}
+	}
+}
+
 // TestFullBlockExample exercises the reference example from the spec.
 func TestFullBlockExample(t *testing.T) {
 	body := `

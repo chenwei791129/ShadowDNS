@@ -43,9 +43,58 @@ import (
 // It defaults to "dev" for local development builds.
 var version = "dev"
 
-// errGeoIPDirectoryUnset is shared by the startup and reload validations so
-// the two error messages cannot drift.
-var errGeoIPDirectoryUnset = errors.New("geoip-directory not set in named.conf options")
+// loadGeoIPIfRequired applies the conditional GeoIP requirement shared by the
+// startup and reload paths. The three-branch logic and the geo-rule error
+// message are assembled only here so the two paths cannot drift:
+//
+//   - geoip-directory set (non-empty): always load and validate both mmdb
+//     files, regardless of whether any view declares a geo rule — a typo'd
+//     directory must fail loudly, never silently degrade to "geo rules
+//     never match".
+//   - geoip-directory unset (absent or empty string — the parser stores both
+//     as "") with at least one country/ASN match-clients rule: explicit
+//     configuration error naming the first offending view with its source
+//     file and line, never a relative-path file-open error.
+//   - geoip-directory unset with no geo rules: nil handles — the matcher
+//     treats nil databases as a legitimate production state.
+func loadGeoIPIfRequired(cfg *config.Config, logger *zap.Logger) (*view.CountryDB, *view.ASNDB, error) {
+	if cfg.Options.GeoIPDirectory != "" {
+		return view.LoadGeoIP(cfg.Options.GeoIPDirectory, logger)
+	}
+	if name, source, line, found := config.FirstGeoRuleView(cfg.Views); found {
+		return nil, nil, fmt.Errorf("%s:%d: view %q uses geoip match-clients rules but geoip-directory is not set in named.conf options",
+			source, line, name)
+	}
+	return nil, nil, nil
+}
+
+// geoipBuildEpochs renders the complete desired set for Metrics.SetGeoIPInfo:
+// the build epochs of the loaded databases, or an empty map when GeoIP is not
+// loaded (an empty map clears every shadowdns_geoip_db_info series).
+func geoipBuildEpochs(country *view.CountryDB, asn *view.ASNDB) map[string]uint {
+	epochs := make(map[string]uint, 2)
+	if country != nil {
+		epochs["country"] = country.Metadata().BuildEpoch
+	}
+	if asn != nil {
+		epochs["asn"] = asn.Metadata().BuildEpoch
+	}
+	return epochs
+}
+
+// warnECSWithoutGeoIP emits the ECS-without-GeoIP warning when a configuration
+// load (startup or SIGHUP reload) completes with ECS enabled and no GeoIP
+// database loaded. The ECS address only feeds country/ASN lookups, so without
+// databases ECS cannot influence view selection — only the option echo
+// behavior remains. Deliberately a warning, not a fatal: the combination is
+// harmless and blocking it would break the "enable ECS first, add geo rules
+// later" incremental configuration flow.
+func warnECSWithoutGeoIP(ecsEnabled, geoipEnabled bool, logger *zap.Logger) {
+	if ecsEnabled && !geoipEnabled {
+		logger.Warn("ECS enabled but no GeoIP database is loaded: " +
+			"ECS cannot influence view selection (only the ECS option echo is retained)")
+	}
+}
 
 // warnClose closes c and logs a warning when the close fails; label names the
 // handle in the log line.
@@ -193,20 +242,20 @@ func reload(
 		return fmt.Errorf("loading shadowdns config: %w", err)
 	}
 
-	// Mirror the startup validation: an empty geoip-directory must surface as
-	// an explicit configuration error, not a confusing relative-path open error.
-	if cfg.Options.GeoIPDirectory == "" {
-		return errGeoIPDirectoryUnset
-	}
-	newCountry, newASN, err := view.LoadGeoIP(cfg.Options.GeoIPDirectory, logger)
+	// Same conditional requirement as startup (shared helper): a geo rule
+	// without geoip-directory surfaces as an explicit configuration error,
+	// and a config with neither proceeds with nil handles.
+	newCountry, newASN, err := loadGeoIPIfRequired(cfg, logger)
 	if err != nil {
 		return fmt.Errorf("reloading GeoIP: %w", err)
 	}
 	// Release the freshly opened handles when a later fallible step aborts
 	// the reload; the running state keeps the old handles. On success (err ==
-	// nil) the handles have been installed into geo and must stay open.
+	// nil) the handles have been installed into geo and must stay open. Both
+	// handles are nil on the no-GeoIP branch (LoadGeoIP returns both or
+	// neither) — nothing to release then.
 	defer func() {
-		if err != nil {
+		if err != nil && newCountry != nil {
 			warnClose(newCountry, "new country mmdb after failed reload", logger)
 			warnClose(newASN, "new ASN mmdb after failed reload", logger)
 		}
@@ -271,10 +320,7 @@ func reload(
 	// the pre-swap state snapshot.
 	geo.prevCountry, geo.prevASN = geo.country, geo.asn
 	geo.country, geo.asn = newCountry, newASN
-	srv.Metrics.SetGeoIPInfo(map[string]uint{
-		"country": newCountry.Metadata().BuildEpoch,
-		"asn":     newASN.Metadata().BuildEpoch,
-	})
+	srv.Metrics.SetGeoIPInfo(geoipBuildEpochs(newCountry, newASN))
 
 	if srv.EphemeralStore != nil {
 		srv.EphemeralStore.Clear()
@@ -311,7 +357,12 @@ func reload(
 		"verify_mode", opts.ReloadVerify.String(),
 		"reused", summary.Reused,
 		"reparsed", summary.Reparsed,
+		"geoip_enabled", newCountry != nil,
 	)
+	// ECS is a process-lifetime flag: a geo→no-geo reload silently strips ECS
+	// of any effect on view selection mid-run, which is exactly what this
+	// warning exists to surface.
+	warnECSWithoutGeoIP(opts.ECSEnable, newCountry != nil, logger)
 	return nil
 }
 
@@ -574,16 +625,12 @@ func run(ctx context.Context, opts runOptions) error {
 		return fmt.Errorf("loading named.conf: %w", err)
 	}
 
-	if cfg.Options.GeoIPDirectory == "" {
-		return errGeoIPDirectoryUnset
-	}
-
 	shadowCfg, err := shadowdnscfg.Load(opts.ConfigPath, logger)
 	if err != nil {
 		return fmt.Errorf("loading shadowdns config: %w", err)
 	}
 
-	country, asn, err := view.LoadGeoIP(cfg.Options.GeoIPDirectory, logger)
+	country, asn, err := loadGeoIPIfRequired(cfg, logger)
 	if err != nil {
 		return fmt.Errorf("loading GeoIP: %w", err)
 	}
@@ -660,6 +707,7 @@ func run(ctx context.Context, opts runOptions) error {
 	logger.Sugar().Infow("EDNS Client Subnet (ECS) processing",
 		"enabled", opts.ECSEnable,
 	)
+	warnECSWithoutGeoIP(opts.ECSEnable, country != nil, logger)
 
 	// --dry-run: load and validate the unified config (aliases + ephemeral_api),
 	// build zone state, log a summary, then exit without starting listeners or
@@ -673,6 +721,7 @@ func run(ctx context.Context, opts runOptions) error {
 			"ephemeral_api", shadowCfg.EphemeralAPI != nil,
 			"query_log", queryLogSummary(cfg),
 			"rate_limit", rateLimitSummary(cfg),
+			"geoip_enabled", country != nil,
 		)
 		// The query log sink opened above (to fail loudly on a bad path even
 		// in dry-run) is closed by the qlState defer.
@@ -721,13 +770,10 @@ func run(ctx context.Context, opts runOptions) error {
 	if opts.MetricsAddr != "" {
 		m := metrics.New()
 		m.SetBuildInfo(version, runtime.Version())
-		// GeoIP metadata from the startup load; a successful SIGHUP reload
-		// re-opens the mmdb files and updates this gauge to the new build
-		// epochs (deleting the stale build_time series).
-		m.SetGeoIPInfo(map[string]uint{
-			"country": country.Metadata().BuildEpoch,
-			"asn":     asn.Metadata().BuildEpoch,
-		})
+		// GeoIP metadata from the startup load (empty set when GeoIP is not
+		// loaded); a successful SIGHUP reload re-opens the mmdb files and
+		// updates this gauge to the new build epochs (deleting stale series).
+		m.SetGeoIPInfo(geoipBuildEpochs(country, asn))
 		// The initial configuration load succeeded, so initialise the
 		// last-reload-success gauge to the startup time (mirroring
 		// Prometheus's own behaviour) — `time() - <gauge>` staleness alerts
@@ -817,6 +863,9 @@ func run(ctx context.Context, opts runOptions) error {
 		"views", len(cfg.Views),
 		"bound_addrs", bound,
 		"bound_count", len(bound),
+		// Read the startup-scoped handle, not geo.country: the SIGHUP
+		// goroutine is already running here and may write geo concurrently.
+		"geoip_enabled", country != nil,
 	)
 	serveErr := srv.Serve(ctx)
 

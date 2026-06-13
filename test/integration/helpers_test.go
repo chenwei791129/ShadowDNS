@@ -77,35 +77,13 @@ func buildTestServer(t *testing.T, preServe func(*server.Server)) (*server.Serve
 	// Patch named.conf (substitute TESTDATA_DIR_PLACEHOLDER → tmpDir).
 	patchNamedConf(t, tmpDir)
 
-	namedConf := filepath.Join(tmpDir, "named.conf")
 	logger := zap.NewNop()
-
-	cfg, err := config.LoadNamedConf(namedConf, logger)
-	if err != nil {
-		t.Fatalf("LoadNamedConf: %v", err)
-	}
-
-	sdCfg, err := shadowdnscfg.Load(filepath.Join(tmpDir, "shadowdns.yaml"), logger)
-	if err != nil {
-		t.Fatalf("shadowdnscfg.Load: %v", err)
-	}
-	aliases := sdCfg.Aliases
-
 	country, asn, err := view.LoadGeoIP(geoIPDir, logger)
 	if err != nil {
 		t.Fatalf("LoadGeoIP: %v", err)
 	}
 
-	state, _, err := server.BuildState(cfg, aliases, nil, nil, nil, nil, server.VerifyModeHash, country, asn, logger)
-	if err != nil {
-		_ = country.Close()
-		_ = asn.Close()
-		t.Fatalf("server.BuildState: %v", err)
-	}
-
-	srv := server.NewServer(state, logger)
-
-	_, srvCleanup := bindAndServe(t, srv, preServe)
+	srv, srvCleanup := serveConfDir(t, tmpDir, country, asn, preServe)
 
 	teardown := func() {
 		srvCleanup()
@@ -113,6 +91,46 @@ func buildTestServer(t *testing.T, preServe func(*server.Server)) (*server.Serve
 		_ = asn.Close()
 	}
 	return srv, teardown
+}
+
+// newNoGeoIPTestServer builds a server from a caller-prepared config dir
+// without creating any mmdb file or calling view.LoadGeoIP: the server state
+// is built with nil GeoIP handles, which is the production state for
+// configurations that declare no geo rules and no geoip-directory. The caller
+// must have written named.conf (and everything it includes) plus
+// shadowdns.yaml into confDir.
+func newNoGeoIPTestServer(t *testing.T, confDir string) (*server.Server, func()) {
+	t.Helper()
+	return serveConfDir(t, confDir, nil, nil, nil)
+}
+
+// serveConfDir is the single production-wiring chain shared by the fixture
+// helpers: LoadNamedConf → shadowdnscfg.Load → BuildState → NewServer →
+// bindAndServe. country/asn may both be nil to run without GeoIP. The
+// returned cleanup stops the server; GeoIP handle closing stays with the
+// caller that opened them.
+func serveConfDir(t *testing.T, confDir string, country *view.CountryDB, asn *view.ASNDB, preServe func(*server.Server)) (*server.Server, func()) {
+	t.Helper()
+
+	logger := zap.NewNop()
+	cfg, err := config.LoadNamedConf(filepath.Join(confDir, "named.conf"), logger)
+	if err != nil {
+		t.Fatalf("LoadNamedConf: %v", err)
+	}
+
+	sdCfg, err := shadowdnscfg.Load(filepath.Join(confDir, "shadowdns.yaml"), logger)
+	if err != nil {
+		t.Fatalf("shadowdnscfg.Load: %v", err)
+	}
+
+	state, _, err := server.BuildState(cfg, sdCfg.Aliases, nil, nil, nil, nil, server.VerifyModeHash, country, asn, logger)
+	if err != nil {
+		t.Fatalf("server.BuildState: %v", err)
+	}
+
+	srv := server.NewServer(state, logger)
+	_, srvCleanup := bindAndServe(t, srv, preServe)
+	return srv, srvCleanup
 }
 
 // bindAndServe binds srv to a loopback OS-assigned port, runs an optional

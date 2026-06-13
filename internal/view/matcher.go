@@ -20,7 +20,7 @@ type NamedRuleSet struct {
 // external data.
 type Matcher struct {
 	Views   []NamedRuleSet
-	Country *CountryDB // can be nil only in tests; production path requires it
+	Country *CountryDB // nil is a legitimate production state when the configuration declares no geo rules
 	ASN     *ASNDB     // same
 }
 
