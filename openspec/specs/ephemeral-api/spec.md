@@ -37,7 +37,7 @@ code:
   - go.mod
   - docs/benchmark.md
   - scripts/gen-container-testdata.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - internal/server/server.go
   - internal/server/listener.go
   - cmd/shadowdns/pprof.go
@@ -51,7 +51,7 @@ code:
   - internal/server/listenaddr.go
   - internal/zone/classify.go
   - CHANGELOG.md
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - cmd/shadowdns/reload.go
   - internal/transfer/axfr.go
   - internal/zone/zone.go
@@ -263,7 +263,7 @@ code:
   - go.mod
   - docs/benchmark.md
   - scripts/gen-container-testdata.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - internal/server/server.go
   - internal/server/listener.go
   - cmd/shadowdns/pprof.go
@@ -277,7 +277,7 @@ code:
   - internal/server/listenaddr.go
   - internal/zone/classify.go
   - CHANGELOG.md
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - cmd/shadowdns/reload.go
   - internal/transfer/axfr.go
   - internal/zone/zone.go
@@ -372,7 +372,7 @@ code:
   - go.mod
   - docs/benchmark.md
   - scripts/gen-container-testdata.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - internal/server/server.go
   - internal/server/listener.go
   - cmd/shadowdns/pprof.go
@@ -386,7 +386,7 @@ code:
   - internal/server/listenaddr.go
   - internal/zone/classify.go
   - CHANGELOG.md
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - cmd/shadowdns/reload.go
   - internal/transfer/axfr.go
   - internal/zone/zone.go
@@ -465,7 +465,7 @@ code:
   - go.mod
   - docs/benchmark.md
   - scripts/gen-container-testdata.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - internal/server/server.go
   - internal/server/listener.go
   - cmd/shadowdns/pprof.go
@@ -479,7 +479,7 @@ code:
   - internal/server/listenaddr.go
   - internal/zone/classify.go
   - CHANGELOG.md
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - cmd/shadowdns/reload.go
   - internal/transfer/axfr.go
   - internal/zone/zone.go

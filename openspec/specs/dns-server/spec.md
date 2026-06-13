@@ -5,7 +5,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -15,7 +15,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -30,12 +30,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -44,7 +44,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -313,7 +313,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -323,7 +323,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -338,12 +338,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -352,7 +352,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -405,7 +405,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -415,7 +415,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -430,12 +430,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -444,7 +444,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -502,7 +502,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -512,7 +512,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -527,12 +527,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -541,7 +541,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -594,7 +594,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -604,7 +604,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -619,12 +619,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -633,7 +633,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -686,7 +686,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -696,7 +696,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -711,12 +711,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -725,7 +725,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -773,7 +773,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -783,7 +783,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -798,12 +798,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -812,7 +812,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -967,8 +967,8 @@ When both a CNAME record and other record types coexist at the same name (a conf
 source: apex-cname-txt-coexist
 updated: 2026-05-05
 code:
-  - testdata/integration/master/example.com_view-other.fwd
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-other
+  - testdata/integration/db.example.com-th
 tests:
   - test/integration/query_test.go
 -->
@@ -1100,7 +1100,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -1110,7 +1110,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -1125,12 +1125,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -1139,7 +1139,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -1205,7 +1205,7 @@ code:
   - go.mod
   - docs/benchmark.md
   - scripts/gen-container-testdata.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - internal/server/server.go
   - internal/server/listener.go
   - cmd/shadowdns/pprof.go
@@ -1219,7 +1219,7 @@ code:
   - internal/server/listenaddr.go
   - internal/zone/classify.go
   - CHANGELOG.md
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - cmd/shadowdns/reload.go
   - internal/transfer/axfr.go
   - internal/zone/zone.go
@@ -1283,7 +1283,7 @@ code:
   - testdata/integration/shadowdns.yaml
   - CHANGELOG.md
   - docs/ephemeral-api.md
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - scripts/gen-container-testdata.go
   - internal/server/build.go
   - internal/alias/override.go
@@ -1293,7 +1293,7 @@ code:
   - scripts/smoke.sh
   - docs/benchmark.md
   - testdata/integration/aliases.yaml
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - testdata/integration/README.md
 tests:
   - internal/server/handler_ephemeral_test.go

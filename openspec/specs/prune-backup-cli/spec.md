@@ -337,10 +337,10 @@ code:
   - internal/prunebackup/diff.go
   - internal/shadowdnscfg/config.go
   - testdata/integration/shadowdns.yaml
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - cmd/shadowdns/prune_backup.go
   - packaging/shadowdns.yaml.example
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - internal/zone/classify.go
 tests:
   - cmd/shadowdns/main_ephemeral_test.go

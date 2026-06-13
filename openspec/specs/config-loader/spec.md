@@ -6,7 +6,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -16,7 +16,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -31,12 +31,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -45,7 +45,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -124,7 +124,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -134,7 +134,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -149,12 +149,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -163,7 +163,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -318,7 +318,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -328,7 +328,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -343,12 +343,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -357,7 +357,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -405,7 +405,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -415,7 +415,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -430,12 +430,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -444,7 +444,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -482,7 +482,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -492,7 +492,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -507,12 +507,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -521,7 +521,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -569,7 +569,7 @@ code:
   - go.mod
   - docs/benchmark.md
   - scripts/gen-container-testdata.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - internal/server/server.go
   - internal/server/listener.go
   - cmd/shadowdns/pprof.go
@@ -583,7 +583,7 @@ code:
   - internal/server/listenaddr.go
   - internal/zone/classify.go
   - CHANGELOG.md
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - cmd/shadowdns/reload.go
   - internal/transfer/axfr.go
   - internal/zone/zone.go
@@ -1022,4 +1022,67 @@ tests:
   - test/integration/helpers_test.go
   - internal/metrics/metrics_test.go
   - cmd/shadowdns/main_reload_test.go
+-->
+
+---
+### Requirement: Honor options block from included files
+
+The config-loader SHALL apply an `options { ... }` block regardless of which file in the include tree declares it: a block appearing in a file reached via an `include "...";` directive (for example the Debian-idiomatic `named.conf.options`) SHALL populate the loaded configuration's options exactly as if the block were written inline in the root `named.conf`. This applies to every options field (`directory`, `geoip-directory`, `listen-on`, `listen-on-v6`, `allow-transfer`, `rate-limit`, `recursion`, `minimal-responses`, `version`, `hostname`, `transfer-format`, `notify`).
+
+Because options fields consumed at parse time (notably `directory` for relative zone-`file` resolution) read the options state accumulated so far, an `options` block intended to govern later views/zones SHALL be included before those views/zones in declaration order (as in the Debian layout, where `named.conf` includes `named.conf.options` before `named.conf.local`).
+
+When more than one `options { ... }` block is encountered across the include tree, the last-parsed block SHALL take effect (BIND permits a single `options` statement; ShadowDNS tolerates duplicates rather than failing) and the loader SHALL emit a warning naming the file and line of the additional block.
+
+#### Scenario: Options block in an included file is honored
+
+- **WHEN** `named.conf` contains only `include "named.conf.options";` and `include "named.conf.local";`, and `named.conf.options` contains `options { directory "/etc/bind"; geoip-directory "/etc/bind/geoip"; listen-on { 192.0.2.1; }; };`
+- **THEN** the loaded configuration's options record has `directory="/etc/bind"`, `geoipDirectory="/etc/bind/geoip"`, and `listenOn=[192.0.2.1]` (not empty/dropped)
+
+#### Scenario: Geo views in an included view file start when geoip-directory is in the included options file
+
+- **WHEN** `named.conf` includes `named.conf.options` (declaring `geoip-directory`) before `named.conf.local` (declaring a view with a `geoip country` match-clients rule)
+- **THEN** startup GeoIP loading reads the populated `geoip-directory` and does not fail with "geoip-directory is not set"
+
+#### Scenario: Multiple options blocks across the include tree warn and last wins
+
+- **WHEN** the root `named.conf` declares `options { directory "/first"; };` and then includes a file declaring `options { directory "/second"; };`
+- **THEN** the loaded configuration's options record has `directory="/second"` AND the loader emits exactly one warning naming the file and line of the second block
+
+<!-- @trace
+source: debian-named-conf-layout
+updated: 2026-06-13
+code:
+  - nfpm.yaml
+  - packaging/named.conf.local.example
+  - testdata/integration/cnames/db.example.com.cname
+  - scripts/test-deb.sh
+  - internal/config/zones.go
+  - testdata/integration/db.example.com-other
+  - README.md
+  - docs/getting-started.zh.md
+  - docs/configuration/named-conf.zh.md
+  - testdata/integration/db.include-test.example
+  - docs/migration.md
+  - testdata/integration/db.example.com-th
+  - docs/configuration/named-conf.md
+  - testdata/integration/named.conf
+  - testdata/integration/named.conf.local
+  - packaging/named.conf.options.example
+  - docs/getting-started.md
+  - docs/migration.zh.md
+  - testdata/integration/named.conf.options
+  - scripts/gen-container-testdata.go
+  - scripts/smoke.sh
+  - testdata/integration/db.backup.example-other
+  - testdata/integration/db.backup.example-th
+  - testdata/integration/db.backup.example.overrides
+  - packaging/named.conf.example
+  - testdata/integration/README.md
+tests:
+  - test/integration/helpers_test.go
+  - internal/config/zones_test.go
+  - test/integration/listenon_test.go
+  - test/integration/query_test.go
+  - test/integration/prune_backup_test.go
+  - internal/prunebackup/lexer_test.go
 -->

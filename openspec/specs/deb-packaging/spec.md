@@ -132,47 +132,61 @@ The `.deb` package SHALL install example configuration files under `/etc/shadowd
 #### Scenario: Example named.conf is installed
 
 - **WHEN** the package is installed
-- **THEN** `/etc/shadowdns/named.conf.example` SHALL exist and contain a valid `named.conf` skeleton with `options`, `geoip-directory`, and `view` blocks
+- **THEN** `/etc/shadowdns/named.conf.example` SHALL exist and contain a valid `named.conf` skeleton consisting of `include "named.conf.options";` and `include "named.conf.local";` directives (Debian/Ubuntu include split)
+
+#### Scenario: Example named.conf.options is installed
+
+- **WHEN** the package is installed
+- **THEN** `/etc/shadowdns/named.conf.options.example` SHALL exist and contain the `options` block including a `directory` and `geoip-directory` setting
+
+#### Scenario: Example named.conf.local is installed
+
+- **WHEN** the package is installed
+- **THEN** `/etc/shadowdns/named.conf.local.example` SHALL exist and contain at least one `view` block with `match-clients` and a `zone` declaration
 
 #### Scenario: Example shadowdns.yaml is installed
 
 - **WHEN** the package is installed
 - **THEN** `/etc/shadowdns/shadowdns.yaml.example` SHALL exist and contain a valid unified config skeleton including the `aliases:` section (one-to-many `root: [backups]` format) and the `ephemeral_api:` section
 
-#### Scenario: Example files are not overwritten on upgrade
-
-- **WHEN** the package is upgraded to a newer version
-- **THEN** the example files SHALL be replaced (they are examples, not user config), and no user confirmation SHALL be required
-
 
 <!-- @trace
-source: aliases-root-to-backups-schema
-updated: 2026-04-22
+source: debian-named-conf-layout
+updated: 2026-06-13
 code:
-  - scripts/smoke.sh
-  - testdata/integration/README.md
-  - internal/server/build.go
-  - internal/config/aliases.go
-  - .release-please-manifest.json
-  - scripts/gen-container-testdata.go
-  - docs/benchmark.md
-  - testdata/integration/aliases.yaml
-  - CHANGELOG.md
-  - CLAUDE.md
-  - internal/shadowdnscfg/config.go
-  - README.md
-  - testdata/integration/shadowdns.yaml
-  - .spectra.yaml
-  - packaging/shadowdns.yaml.example
+  - nfpm.yaml
+  - packaging/named.conf.local.example
+  - testdata/integration/cnames/db.example.com.cname
   - scripts/test-deb.sh
+  - internal/config/zones.go
+  - testdata/integration/db.example.com-other
+  - README.md
+  - docs/getting-started.zh.md
+  - docs/configuration/named-conf.zh.md
+  - testdata/integration/db.include-test.example
+  - docs/migration.md
+  - testdata/integration/db.example.com-th
+  - docs/configuration/named-conf.md
+  - testdata/integration/named.conf
+  - testdata/integration/named.conf.local
+  - packaging/named.conf.options.example
+  - docs/getting-started.md
+  - docs/migration.zh.md
+  - testdata/integration/named.conf.options
+  - scripts/gen-container-testdata.go
+  - scripts/smoke.sh
+  - testdata/integration/db.backup.example-other
+  - testdata/integration/db.backup.example-th
+  - testdata/integration/db.backup.example.overrides
+  - packaging/named.conf.example
+  - testdata/integration/README.md
 tests:
-  - test/integration/reload_diff_test.go
-  - cmd/shadowdns/main_ephemeral_test.go
-  - internal/config/aliases_test.go
-  - internal/shadowdnscfg/config_test.go
-  - test/integration/axfr_test.go
-  - test/integration/listenon_test.go
   - test/integration/helpers_test.go
+  - internal/config/zones_test.go
+  - test/integration/listenon_test.go
+  - test/integration/query_test.go
+  - test/integration/prune_backup_test.go
+  - internal/prunebackup/lexer_test.go
 -->
 
 ---
@@ -269,29 +283,46 @@ The project SHALL include `scripts/gen-container-testdata.go` that prepares a re
 #### Scenario: Generator produces complete testdata
 
 - **WHEN** `go run scripts/gen-container-testdata.go -out <dir> -target <container-path>` is executed
-- **THEN** the output directory SHALL contain `named.conf`, `aliases.yaml`, `master.zones`, `master/*.fwd` zone files, and `geoip/GeoLite2-Country.mmdb` and `geoip/GeoLite2-ASN.mmdb` with all path placeholders replaced by the target path
+- **THEN** the output directory SHALL contain `named.conf`, `named.conf.options`, `named.conf.local`, `aliases.yaml`, `db.<zone>` / `db.<zone>-<view>` zone files plus any nested `$INCLUDE` fragments under `cnames/` (Debian/Ubuntu naming, no `master/` subdirectory and no `master.zones` file), and `geoip/GeoLite2-Country.mmdb` and `geoip/GeoLite2-ASN.mmdb` with all path placeholders replaced by the target path
 
 
 <!-- @trace
-source: deb-packaging
-updated: 2026-04-14
+source: debian-named-conf-layout
+updated: 2026-06-13
 code:
-  - packaging/named.conf.example
-  - Makefile
-  - cmd/shadowdns/main.go
-  - packaging/postinstall.sh
   - nfpm.yaml
-  - scripts/gen-container-testdata.go
-  - go.sum
+  - packaging/named.conf.local.example
+  - testdata/integration/cnames/db.example.com.cname
   - scripts/test-deb.sh
-  - go.mod
-  - packaging/aliases.yaml.example
-  - internal/config/options.go
-  - packaging/shadowdns.service
-  - internal/server/listener.go
+  - internal/config/zones.go
+  - testdata/integration/db.example.com-other
+  - README.md
+  - docs/getting-started.zh.md
+  - docs/configuration/named-conf.zh.md
+  - testdata/integration/db.include-test.example
+  - docs/migration.md
+  - testdata/integration/db.example.com-th
+  - docs/configuration/named-conf.md
+  - testdata/integration/named.conf
+  - testdata/integration/named.conf.local
+  - packaging/named.conf.options.example
+  - docs/getting-started.md
+  - docs/migration.zh.md
+  - testdata/integration/named.conf.options
+  - scripts/gen-container-testdata.go
+  - scripts/smoke.sh
+  - testdata/integration/db.backup.example-other
+  - testdata/integration/db.backup.example-th
+  - testdata/integration/db.backup.example.overrides
+  - packaging/named.conf.example
+  - testdata/integration/README.md
 tests:
-  - cmd/shadowdns/main_test.go
-  - internal/config/options_test.go
+  - test/integration/helpers_test.go
+  - internal/config/zones_test.go
+  - test/integration/listenon_test.go
+  - test/integration/query_test.go
+  - test/integration/prune_backup_test.go
+  - internal/prunebackup/lexer_test.go
 -->
 
 ---

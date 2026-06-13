@@ -43,7 +43,7 @@ code:
   - go.mod
   - internal/server/fingerprint.go
   - internal/server/server.go
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/server/build.go
   - .release-please-manifest.json
   - README.md
@@ -52,7 +52,7 @@ code:
   - Makefile
   - internal/server/handler.go
   - cmd/shadowdns/main.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
 tests:
   - internal/zone/zone_test.go
   - internal/zone/parser_test.go
@@ -281,7 +281,7 @@ code:
   - go.mod
   - internal/server/fingerprint.go
   - internal/server/server.go
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/server/build.go
   - .release-please-manifest.json
   - README.md
@@ -290,7 +290,7 @@ code:
   - Makefile
   - internal/server/handler.go
   - cmd/shadowdns/main.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
 tests:
   - internal/zone/zone_test.go
   - internal/zone/parser_test.go
@@ -351,7 +351,7 @@ code:
   - go.mod
   - internal/server/fingerprint.go
   - internal/server/server.go
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/server/build.go
   - .release-please-manifest.json
   - README.md
@@ -360,7 +360,7 @@ code:
   - Makefile
   - internal/server/handler.go
   - cmd/shadowdns/main.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
 tests:
   - internal/zone/zone_test.go
   - internal/zone/parser_test.go
@@ -399,7 +399,7 @@ code:
   - go.mod
   - internal/server/fingerprint.go
   - internal/server/server.go
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/server/build.go
   - .release-please-manifest.json
   - README.md
@@ -408,7 +408,7 @@ code:
   - Makefile
   - internal/server/handler.go
   - cmd/shadowdns/main.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
 tests:
   - internal/zone/zone_test.go
   - internal/zone/parser_test.go
@@ -454,7 +454,7 @@ code:
   - go.mod
   - internal/server/fingerprint.go
   - internal/server/server.go
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/server/build.go
   - .release-please-manifest.json
   - README.md
@@ -463,7 +463,7 @@ code:
   - Makefile
   - internal/server/handler.go
   - cmd/shadowdns/main.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
 tests:
   - internal/zone/zone_test.go
   - internal/zone/parser_test.go
@@ -501,7 +501,7 @@ code:
   - go.mod
   - internal/server/fingerprint.go
   - internal/server/server.go
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/server/build.go
   - .release-please-manifest.json
   - README.md
@@ -510,7 +510,7 @@ code:
   - Makefile
   - internal/server/handler.go
   - cmd/shadowdns/main.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
 tests:
   - internal/zone/zone_test.go
   - internal/zone/parser_test.go

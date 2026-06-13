@@ -5,7 +5,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -15,7 +15,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -30,12 +30,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -44,7 +44,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -106,7 +106,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -116,7 +116,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -131,12 +131,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -145,7 +145,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -203,7 +203,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -213,7 +213,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -228,12 +228,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -242,7 +242,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -352,7 +352,7 @@ updated: 2026-04-14
 code:
   - cmd/shadowdns/main.go
   - testdata/integration/named.conf
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - internal/view/geoip_asn.go
   - go.mod
   - internal/config/zones.go
@@ -362,7 +362,7 @@ code:
   - .spectra.yaml
   - internal/alias/detect.go
   - internal/zone/classify.go
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - internal/alias/override.go
   - internal/server/listener.go
   - internal/transfer/notify.go
@@ -377,12 +377,12 @@ code:
   - internal/dnsutil/dnsutil.go
   - internal/zone/parser.go
   - internal/transfer/acl.go
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - docs/benchmark.md
   - go.sum
   - testdata/integration/aliases.yaml
   - internal/server/server.go
-  - testdata/integration/master/backup.example_view-th.fwd
+  - testdata/integration/db.backup.example-th
   - docs/migration.md
   - internal/config/aliases.go
   - scripts/smoke.sh
@@ -391,7 +391,7 @@ code:
   - internal/alias/rewrite.go
   - internal/alias/soa.go
   - internal/server/handler.go
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
 tests:
   - internal/view/testhelper_test.go
   - internal/view/geoip_country_test.go
@@ -443,10 +443,10 @@ code:
   - internal/prunebackup/diff.go
   - internal/shadowdnscfg/config.go
   - testdata/integration/shadowdns.yaml
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - cmd/shadowdns/prune_backup.go
   - packaging/shadowdns.yaml.example
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/db.example.com-other
   - internal/zone/classify.go
 tests:
   - cmd/shadowdns/main_ephemeral_test.go
@@ -517,13 +517,13 @@ When the quoted form is malformed (e.g., an opening `"` without a matching closi
 source: bind-include-quoted-path
 updated: 2026-04-15
 code:
-  - testdata/integration/master/example.com_include.fwd
+  - testdata/integration/db.include-test.example
   - scripts/smoke.sh
-  - testdata/integration/master.zones
+  - testdata/integration/named.conf.local
   - README.md
-  - testdata/integration/master/backup.example_overrides
-  - testdata/integration/master/cnames/example.com_cname
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example.overrides
+  - testdata/integration/cnames/db.example.com.cname
+  - testdata/integration/db.backup.example-other
   - internal/zone/parser.go
 tests:
   - internal/zone/parser_test.go
@@ -560,8 +560,8 @@ code:
   - README.md
   - internal/zone/zone.go
   - internal/alias/override.go
-  - testdata/integration/master/example.com_view-other.fwd
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-other
+  - testdata/integration/db.example.com-th
 tests:
   - internal/alias/override_test.go
   - test/integration/wildcard_test.go

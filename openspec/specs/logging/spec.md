@@ -19,27 +19,27 @@ code:
   - docs/benchmark.md
   - Makefile
   - cmd/shadowdns/main.go
-  - testdata/integration/master/backup.example_overrides
+  - testdata/integration/db.backup.example.overrides
   - README.md
   - internal/transfer/axfr.go
   - go.sum
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
   - internal/view/geoip_asn.go
-  - testdata/integration/master.zones
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/named.conf.local
+  - testdata/integration/db.example.com-other
   - scripts/test-deb.sh
-  - testdata/integration/master/cnames/example.com_cname
+  - testdata/integration/cnames/db.example.com.cname
   - internal/config/aliases.go
   - internal/view/loader.go
   - go.mod
   - internal/alias/override.go
   - CLAUDE.md
   - internal/zone/parser.go
-  - testdata/integration/master/example.com_include.fwd
+  - testdata/integration/db.include-test.example
   - internal/server/server.go
   - internal/server/build.go
   - internal/server/listenaddr.go
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - packaging/shadowdns.service
   - .release-please-manifest.json
   - CHANGELOG.md
@@ -109,27 +109,27 @@ code:
   - docs/benchmark.md
   - Makefile
   - cmd/shadowdns/main.go
-  - testdata/integration/master/backup.example_overrides
+  - testdata/integration/db.backup.example.overrides
   - README.md
   - internal/transfer/axfr.go
   - go.sum
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
   - internal/view/geoip_asn.go
-  - testdata/integration/master.zones
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/named.conf.local
+  - testdata/integration/db.example.com-other
   - scripts/test-deb.sh
-  - testdata/integration/master/cnames/example.com_cname
+  - testdata/integration/cnames/db.example.com.cname
   - internal/config/aliases.go
   - internal/view/loader.go
   - go.mod
   - internal/alias/override.go
   - CLAUDE.md
   - internal/zone/parser.go
-  - testdata/integration/master/example.com_include.fwd
+  - testdata/integration/db.include-test.example
   - internal/server/server.go
   - internal/server/build.go
   - internal/server/listenaddr.go
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - packaging/shadowdns.service
   - .release-please-manifest.json
   - CHANGELOG.md
@@ -200,27 +200,27 @@ code:
   - docs/benchmark.md
   - Makefile
   - cmd/shadowdns/main.go
-  - testdata/integration/master/backup.example_overrides
+  - testdata/integration/db.backup.example.overrides
   - README.md
   - internal/transfer/axfr.go
   - go.sum
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
   - internal/view/geoip_asn.go
-  - testdata/integration/master.zones
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/named.conf.local
+  - testdata/integration/db.example.com-other
   - scripts/test-deb.sh
-  - testdata/integration/master/cnames/example.com_cname
+  - testdata/integration/cnames/db.example.com.cname
   - internal/config/aliases.go
   - internal/view/loader.go
   - go.mod
   - internal/alias/override.go
   - CLAUDE.md
   - internal/zone/parser.go
-  - testdata/integration/master/example.com_include.fwd
+  - testdata/integration/db.include-test.example
   - internal/server/server.go
   - internal/server/build.go
   - internal/server/listenaddr.go
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - packaging/shadowdns.service
   - .release-please-manifest.json
   - CHANGELOG.md
@@ -291,27 +291,27 @@ code:
   - docs/benchmark.md
   - Makefile
   - cmd/shadowdns/main.go
-  - testdata/integration/master/backup.example_overrides
+  - testdata/integration/db.backup.example.overrides
   - README.md
   - internal/transfer/axfr.go
   - go.sum
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
   - internal/view/geoip_asn.go
-  - testdata/integration/master.zones
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/named.conf.local
+  - testdata/integration/db.example.com-other
   - scripts/test-deb.sh
-  - testdata/integration/master/cnames/example.com_cname
+  - testdata/integration/cnames/db.example.com.cname
   - internal/config/aliases.go
   - internal/view/loader.go
   - go.mod
   - internal/alias/override.go
   - CLAUDE.md
   - internal/zone/parser.go
-  - testdata/integration/master/example.com_include.fwd
+  - testdata/integration/db.include-test.example
   - internal/server/server.go
   - internal/server/build.go
   - internal/server/listenaddr.go
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - packaging/shadowdns.service
   - .release-please-manifest.json
   - CHANGELOG.md
@@ -387,27 +387,27 @@ code:
   - docs/benchmark.md
   - Makefile
   - cmd/shadowdns/main.go
-  - testdata/integration/master/backup.example_overrides
+  - testdata/integration/db.backup.example.overrides
   - README.md
   - internal/transfer/axfr.go
   - go.sum
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
   - internal/view/geoip_asn.go
-  - testdata/integration/master.zones
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/named.conf.local
+  - testdata/integration/db.example.com-other
   - scripts/test-deb.sh
-  - testdata/integration/master/cnames/example.com_cname
+  - testdata/integration/cnames/db.example.com.cname
   - internal/config/aliases.go
   - internal/view/loader.go
   - go.mod
   - internal/alias/override.go
   - CLAUDE.md
   - internal/zone/parser.go
-  - testdata/integration/master/example.com_include.fwd
+  - testdata/integration/db.include-test.example
   - internal/server/server.go
   - internal/server/build.go
   - internal/server/listenaddr.go
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - packaging/shadowdns.service
   - .release-please-manifest.json
   - CHANGELOG.md
@@ -474,27 +474,27 @@ code:
   - docs/benchmark.md
   - Makefile
   - cmd/shadowdns/main.go
-  - testdata/integration/master/backup.example_overrides
+  - testdata/integration/db.backup.example.overrides
   - README.md
   - internal/transfer/axfr.go
   - go.sum
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
   - internal/view/geoip_asn.go
-  - testdata/integration/master.zones
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/named.conf.local
+  - testdata/integration/db.example.com-other
   - scripts/test-deb.sh
-  - testdata/integration/master/cnames/example.com_cname
+  - testdata/integration/cnames/db.example.com.cname
   - internal/config/aliases.go
   - internal/view/loader.go
   - go.mod
   - internal/alias/override.go
   - CLAUDE.md
   - internal/zone/parser.go
-  - testdata/integration/master/example.com_include.fwd
+  - testdata/integration/db.include-test.example
   - internal/server/server.go
   - internal/server/build.go
   - internal/server/listenaddr.go
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - packaging/shadowdns.service
   - .release-please-manifest.json
   - CHANGELOG.md
@@ -576,27 +576,27 @@ code:
   - docs/benchmark.md
   - Makefile
   - cmd/shadowdns/main.go
-  - testdata/integration/master/backup.example_overrides
+  - testdata/integration/db.backup.example.overrides
   - README.md
   - internal/transfer/axfr.go
   - go.sum
-  - testdata/integration/master/backup.example_view-other.fwd
+  - testdata/integration/db.backup.example-other
   - internal/view/geoip_asn.go
-  - testdata/integration/master.zones
-  - testdata/integration/master/example.com_view-other.fwd
+  - testdata/integration/named.conf.local
+  - testdata/integration/db.example.com-other
   - scripts/test-deb.sh
-  - testdata/integration/master/cnames/example.com_cname
+  - testdata/integration/cnames/db.example.com.cname
   - internal/config/aliases.go
   - internal/view/loader.go
   - go.mod
   - internal/alias/override.go
   - CLAUDE.md
   - internal/zone/parser.go
-  - testdata/integration/master/example.com_include.fwd
+  - testdata/integration/db.include-test.example
   - internal/server/server.go
   - internal/server/build.go
   - internal/server/listenaddr.go
-  - testdata/integration/master/example.com_view-th.fwd
+  - testdata/integration/db.example.com-th
   - packaging/shadowdns.service
   - .release-please-manifest.json
   - CHANGELOG.md
