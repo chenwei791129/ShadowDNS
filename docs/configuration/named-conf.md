@@ -8,10 +8,10 @@ ShadowDNS is a **drop-in** reader of a BIND `named.conf`: it loads any syntactic
 
 | Tier | What ShadowDNS does | Representative constructs |
 |------|---------------------|---------------------------|
-| **Silent** (DEBUG / no log) | Consumes and ignores the construct without operator-visible noise | Unrecognized non-access-control directives at top level or view scope (`key`, `controls`, `server`, `masters`, `dnssec-enable`, …); access-control directives inside a `zone` block (skipped, still not enforced); query logging disabled via a built-in channel (`default_syslog`, `null`, …) |
+| **Silent** (DEBUG / no log) | Consumes and ignores the construct without operator-visible noise | Unrecognized non-access-control, non-control-plane directives at top level or view scope (`masters`, `dnssec-enable`, …); access-control directives inside a `zone` block (skipped, still not enforced); query logging disabled via a built-in channel (`default_syslog`, `null`, …) |
 | **INFO** | Skips and logs once at INFO — informational, no action required | Recursion-family directives (`recursion`, `forwarders`, `dnssec-validation`); a zone whose `type` is not `master` (dropped, `file` never opened) |
-| **WARN** | Skips/drops and logs at WARN — review recommended | Access-control directives at **top level or view scope** (`allow-query`, `allow-recursion`, `allow-transfer`, `allow-update`, `allow-notify`, `blackhole`) with a "does not enforce" message; an unknown `match-clients` token (dropped, fail-closed); an undefined or cyclic `acl` reference (fail-closed); a directive that is a one-edit misspelling of a structural keyword (`view`, `zone`, `options`, …), skipped with a suggested correction; a duplicate `acl` / `options` / top-level-zone name (last wins); an unsupported `listen-on` token; `qps-scale` and a view-scope `rate-limit`; a non-last `any` view |
-| **fail-closed (fatal)** | Aborts startup citing the offending file and line | Genuine syntax errors (unbalanced brace, missing `;`, unterminated block); a malformed `geoip asnum` value (no leading `AS<number>`); `geoip-directory` unset while a view uses `geoip` rules; mixing `view` blocks with top-level zones |
+| **WARN** | Skips/drops and logs at WARN — review recommended | Access-control directives at **top level or view scope** (`allow-query`, `allow-recursion`, `allow-transfer`, `allow-update`, `allow-notify`, `blackhole`) with a "does not enforce" message; control-plane / security directives ShadowDNS does not implement (`controls`, `key`, `server`, `statistics-channels`, `trusted-keys`, `managed-keys`, `trust-anchors`) with a "has no effect" message; an unknown `match-clients` token (dropped, fail-closed); an undefined or cyclic `acl` reference (fail-closed); an `acl` defined with a reserved built-in name (`any`/`none`/`localhost`/`localnets`, ignored — references resolve to the built-in); a directive that is a one-edit misspelling of a structural keyword (`view`, `zone`, `options`, …), skipped with a suggested correction; a duplicate `acl` / `options` / top-level-zone name (last wins); an unsupported `listen-on` token; `qps-scale` and a view-scope `rate-limit`; a non-last `any` view |
+| **fail-closed (fatal)** | Aborts startup citing the offending file and line | Genuine syntax errors (unbalanced brace, missing `;`, unterminated block); a malformed `geoip asnum` value (no leading `AS<number>`); a `geoip country` code that is not a 2-letter ISO 3166-1 code; `geoip-directory` unset while a view uses `geoip` rules; mixing `view` blocks with top-level zones |
 
 ### Fail-closed doctrine
 
@@ -72,6 +72,9 @@ GeoIP country/ASN elements are evaluated against the geo lookup address (the [EC
 
 !!! warning "ASN description string format"
     The `geoip asnum` string must match the `"AS<number> <description>"` format (the parsing rule is `^AS(\d+)\s`); the description text is ignored. A string not starting with `AS` + digits + whitespace (e.g. `"64500"` missing the `AS` prefix) causes startup failure.
+
+!!! warning "Country code format"
+    The `geoip country` code must be a 2-letter ISO 3166-1 alpha-2 code (e.g. `TW`, `US`); it is matched case-insensitively. A code that is not exactly two letters (e.g. `usa`, a digit, a CIDR) causes startup failure rather than degrading to a rule that silently never matches.
 
 ### Named ACLs
 
@@ -213,12 +216,14 @@ Every BIND directive ShadowDNS encounters resolves to one of the four tiers in t
 | `type slave`, `type forward` zones | INFO | Zone dropped (not served), its `file` never opened; loading continues |
 | `allow-update`, `allow-notify`, `blackhole` | WARN | Skipped and logged as not enforced |
 | `allow-query` / `allow-recursion` / `allow-transfer` at **view scope** | WARN | Skipped and logged as not enforced; the same directives inside a `zone` block are skipped silently — neither scope is enforced (see [access-control model](../migration.md#access-control-model-differences)) |
+| `controls`, `key`, `server`, `statistics-channels`, `trusted-keys` | WARN | Skipped and logged as having no effect (ShadowDNS does not implement these control-plane / security features) |
 | `dnssec-enable` | Silent | Skipped without operator-visible noise |
 | `recursion`, `forwarders`, `dnssec-validation` | INFO | Skipped; ShadowDNS is authoritative-only |
 | `rate-limit` inside a view | WARN | Skipped; RRL is supported only at `options` scope |
 | `qps-scale` | WARN | Skipped; load-adaptive scaling is not implemented |
 | Unbalanced brace / missing `;` / unterminated block | fail-closed | Startup aborts citing the file and line |
 | `geoip asnum` without a leading `AS<number>` | fail-closed | Startup aborts |
+| `geoip country` code that is not a 2-letter ISO 3166-1 code | fail-closed | Startup aborts |
 | `view` blocks mixed with top-level zones | fail-closed | Startup aborts naming the first top-level zone |
 
 Recursion is always off (`recursion no` is always in effect); ShadowDNS is a purely authoritative server. **Options-scope `allow-transfer` is the one access-control directive ShadowDNS does enforce** — it is the AXFR ACL (see [Migrating from BIND](../migration.md#access-control-model-differences)).

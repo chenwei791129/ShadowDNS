@@ -195,6 +195,13 @@ func parseElementList(lx *lexer, path string, startLine int, nested bool) ([]Ele
 			tok.value = strings.TrimPrefix(tok.value, "!")
 		}
 
+		// A '!' still leading the element token means double negation (e.g.
+		// "!!192.0.2.1" or "! !x"), which BIND does not allow. Reject it loudly
+		// instead of silently misclassifying "!x" as a named-acl reference.
+		if tok.kind == tokenWord && strings.HasPrefix(tok.value, "!") {
+			return nil, fmt.Errorf("%s:%d: invalid double negation %q in match-clients", path, lineNo(startLine, tok.line), "!"+tok.value)
+		}
+
 		if tok.kind == tokenLBrace {
 			sub, err := parseElementList(lx, path, startLine, true)
 			if err != nil {
@@ -237,12 +244,10 @@ func endOfList(tok token, nested bool, path string, startLine int) (done bool, e
 // token (a word or quoted string). The '!' prefix and '{' group are handled by
 // the caller.
 func parseItem(lx *lexer, tok token, path string, startLine int) (Element, error) {
-	if tok.kind == tokenString {
-		// A quoted token can only be a named-acl reference.
-		return Element{Kind: ElemRef, RefName: tok.value}, nil
-	}
-
 	word := tok.value
+
+	// Built-in ACL names are reserved keywords in BIND: they are recognized
+	// whether written bare or quoted, and can never be a named-acl reference.
 	switch strings.ToLower(word) {
 	case "any":
 		return Element{Kind: ElemAny}, nil
@@ -252,7 +257,14 @@ func parseItem(lx *lexer, tok token, path string, startLine int) (Element, error
 		return Element{Kind: ElemLocalhost}, nil
 	case "localnets":
 		return Element{Kind: ElemLocalnets}, nil
-	case "geoip":
+	}
+
+	if tok.kind == tokenString {
+		// Any other quoted token is a named-acl reference.
+		return Element{Kind: ElemRef, RefName: word}, nil
+	}
+
+	if strings.EqualFold(word, "geoip") {
 		return parseGeoIPElement(lx, path, startLine)
 	}
 
@@ -267,6 +279,35 @@ func parseItem(lx *lexer, tok token, path string, startLine int) (Element, error
 	// Anything else is a named-acl reference, resolved (or dropped fail-closed)
 	// at build time.
 	return Element{Kind: ElemRef, RefName: word}, nil
+}
+
+// isReservedACLName reports whether name collides with a built-in ACL keyword
+// (any/none/localhost/localnets). BIND reserves these names; an acl defined with
+// one is unreachable because parseItem always resolves a reference to the
+// built-in instead of the user definition.
+func isReservedACLName(name string) bool {
+	switch strings.ToLower(name) {
+	case "any", "none", "localhost", "localnets":
+		return true
+	}
+	return false
+}
+
+// isISOCountryCode reports whether code is a 2-letter ISO 3166-1 alpha-2 country
+// code (the form GeoIP2/GeoLite2 country databases key on). A code that is not
+// exactly two ASCII letters can never match a database lookup, so it is rejected
+// at parse time rather than degrading to a silently never-matching rule.
+func isISOCountryCode(code string) bool {
+	if len(code) != 2 {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		c := code[i]
+		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
+			return false
+		}
+	}
+	return true
 }
 
 // parseGeoIPElement parses the "geoip ..." family. The "geoip" word has already
@@ -288,20 +329,27 @@ func parseGeoIPElement(lx *lexer, path string, startLine int) (Element, error) {
 		if code == "" {
 			return Element{}, fmt.Errorf("%s:%d: geoip country missing code", path, lineNo(startLine, val.line))
 		}
+		if !isISOCountryCode(code) {
+			return Element{}, fmt.Errorf("%s:%d: geoip country code %q is not a 2-letter ISO 3166-1 code", path, lineNo(startLine, val.line), code)
+		}
 		return Element{Kind: ElemLeaf, Leaf: CountryRule{Code: strings.ToUpper(code)}}, nil
 
 	case "asnum":
 		val := lx.next()
-		if val.kind != tokenWord && val.kind != tokenString {
+		raw := ""
+		if val.kind == tokenWord || val.kind == tokenString {
+			raw = strings.TrimSpace(val.value)
+		}
+		if raw == "" {
 			return Element{}, fmt.Errorf("%s:%d: geoip asnum missing value", path, lineNo(startLine, val.line))
 		}
-		m := reASN.FindStringSubmatch(val.value)
+		m := reASN.FindStringSubmatch(raw)
 		if m == nil {
-			return Element{}, fmt.Errorf("%s:%d: geoip asnum: cannot parse AS number from %q", path, lineNo(startLine, val.line), val.value)
+			return Element{}, fmt.Errorf("%s:%d: geoip asnum: cannot parse AS number from %q", path, lineNo(startLine, val.line), raw)
 		}
 		n, err := strconv.ParseUint(m[1], 10, 32)
 		if err != nil {
-			return Element{}, fmt.Errorf("%s:%d: geoip asnum: AS number overflow in %q", path, lineNo(startLine, val.line), val.value)
+			return Element{}, fmt.Errorf("%s:%d: geoip asnum: AS number overflow in %q", path, lineNo(startLine, val.line), raw)
 		}
 		return Element{Kind: ElemLeaf, Leaf: ASNRule{ASN: uint32(n)}}, nil
 

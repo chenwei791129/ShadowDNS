@@ -105,6 +105,22 @@ var recursionFamilyDirectives = map[string]bool{
 	"dnssec-validation": true,
 }
 
+// securityControlDirectives are control-plane / security statements ShadowDNS
+// does not implement (rndc control channels, TSIG keys, per-server config,
+// statistics channels, DNSSEC trust anchors). Silently dropping one could lead
+// an operator to believe a security or control feature is active when it is not,
+// so skipping it is logged at WARN — louder than the DEBUG default for plain
+// unrecognized directives.
+var securityControlDirectives = map[string]bool{
+	"controls":            true,
+	"key":                 true,
+	"server":              true,
+	"statistics-channels": true,
+	"trusted-keys":        true,
+	"managed-keys":        true,
+	"trust-anchors":       true,
+}
+
 // topLevelScope is the scope label used for directives/zones skipped outside any
 // view block (a view's scope label is its name).
 const topLevelScope = "top level"
@@ -137,10 +153,10 @@ func nearMissKeyword(directive, scope string) string {
 
 // logSkippedDirective logs a skipped directive at the level dictated by the
 // tiered logging strategy: a likely misspelling of a structural keyword at WARN
-// (naming the suspected intent), access-control directives at WARN (ShadowDNS
-// does not enforce them), recursion-family directives at INFO, everything else
-// at DEBUG. scope names where the directive was skipped — "top level" or a view
-// name.
+// (naming the suspected intent), access-control and security/control-plane
+// directives at WARN (ShadowDNS does not enforce/implement them), recursion-family
+// directives at INFO, everything else at DEBUG. scope names where the directive
+// was skipped — "top level" or a view name.
 func logSkippedDirective(logger *zap.Logger, directive, scope, path string, line int) {
 	switch {
 	case nearMissKeyword(directive, scope) != "":
@@ -148,6 +164,9 @@ func logSkippedDirective(logger *zap.Logger, directive, scope, path string, line
 			"directive", directive, "suggestion", nearMissKeyword(directive, scope), "scope", scope, "line", line, "file", path)
 	case accessControlDirectives[directive]:
 		logger.Sugar().Warnw("ShadowDNS does not enforce this access-control directive; skipping",
+			"directive", directive, "scope", scope, "line", line, "file", path)
+	case securityControlDirectives[directive]:
+		logger.Sugar().Warnw("ShadowDNS does not implement this control-plane/security directive; it has no effect",
 			"directive", directive, "scope", scope, "line", line, "file", path)
 	case recursionFamilyDirectives[directive]:
 		logger.Sugar().Infow("ignoring recursion-related directive (ShadowDNS is authoritative-only)",
@@ -767,6 +786,16 @@ func parseACL(lx *lexer, cfg *Config, path string, logger *zap.Logger) error {
 	// Consume the trailing ';' after the closing '}'.
 	if lx.peek().kind == tokenSemicolon {
 		lx.next()
+	}
+
+	// A reserved built-in name (any/none/localhost/localnets) can never be
+	// referenced — parseItem resolves those words to the built-in — so storing
+	// the definition would only create dead, confusing state. Warn and drop it
+	// (the body has already been consumed, so the token stream stays in sync).
+	if isReservedACLName(name) {
+		logger.Sugar().Warnw("acl name is a reserved built-in (any/none/localhost/localnets); the definition is ignored and references resolve to the built-in",
+			"acl", name, "line", nameTok.line, "file", path)
+		return nil
 	}
 
 	elems, err := ParseMatchClients(body, path, startLine)

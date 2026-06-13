@@ -170,6 +170,64 @@ func TestBuiltinACLsRecognized(t *testing.T) {
 	}
 }
 
+// TestBuiltinACLsRecognizedWhenQuoted verifies that the reserved built-in names
+// are recognized even when quoted ("any"), rather than being treated as
+// named-acl references (which would resolve to nothing and silently close an
+// intended-open view).
+func TestBuiltinACLsRecognizedWhenQuoted(t *testing.T) {
+	rules, err := ParseMatchClients([]byte(`"any"; "none"; "localhost"; "localnets";`), "test.conf", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []ElementKind{ElemAny, ElemNone, ElemLocalhost, ElemLocalnets}
+	if len(rules) != len(want) {
+		t.Fatalf("expected %d elements, got %d: %+v", len(want), len(rules), rules)
+	}
+	for i, k := range want {
+		if rules[i].Kind != k {
+			t.Errorf("element[%d]: got kind %d, want built-in kind %d", i, rules[i].Kind, k)
+		}
+	}
+}
+
+// TestDoubleNegationRejected verifies that a double `!!` negation is a fatal
+// parse error rather than being silently misclassified as a named-acl reference
+// whose name begins with '!'.
+func TestDoubleNegationRejected(t *testing.T) {
+	for _, body := range []string{"!!192.0.2.1;", "! !192.0.2.1;", "!!internal;"} {
+		if _, err := ParseMatchClients([]byte(body), "test.conf", 1); err == nil {
+			t.Errorf("body %q: expected a double-negation error, got nil", body)
+		}
+	}
+}
+
+// TestCountryCodeMustBeTwoLetters verifies that a geoip country code that is not
+// a 2-letter ISO 3166-1 code fails loudly at parse time instead of degrading to a
+// silently never-matching rule.
+func TestCountryCodeMustBeTwoLetters(t *testing.T) {
+	for _, body := range []string{"geoip country usa;", "geoip country 192.0.2.1;", "geoip country t;", "geoip country t9;"} {
+		if _, err := ParseMatchClients([]byte(body), "test.conf", 1); err == nil {
+			t.Errorf("body %q: expected an invalid-country-code error, got nil", body)
+		}
+	}
+	// A valid 2-letter code (either case) still parses.
+	if _, err := ParseMatchClients([]byte("geoip country us;"), "test.conf", 1); err != nil {
+		t.Errorf("valid 2-letter code must parse, got: %v", err)
+	}
+}
+
+// TestASNumEmptyValueReportsMissing verifies that an empty asnum value reports
+// "missing value" rather than the harsher "cannot parse AS number" message.
+func TestASNumEmptyValueReportsMissing(t *testing.T) {
+	_, err := ParseMatchClients([]byte(`geoip asnum "";`), "test.conf", 1)
+	if err == nil {
+		t.Fatalf("expected an error for empty asnum value")
+	}
+	if !strings.Contains(err.Error(), "missing value") {
+		t.Errorf("expected a 'missing value' error, got: %v", err)
+	}
+}
+
 // TestNegatedAndNestedElementsParsed verifies the spec scenario "Negated and
 // nested elements are parsed": `! 192.0.2.0/24; { 198.51.100.0/24; 203.0.113.0/24; }; any;`
 // produces a negated CIDR element, a nested group of two CIDR elements, and an

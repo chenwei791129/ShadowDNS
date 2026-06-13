@@ -1861,6 +1861,90 @@ view "internal" {
 	}
 }
 
+// An acl defined with a reserved built-in name (any/none/localhost/localnets) is
+// unreachable — a reference to that name resolves to the built-in, not the
+// definition — so the definition is dropped with a WARN, and a reference to the
+// name yields the built-in element.
+func TestLoadNamedConf_ReservedAclNameWarnedAndIgnored(t *testing.T) {
+	dir := t.TempDir()
+
+	core, obs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+acl "any" { 192.0.2.0/24; };
+
+view "v" {
+	match-clients { any; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), logger)
+	if err != nil {
+		t.Fatalf("reserved acl name must not be fatal, got: %v", err)
+	}
+	if _, ok := cfg.ACLs["any"]; ok {
+		t.Errorf("a reserved-named acl must not be stored in the registry")
+	}
+	mc := cfg.Views[0].MatchClients
+	if len(mc) != 1 || mc[0].Kind != ElemAny {
+		t.Errorf("reference to `any` must resolve to the built-in ElemAny, got %+v", mc)
+	}
+	if warns := obs.FilterMessageSnippet("reserved built-in").All(); len(warns) != 1 {
+		t.Errorf("expected exactly 1 WARN about the reserved acl name, got %+v", obs.All())
+	}
+}
+
+// A control-plane / security directive ShadowDNS does not implement (controls,
+// key, server) is skipped at WARN, not silently at DEBUG, so an operator is told
+// the feature has no effect.
+func TestLoadNamedConf_ControlDirectiveWarnedNotSilent(t *testing.T) {
+	dir := t.TempDir()
+
+	core, obs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	namedConf := `options {
+	directory "/etc/namedb";
+};
+
+controls {
+	inet 127.0.0.1 allow { localhost; };
+};
+
+key "rndc-key" {
+	algorithm hmac-sha256;
+	secret "deadbeef";
+};
+
+view "v" {
+	match-clients { any; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+	writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+	if _, err := LoadNamedConf(filepath.Join(dir, "named.conf"), logger); err != nil {
+		t.Fatalf("control directives must be tolerated, got: %v", err)
+	}
+	for _, d := range []string{"controls", "key"} {
+		if warns := obs.FilterField(zap.String("directive", d)).All(); len(warns) != 1 {
+			t.Errorf("expected a WARN for skipped %q directive, got %+v", d, obs.All())
+		}
+	}
+}
+
 // A '}' that appears inside a comment within an acl (or match-clients) body must
 // NOT terminate the block early. readBracedBodyRaw balances braces by token, so
 // the comment's brace is skipped and the body is captured in full.
