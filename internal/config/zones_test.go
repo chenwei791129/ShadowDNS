@@ -1810,6 +1810,57 @@ view "internal" {
 	}
 }
 
+// A NEGATED reference to a DEFINED acl that resolved to EMPTY must also be
+// replaced by a list-rejecting `!any` (fail-closed), not kept as a never-firing
+// reference that would silently let a following `any` widen the list to accept
+// everyone. The acl resolves to empty either because it is declared empty or
+// because its own members were dropped fail-closed.
+func TestLoadNamedConf_NegatedReferenceToEmptyAclRejectsList(t *testing.T) {
+	cases := []struct {
+		name    string
+		aclBody string
+	}{
+		{name: "declared empty", aclBody: ""},
+		{name: "emptied by dropped undefined member", aclBody: "undefined_member;"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			namedConf := `options {
+	directory "/etc/namedb";
+};
+
+acl "trusted" { ` + tc.aclBody + ` };
+
+view "internal" {
+	match-clients { !trusted; any; };
+	zone "example.com" {
+		type master;
+		file "/etc/namedb/master/example.com.fwd";
+	};
+};
+`
+			writeFile(t, filepath.Join(dir, "named.conf"), namedConf)
+
+			cfg, err := LoadNamedConf(filepath.Join(dir, "named.conf"), zap.NewNop())
+			if err != nil {
+				t.Fatalf("negated reference to empty acl must not be fatal, got: %v", err)
+			}
+			mc := cfg.Views[0].MatchClients
+			// `!trusted` → rejectAllElement (`!any`); `any` preserved after it.
+			if len(mc) != 2 {
+				t.Fatalf("expected 2 elements (reject sentinel + any), got %d: %+v", len(mc), mc)
+			}
+			if mc[0].Kind != ElemAny || !mc[0].Negated {
+				t.Errorf("negated reference to an empty acl must become a list-rejecting !any, got %+v", mc[0])
+			}
+			if mc[1].Kind != ElemAny || mc[1].Negated {
+				t.Errorf("trailing any must survive unchanged, got %+v", mc[1])
+			}
+		})
+	}
+}
+
 // A relative zone file path must resolve against the options{} directory even
 // when the options block is declared in a file INCLUDED AFTER the zone — the
 // directory is finalized before paths are resolved.

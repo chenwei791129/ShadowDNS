@@ -824,8 +824,9 @@ func (r *aclResolver) resolveACL(name string) {
 }
 
 // rejectAllElement is the fail-closed replacement for a negated element that can
-// never fire — an undefined or cyclic reference, or a group whose entire content
-// was dropped. A negated element is an exclusion; simply dropping it would WIDEN
+// never fire — an undefined or cyclic reference, a reference to an acl that
+// resolved to empty, or a group whose entire content was dropped. A negated
+// element is an exclusion; simply dropping it would WIDEN
 // the list (a following `any` would then accept everyone), violating the
 // matcher's "a reduced rule set can only narrow, never widen" contract. `!any`
 // always fires and rejects, so it narrows the list to match no client.
@@ -833,10 +834,11 @@ var rejectAllElement = Element{Kind: ElemAny, Negated: true}
 
 // resolveList resolves references and nested groups within elems, returning a
 // filtered list. A POSITIVE undefined/cyclic reference is dropped (fail-closed:
-// it never matches). A NEGATED undefined/cyclic reference — or a negated group
-// reduced to empty — is replaced by rejectAllElement instead of being dropped,
-// so the lost exclusion narrows rather than widens the list. scope names the
-// enclosing acl or view for the WARN.
+// it never matches). A NEGATED undefined/cyclic reference — a negated reference
+// to an acl that resolved to empty — or a negated group reduced to empty — is
+// replaced by rejectAllElement instead of being dropped, so the lost exclusion
+// narrows rather than widens the list. scope names the enclosing acl or view for
+// the WARN.
 func (r *aclResolver) resolveList(elems []Element, scope string) []Element {
 	if !listNeedsResolution(elems) {
 		// No references or nested groups: nothing to resolve, no element to drop
@@ -857,6 +859,18 @@ func (r *aclResolver) resolveList(elems []Element, scope string) []Element {
 			}
 			r.resolveACL(el.RefName)
 			el.Sub = r.registry[el.RefName]
+			if el.Negated && len(el.Sub) == 0 {
+				// A negated reference to an acl that resolved to empty — whether
+				// declared empty (`acl x {};`) or emptied because its own members
+				// were dropped fail-closed — can never fire. Dropping the
+				// exclusion would WIDEN the list (a following `any` would then
+				// accept everyone), so keep it fail-closed exactly like a negated
+				// empty group below (see rejectAllElement).
+				r.logger.Sugar().Warnw("negated match-clients reference to an empty acl cannot exclude anything; rejecting the whole list (fail-closed)",
+					"token", el.RefName, "scope", scope)
+				out = append(out, rejectAllElement)
+				continue
+			}
 			out = append(out, el)
 		case ElemGroup:
 			el.Sub = r.resolveList(el.Sub, scope)
