@@ -727,6 +727,8 @@ The comparison scope should cover the zones changed in this push plus their back
 
 **Pay special attention to alias / CNAME flattening**: ShadowDNS's backup domain rewriting logic (owner name and RDATA rewrite) is where behavior diverges most from BIND; edge cases (deep CNAME chains, cross-zone targets, wildcard records interacting with aliases) may produce responses that differ from expectations. No answer-diff difference should be **waved through as noise** — first confirm it is a known acceptable difference (such as the SOA serial timing skew above); otherwise always investigate proactively.
 
+**Duplicate records collapse at load (matching BIND).** ShadowDNS discards byte-identical duplicate resource records within an RRset when it loads a zone — owner, type, and RDATA must all match (TTL is excluded), so the first occurrence is kept and later copies are dropped. This mirrors BIND's RFC 2181 §5.2 set semantics, so a name whose record is declared twice (a common pattern: the same record inline in a per-view file and again inside a shared `$INCLUDE`d fragment) is served exactly once by both servers — an answer-diff for such a name should show no duplicate on either side. Each zone that dropped at least one duplicate logs a single WARN summary (zone origin, total count, by-type histogram) to the application log; per-duplicate detail is available at DEBUG.
+
 ### Query Log Disk Management
 
 An authoritative DNS server's query log writes **one line per query** — in production environments with thousands of QPS, a single day's log can reach several GB. An uncontrolled query log is a common cause of full disks and, in turn, service impact.

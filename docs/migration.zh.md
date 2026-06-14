@@ -723,6 +723,8 @@ diff \
 
 **特別注意 alias / CNAME flattening**：ShadowDNS 的 backup 網域改寫邏輯（owner name 與 RDATA rewrite）是與 BIND 行為差異最大的部分，邊界 case（深層 CNAME 鏈、跨 zone 指向、萬用字元記錄與 alias 的交互）可能產生與預期不同的回應。任何 answer-diff 差異都**不應**直接視為雜訊放行——先確認是已知的可接受差異（如前述 SOA serial 時間差），否則一律主動調查。
 
+**載入時會塌縮重複記錄（與 BIND 一致）。** ShadowDNS 載入 zone 時，會丟棄同一 RRset 內 byte-identical 的重複資源記錄——owner、type、RDATA 全部相同才算重複（TTL 不列入比對），保留第一次出現、捨棄後續副本。此行為對齊 BIND 的 RFC 2181 §5.2 集合語意，因此一筆被宣告兩次的記錄（常見模式：同一筆記錄既 inline 寫在 per-view 檔、又在共用的 `$INCLUDE` 片段裡再宣告一次）在兩台 server 上都只會被服務一次——這類名稱的 answer-diff 兩邊都不應出現重複。每個至少丟棄一筆重複的 zone 會對應用層 log 印一筆 WARN 彙總（zone origin、總數、依型別 histogram）；逐筆重複細節在 DEBUG 等級可見。
+
 ### Query Log 磁碟管理
 
 授權 DNS server 的 query log **每一筆查詢一行**——生產 QPS 數千的環境，單日 log 可達數 GB。未受控的 query log 是磁碟爆滿、進而影響服務的常見肇因。
