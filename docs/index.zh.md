@@ -42,6 +42,7 @@ ShadowDNS 透過 zone aliasing 消除這項浪費：
 | Zone aliasing（備援網域）          | No            | Yes        |
 | Hot reload (SIGHUP)                | Yes           | Yes        |
 | Prometheus metrics                 | No            | Yes        |
+| Grafana dashboard（內建）          | No            | Yes        |
 | IXFR                               | Yes           | No         |
 | DNSSEC                             | Yes           | No         |
 | IPv6 listener                      | Yes           | Yes        |

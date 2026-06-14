@@ -40,6 +40,7 @@ In the reference deployment, memory usage is reduced by about **80%** compared w
 | Zone aliasing (backup domains)     | No            | Yes        |
 | Hot reload (SIGHUP)                | Yes           | Yes        |
 | Prometheus metrics                 | No            | Yes        |
+| Grafana dashboard (built-in)       | No            | Yes        |
 | IXFR                               | Yes           | No         |
 | DNSSEC                             | Yes           | No         |
 | IPv6 listener                      | Yes           | Yes        |

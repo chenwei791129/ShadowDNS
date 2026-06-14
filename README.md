@@ -86,6 +86,7 @@ Response sent to client
 - DNS Cookies (RFC 7873, answer-only) — queries carrying a COOKIE option receive a full cookie in the response (client cookie echo + server cookie in the RFC 9018 interoperable format, SipHash-2-4). The 128-bit secret is generated at startup, held in memory only, and survives SIGHUP reloads. Cookies are never required: there is no enforcement mode and BADCOOKIE is never returned; malformed COOKIE options get FORMERR per RFC 7873 §5.2.2. Matches BIND 9.11+ default behavior
 - EDNS Client Subnet (ECS, RFC 7871) — opt-in via `--ecs-enable` (default off). When enabled, a valid ECS option drives GeoIP view selection (country/ASN rules) instead of the resolver's source IP, improving geo accuracy for queries arriving via public resolvers; IP/CIDR ACL rules always evaluate the real source IP, so a forged ECS option can never select an ACL-protected view. Responses echo the ECS option with a scope equal to the source prefix length, and client opt-out (source prefix length 0) is honored. When disabled, ECS options in queries are ignored and responses never carry one — matching BIND, which does not support ECS
 - CNAME chain collapsing — opt-in per alias group (`collapse_cname_chain`, default off). When enabled, responses consume in-zone CNAME chains instead of emitting them, hiding intermediate names (internal load balancers, pools) from clients: a chain ending at records of the queried type returns only those final records (owner = query name, TTL = chain minimum); a chain leaving the zone returns a single synthesized CNAME pointing at the first external target; a chain ending without the queried type returns NODATA. Backup members inherit the root's setting; AXFR always carries the raw chain. With the flag off, chain emission is byte-identical to BIND
+- Prometheus metrics and a built-in Grafana dashboard — the `--metrics-addr` endpoint (default `:9153`) exposes `shadowdns_*` DNS metrics (requests, responses, latency histogram, ECS classification, view selection, RRL, reloads, zones, panics) plus the standard `go_*` and `process_*` runtime families. The repository ships `grafana/shadowdns-overview.json`, a ready-to-import dashboard covering traffic, latency, ECS/views, rate limiting, config/zones, runtime, and panics. See [docs/operations/monitoring.md](docs/operations/monitoring.md)
 
 ### Planned
 
@@ -117,6 +118,7 @@ Response sent to client
 | Zone aliasing (backup domain)      | No            | Yes        |
 | Hot reload (SIGHUP)                | Yes           | Yes        |
 | Prometheus metrics                 | No            | Yes        |
+| Grafana dashboard (built-in)       | No            | Yes        |
 | IXFR                               | Yes           | No         |
 | DNSSEC                             | Yes           | No         |
 | IPv6 listener                      | Yes           | Yes        |

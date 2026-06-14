@@ -88,6 +88,7 @@ plugins:
             CNAME Chain Collapsing: CNAME 鏈收合
             Operations: 維運
             Migrating from BIND: 從 BIND 遷移
+            Monitoring: 監控
             Startup Performance Benchmark: 啟動效能基準
 
 markdown_extensions:
@@ -126,4 +127,5 @@ nav:
       - Ephemeral TXT API: ephemeral-api.md
   - Operations:
       - Migrating from BIND: migration.md
+      - Monitoring: operations/monitoring.md
       - Startup Performance Benchmark: benchmark.md
