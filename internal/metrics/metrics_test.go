@@ -452,6 +452,92 @@ func TestObserveDuration_BucketAssignment(t *testing.T) {
 	}
 }
 
+// counterValue returns the value of the series in family `name` whose labels
+// exactly match `want`, and whether such a series was found.
+func counterValue(t *testing.T, m *metrics.Metrics, name string, want map[string]string) (float64, bool) {
+	t.Helper()
+	mf, ok := gatherMetrics(t, m)[name]
+	if !ok {
+		return 0, false
+	}
+	for _, metric := range mf.GetMetric() {
+		labels := labelMap(metric.GetLabel())
+		match := len(labels) == len(want)
+		for k, v := range want {
+			if labels[k] != v {
+				match = false
+				break
+			}
+		}
+		if match {
+			return metric.GetCounter().GetValue(), true
+		}
+	}
+	return 0, false
+}
+
+// TestNew_RegistersRuntimeCollectors verifies that New() wires the Go runtime
+// collector onto the custom registry, so the standard go_* families appear on
+// /metrics alongside the shadowdns_* metrics. Only go_goroutines is asserted:
+// it is present on every platform, whereas process_* is Linux-only and is
+// verified out-of-band against the deployed binary (design Acceptance criteria).
+func TestNew_RegistersRuntimeCollectors(t *testing.T) {
+	m := metrics.New()
+
+	if _, ok := gatherMetrics(t, m)["go_goroutines"]; !ok {
+		t.Error("expected go_goroutines to be registered via the Go runtime collector, but it was not found")
+	}
+}
+
+// TestRecordECS_IncrementsCounter verifies that RecordECS increments
+// shadowdns_dns_ecs_queries_total for the given family/status label pair.
+func TestRecordECS_IncrementsCounter(t *testing.T) {
+	m := metrics.New()
+
+	m.RecordECS("ipv4", "valid")
+
+	val, ok := counterValue(t, m, "shadowdns_dns_ecs_queries_total",
+		map[string]string{"family": "ipv4", "status": "valid"})
+	if !ok {
+		t.Fatal("no shadowdns_dns_ecs_queries_total series with family=ipv4 status=valid")
+	}
+	if val != 1.0 {
+		t.Errorf("ecs_queries_total{family=ipv4,status=valid} = %f, want 1", val)
+	}
+}
+
+// TestRecordViewSelected_IncrementsCounter verifies that RecordViewSelected
+// increments shadowdns_dns_view_selected_total and maps the ecsGeo bool to the
+// "true"/"false" label value.
+func TestRecordViewSelected_IncrementsCounter(t *testing.T) {
+	m := metrics.New()
+
+	m.RecordViewSelected("default", true)
+
+	val, ok := counterValue(t, m, "shadowdns_dns_view_selected_total",
+		map[string]string{"view": "default", "ecs_geo": "true"})
+	if !ok {
+		t.Fatal("no shadowdns_dns_view_selected_total series with view=default ecs_geo=true")
+	}
+	if val != 1.0 {
+		t.Errorf("view_selected_total{view=default,ecs_geo=true} = %f, want 1", val)
+	}
+}
+
+// TestRecordECS_NilReceiverSafe and TestRecordViewSelected_NilReceiverSafe
+// guard the contract requirement that both methods are nil-receiver safe:
+// their call sites in ServeDNS sit outside the s.Metrics != nil guard, so a
+// nil receiver (metrics disabled) must be a no-op rather than a panic.
+func TestRecordECS_NilReceiverSafe(t *testing.T) {
+	var m *metrics.Metrics
+	m.RecordECS("ipv4", "valid") // must not panic
+}
+
+func TestRecordViewSelected_NilReceiverSafe(t *testing.T) {
+	var m *metrics.Metrics
+	m.RecordViewSelected("default", false) // must not panic
+}
+
 // labelMap converts a slice of label pairs to a map for easier lookup.
 func labelMap(pairs []*dto.LabelPair) map[string]string {
 	m := make(map[string]string, len(pairs))

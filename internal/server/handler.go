@@ -268,18 +268,26 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	var ecsGeoIP netip.Addr
 	if s.ECSEnabled && qo.ecs != nil {
 		class, addr := dnsutil.ClassifyECS(qo.ecs)
+		// family is derived from the ECS option's own FAMILY field (not the
+		// classifier's address, which is absent for opt-out/malformed). The
+		// RecordECS calls below sit outside the s.Metrics != nil guard, so they
+		// rely on RecordECS being nil-receiver safe.
+		ecsFamily := ecsFamilyLabel(qo.ecs.Family)
 		switch class {
 		case dnsutil.ECSValid:
+			s.Metrics.RecordECS(ecsFamily, "valid")
 			ecsGeoIP = addr
 			// Echo with SCOPE = SOURCE PREFIX-LENGTH (conservative RFC 7871
 			// compliance; narrower-scope cache fragmentation over any risk of
 			// caching a geo-specialized answer too widely).
 			qo.respECS = dnsutil.EchoECS(qo.ecs, qo.ecs.SourceNetmask)
 		case dnsutil.ECSOptOut:
+			s.Metrics.RecordECS(ecsFamily, "opt_out")
 			// Client opt-out: view selection stays on the source IP; echo
 			// preserves the query FAMILY with scope 0.
 			qo.respECS = dnsutil.EchoECS(qo.ecs, 0)
 		default:
+			s.Metrics.RecordECS(ecsFamily, "malformed")
 			// Malformed → FORMERR with OPT echo but no ECS option
 			// (qo.respECS is never set on this path). Deliberately unlogged,
 			// matching the malformed-COOKIE precedent: this path is
@@ -352,8 +360,13 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	// View resolved — update metrics labels.
+	// View resolved — update metrics labels. RecordViewSelected sits outside
+	// the s.Metrics != nil guard (mw is set only when metrics are enabled), so
+	// it relies on the method being nil-receiver safe. ecs_geo reflects whether
+	// an ECS-derived geo address was available to the matcher, not that ECS
+	// determined the view.
 	viewLabel = viewName
+	s.Metrics.RecordViewSelected(viewName, ecsGeoIP.IsValid())
 	if mw != nil {
 		mw.SetView(viewName)
 	}
@@ -975,6 +988,22 @@ func udpMaxSize(qo queryOpt) int {
 		return int(qo.udpSize)
 	}
 	return dns.MinMsgSize
+}
+
+// ecsFamilyLabel maps an ECS option's FAMILY field to the metric label:
+// 1 → "ipv4", 2 → "ipv6" (RFC 7871 address-family registry), anything else →
+// "unknown". It reads the on-the-wire family rather than the classified
+// address so opt-out and malformed options (which carry no usable address)
+// still get a meaningful family label.
+func ecsFamilyLabel(family uint16) string {
+	switch family {
+	case 1:
+		return "ipv4"
+	case 2:
+		return "ipv6"
+	default:
+		return "unknown"
+	}
 }
 
 // addrFamily returns "ipv4" or "ipv6" for the given address.

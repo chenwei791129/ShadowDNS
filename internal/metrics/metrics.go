@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
 )
@@ -33,6 +34,8 @@ type Metrics struct {
 	panicsTotal     prometheus.Counter
 	rateLimitTotal  *prometheus.CounterVec
 	reloadTotal     *prometheus.CounterVec
+	ecsQueriesTotal *prometheus.CounterVec
+	viewSelected    *prometheus.CounterVec
 
 	lastReloadSuccessTimestamp prometheus.Gauge
 }
@@ -118,7 +121,26 @@ func New() *Metrics {
 		Help:      "Unix timestamp of the most recent configuration load that completed without error (set at startup and on each successful SIGHUP reload).",
 	})
 
+	ecsQueriesTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "shadowdns",
+		Subsystem: "dns",
+		Name:      "ecs_queries_total",
+		Help:      "ECS option classifications for queries carrying EDNS Client Subnet while ECS handling is enabled, partitioned by address family and classification status.",
+	}, []string{"family", "status"})
+
+	viewSelected := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "shadowdns",
+		Subsystem: "dns",
+		Name:      "view_selected_total",
+		Help:      "Successful view resolutions on the main query path, partitioned by view and whether an ECS-derived geo address was available to the matcher.",
+	}, []string{"view", "ecs_geo"})
+
 	reg.MustRegister(
+		// Standard Go runtime and process collectors. The custom registry does
+		// not auto-register these (unlike the default registerer), so add them
+		// explicitly to expose go_* and process_* on /metrics.
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		requestsTotal,
 		responsesTotal,
 		requestDuration,
@@ -130,6 +152,8 @@ func New() *Metrics {
 		rateLimitTotal,
 		reloadTotal,
 		lastReloadSuccessTimestamp,
+		ecsQueriesTotal,
+		viewSelected,
 	)
 
 	return &Metrics{
@@ -144,6 +168,8 @@ func New() *Metrics {
 		panicsTotal:     panicsTotal,
 		rateLimitTotal:  rateLimitTotal,
 		reloadTotal:     reloadTotal,
+		ecsQueriesTotal: ecsQueriesTotal,
+		viewSelected:    viewSelected,
 
 		lastReloadSuccessTimestamp: lastReloadSuccessTimestamp,
 	}
@@ -275,4 +301,32 @@ func (m *Metrics) SetLastReloadSuccess(t time.Time) {
 // response category and action. It satisfies ratelimit.Recorder.
 func (m *Metrics) RecordRateLimit(category, action string) {
 	m.rateLimitTotal.WithLabelValues(category, action).Inc()
+}
+
+// RecordECS increments shadowdns_dns_ecs_queries_total for the given address
+// family ("ipv4"/"ipv6"/"unknown") and classification status
+// ("valid"/"opt_out"/"malformed"). Safe to call on a nil receiver: its call
+// site in ServeDNS sits outside the s.Metrics != nil guard, so metrics being
+// disabled must be a no-op rather than a nil dereference.
+func (m *Metrics) RecordECS(family, status string) {
+	if m == nil {
+		return
+	}
+	m.ecsQueriesTotal.WithLabelValues(family, status).Inc()
+}
+
+// RecordViewSelected increments shadowdns_dns_view_selected_total for the
+// resolved view, mapping ecsGeo to the "true"/"false" label value. ecsGeo
+// true means an ECS-derived geo address was available to the matcher for this
+// query; it does not assert the ECS address determined the view. Safe to call
+// on a nil receiver for the same reason as RecordECS.
+func (m *Metrics) RecordViewSelected(view string, ecsGeo bool) {
+	if m == nil {
+		return
+	}
+	ecsGeoLabel := "false"
+	if ecsGeo {
+		ecsGeoLabel = "true"
+	}
+	m.viewSelected.WithLabelValues(view, ecsGeoLabel).Inc()
 }
