@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.22.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.21.0...v0.22.0) (2026-06-14)
+
+
+### Features
+
+* **grafana:** add ready-to-import ShadowDNS overview dashboard ([cf8f79d](https://github.com/chenwei791129/ShadowDNS/commit/cf8f79d0398831a200d821061d3cd9d665ac7df8))
+* **metrics:** expose Go/process collectors and ECS + view-selection metrics ([f99d9f9](https://github.com/chenwei791129/ShadowDNS/commit/f99d9f94817b8e023febaa72376192c0d29d2a03))
+
+
+### Bug Fixes
+
+* **grafana:** show value-only stats without background sparklines ([1c9140f](https://github.com/chenwei791129/ShadowDNS/commit/1c9140fdde776701bca4c46c7ee6119e07994461))
+
 ## [0.21.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.20.0...v0.21.0) (2026-06-14)
 
 
