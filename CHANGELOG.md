@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.21.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.20.0...v0.21.0) (2026-06-14)
+
+
+### Features
+
+* **config:** honor options{} block declared in included files ([4c2cb47](https://github.com/chenwei791129/ShadowDNS/commit/4c2cb47e2ff28fe9060ba1cb99dba477632dd033))
+* dedup byte-identical RRs within an RRset at zone load ([81df51a](https://github.com/chenwei791129/ShadowDNS/commit/81df51ac39b7701aedd3f1a91f41b766e07a62ed))
+* make GeoIP database loading conditional ([dbd79bf](https://github.com/chenwei791129/ShadowDNS/commit/dbd79bf29652c6a84b9f7152595b6da33c96d7f6))
+* **packaging:** split named.conf example into Debian three-file layout ([cd2858d](https://github.com/chenwei791129/ShadowDNS/commit/cd2858d67c506e6e85eaf60845d555c1f6c0fc15))
+* ship a viewless BIND-style example config in the .deb ([2bb8489](https://github.com/chenwei791129/ShadowDNS/commit/2bb848957ffd7cabc5c494bbcd597972e1575c9a))
+* support named ACLs, negation, nested groups, and built-in ACLs in match-clients ([6057cf2](https://github.com/chenwei791129/ShadowDNS/commit/6057cf24ff69641c5f41265a9b859d98708d7238))
+* support viewless named.conf via implicit _default view ([9f73695](https://github.com/chenwei791129/ShadowDNS/commit/9f73695c4a637d8325847b7c60fa49b52fe0e8ef))
+* tolerate unrecognized BIND named.conf constructs ([5cbd460](https://github.com/chenwei791129/ShadowDNS/commit/5cbd4602971d802fb0b69391a8acd10495ac8af1))
+
+
+### Bug Fixes
+
+* **config:** balance acl braces by token so comments can't truncate bodies ([dd48637](https://github.com/chenwei791129/ShadowDNS/commit/dd486377033384fe02adb374efe356ea901285c6))
+* **config:** harden named.conf match-clients and directive handling ([30fdb08](https://github.com/chenwei791129/ShadowDNS/commit/30fdb085e6747a6e77c32de8ec4e906402219d67))
+* **config:** reject negated reference to an empty acl (fail-closed) ([e8fb4ea](https://github.com/chenwei791129/ShadowDNS/commit/e8fb4ea2b35fddfa0f69acf7dad253abbeac897c))
+* **docs:** resolve broken logo path on the /zh/ home page ([2eb9aa9](https://github.com/chenwei791129/ShadowDNS/commit/2eb9aa99062b9d61af642b5cbf7d012784ac0106))
+* harden match-clients ACL evaluation and named.conf loading ([d567925](https://github.com/chenwei791129/ShadowDNS/commit/d567925fbc60f9ff8f7c4ea4b968cfa81738b727))
+* **view:** correct localnets prefix for IPv4-mapped interface masks ([a766f92](https://github.com/chenwei791129/ShadowDNS/commit/a766f9256fdda033de6f1bba68e6970693c72182))
+
 ## [0.20.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.19.0...v0.20.0) (2026-06-12)
 
 
