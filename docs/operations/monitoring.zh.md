@@ -1,8 +1,8 @@
 # 以 Prometheus 與 Grafana 監控
 
 ShadowDNS 透過 HTTP 暴露 Prometheus 指標，並隨附一份可直接 import 的 Grafana
-dashboard。本頁說明指標端點、Prometheus scrape 設定、可繪製的指標家族，以及如何
-載入隨附的 dashboard。
+dashboard。本頁說明指標端點、Prometheus scrape 設定、可繪製的指標家族、如何載入
+隨附的 dashboard，以及如何用內建的 `pprof` profiler 擷取 CPU／記憶體火焰圖。
 
 ## 指標端點
 
@@ -116,3 +116,94 @@ dashboard 在頂端提供 `Job` 與 `Instance` template 變數，讓你可將每
 !!! note "有流量前面板為空"
     ECS 與各 view 面板在相符流量到來前會保持空白，而以 `process_*` 為基礎的面板
     在非 Linux 主機上也會保持空白。兩者都不是錯誤。
+
+## 用 `go tool pprof` 繪製火焰圖
+
+ShadowDNS 內建 Go 的 `pprof` profiler。當設定
+[`--pprof-enable`](../reference/cli.md) 時，profiling 端點會掛在
+**與指標端點相同的 HTTP listener**（`--metrics-addr`，預設 `:9153`）底下的
+`/debug/pprof/`。它讓你能從運行中的伺服器擷取 CPU 與記憶體 profile，並繪製成
+火焰圖找出熱點 —— 不需重啟、不需重新編譯、不需額外的 agent。
+
+!!! warning "僅限信任網路 —— 無認證"
+    `/debug/pprof/` handler **沒有任何存取控制**。任何能連到端點的人都能擷取
+    profile，並讀取 `cmdline`。啟用 pprof 時，**絕不**將 `--metrics-addr` 暴露到
+    不受信任的網路。請透過私有網路或 SSH tunnel（見下）連線，且在非主動 profiling
+    時讓 `--pprof-enable` 保持關閉。
+
+### 啟用端點
+
+`--pprof-enable` 需要 `--metrics-addr` 非空，因為 handler 掛在指標伺服器上：
+
+```bash
+shadowdns --metrics-addr :9153 --pprof-enable ...
+```
+
+確認 profile index 可連線：
+
+```bash
+curl -s http://127.0.0.1:9153/debug/pprof/
+```
+
+### 在有負載時擷取 CPU profile
+
+profile 只有在伺服器實際處理查詢時才有意義 —— 請在 benchmark 或真實流量尖峰時
+擷取，**絕不要**在閒置行程上抓。CPU 幾乎總是查詢吞吐量的瓶頸所在，因此 CPU
+profile 是排查 QPS 瓶頸的首選工具。
+
+由於端點僅限信任網路，典型流程會先把指標埠 tunnel 到你的工作站：
+
+```bash
+ssh -L 9153:localhost:9153 ns1.example.com
+```
+
+接著把 `go tool pprof` 指向被 tunnel 的埠。`-http` 旗標會開啟一個互動式 web UI，
+內建火焰圖（開啟 **View → Flame Graph**）：
+
+```bash
+# 30-second CPU profile — the primary tool for QPS / throughput bottlenecks
+go tool pprof -http=:8080 'http://localhost:9153/debug/pprof/profile?seconds=30'
+```
+
+### 如何判讀 CPU 火焰圖
+
+- 每個 frame 的**寬度是累積 CPU 時間** —— frame 越寬，代表它與其被呼叫者消耗的
+  CPU 越多。高度只是呼叫深度。
+- 由上往下沿著呼叫堆疊看，找出請求熱路徑上**最寬的 leaf frame**：query 解析、
+  view 比對（GeoIP/ACL）、zone 查找、alias 改寫、CNAME 收合，以及回應序列化。
+- 若 `runtime.mallocgc` / GC 子樹很寬，代表瓶頸是**記憶體配置壓力**而非邏輯 ——
+  請改看下方的 allocation profile，找出配置最多的呼叫點。
+
+### 記憶體與其他 profile
+
+同一個 `-http` 火焰圖 UI 適用於所有 profile 類型；只要改 URL 路徑即可：
+
+```bash
+# Heap — live (in-use) memory, for leak / footprint investigation
+go tool pprof -http=:8080 'http://localhost:9153/debug/pprof/heap'
+
+# Allocs — cumulative allocations since start, for GC-pressure hot spots
+go tool pprof -http=:8080 'http://localhost:9153/debug/pprof/allocs'
+```
+
+| 端點 | 回答什麼問題 |
+|------|--------------|
+| `profile?seconds=N` | CPU 時間花在哪（QPS 天花板） |
+| `heap` | 依配置點的 live 記憶體（洩漏、佔用量） |
+| `allocs` | 累積配置量（GC 壓力） |
+| `goroutine` | goroutine 數量與堆疊（洩漏、阻塞） |
+| `block` / `mutex` | 鎖競爭 —— **預設關閉**；需先在程式碼設定取樣率才會有資料 |
+
+!!! note "保存 profile 供日後分析"
+    若想封存或分享 profile 而非即時開啟，先下載檔案，再讓 UI 指向它：
+    ```bash
+    curl -o cpu.pprof 'http://localhost:9153/debug/pprof/profile?seconds=30'
+    go tool pprof -http=:8080 cpu.pprof
+    ```
+
+!!! tip "前置需求與持續 profiling"
+    互動式 UI 需要本機 Go 工具鏈（`go tool pprof`）；火焰圖檢視不需 Graphviz 即可
+    渲染，而呼叫關係圖（call-graph）檢視則需安裝 Graphviz。`go tool pprof` 擷取的是
+    某個時間點的快照 —— 若想要與 dashboard 時間軸對齊的常時火焰圖，可用如 Grafana
+    Pyroscope 這類 continuous-profiling 後端來 scrape 這些相同的 `/debug/pprof/`
+    端點。

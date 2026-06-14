@@ -2,8 +2,9 @@
 
 ShadowDNS exposes Prometheus metrics over HTTP and ships a ready-to-import
 Grafana dashboard. This page covers the metrics endpoint, a Prometheus scrape
-configuration, the metric families you can graph, and how to load the bundled
-dashboard.
+configuration, the metric families you can graph, how to load the bundled
+dashboard, and how to capture CPU/memory flame graphs with the built-in `pprof`
+profiler.
 
 ## The metrics endpoint
 
@@ -129,3 +130,103 @@ aggregate.
     The ECS and per-view panels stay empty until matching traffic arrives, and
     the `process_*`-based panels stay empty on non-Linux hosts. Neither is an
     error.
+
+## Profiling with `go tool pprof`
+
+ShadowDNS embeds Go's `pprof` profiler. With [`--pprof-enable`](../reference/cli.md)
+set, the profiling endpoints are mounted under `/debug/pprof/` on the **same HTTP
+listener as the metrics endpoint** (`--metrics-addr`, default `:9153`). They let
+you capture CPU and memory profiles from a running server and render them as
+flame graphs to find hot spots — no restart, no rebuild, no separate agent.
+
+!!! warning "Trusted networks only — no authentication"
+    The `/debug/pprof/` handlers have **no access control**. Anyone who can reach
+    the endpoint can capture profiles and read `cmdline`. Never expose
+    `--metrics-addr` to an untrusted network while pprof is enabled. Reach the
+    endpoints over a private network or an SSH tunnel (shown below), and leave
+    `--pprof-enable` off unless you are actively profiling.
+
+### Enabling the endpoints
+
+`--pprof-enable` requires `--metrics-addr` to be non-empty, because the handlers
+mount on the metrics server:
+
+```bash
+shadowdns --metrics-addr :9153 --pprof-enable ...
+```
+
+Confirm the profile index is reachable:
+
+```bash
+curl -s http://127.0.0.1:9153/debug/pprof/
+```
+
+### Capturing a CPU profile under load
+
+A profile is only useful while the server is actually handling queries — capture
+it during a benchmark or a real traffic peak, never on an idle process. CPU is
+almost always what caps query throughput, so the CPU profile is the primary tool
+for QPS bottlenecks.
+
+Because the endpoint is trusted-network-only, the typical workflow tunnels the
+metrics port to your workstation first:
+
+```bash
+ssh -L 9153:localhost:9153 ns1.example.com
+```
+
+Then point `go tool pprof` at the tunnelled port. The `-http` flag opens an
+interactive web UI with a built-in flame graph (open **View → Flame Graph**):
+
+```bash
+# 30-second CPU profile — the primary tool for QPS / throughput bottlenecks
+go tool pprof -http=:8080 'http://localhost:9153/debug/pprof/profile?seconds=30'
+```
+
+### Reading a CPU flame graph
+
+- Each frame's **width is cumulative CPU time** — the wider a frame, the more CPU
+  it and its callees consumed. Height is just call depth.
+- Read top-down along the call stack and look for the **widest leaf frames** on
+  the request hot path: query parsing, view matching (GeoIP/ACL), zone lookup,
+  alias rewriting, CNAME collapsing, and response serialization.
+- A wide `runtime.mallocgc` / GC subtree means the bottleneck is **allocation
+  pressure** rather than logic — switch to the allocation profiles below to see
+  which call sites allocate the most.
+
+### Memory and other profiles
+
+The same `-http` flame-graph UI works for every profile type; just change the URL
+path:
+
+```bash
+# Heap — live (in-use) memory, for leak / footprint investigation
+go tool pprof -http=:8080 'http://localhost:9153/debug/pprof/heap'
+
+# Allocs — cumulative allocations since start, for GC-pressure hot spots
+go tool pprof -http=:8080 'http://localhost:9153/debug/pprof/allocs'
+```
+
+| Endpoint | What it answers |
+|----------|-----------------|
+| `profile?seconds=N` | Where CPU time goes (QPS ceiling) |
+| `heap` | Live memory by allocation site (leaks, footprint) |
+| `allocs` | Cumulative allocations (GC pressure) |
+| `goroutine` | Goroutine count and stacks (leaks, blocking) |
+| `block` / `mutex` | Contention — **off by default**; a sampling rate must be set in code before these produce data |
+
+!!! note "Saving a profile for later"
+    To archive or share a profile instead of opening it live, download the file
+    first, then point the UI at it:
+    ```bash
+    curl -o cpu.pprof 'http://localhost:9153/debug/pprof/profile?seconds=30'
+    go tool pprof -http=:8080 cpu.pprof
+    ```
+
+!!! tip "Requirements and continuous profiling"
+    The interactive UI needs a local Go toolchain (`go tool pprof`); the flame
+    graph view renders without Graphviz, while the call-graph view needs it
+    installed. `go tool pprof` captures a point-in-time snapshot — for always-on
+    flame graphs correlated with the dashboard timeline, a continuous-profiling
+    backend such as Grafana Pyroscope can scrape these same `/debug/pprof/`
+    endpoints.
