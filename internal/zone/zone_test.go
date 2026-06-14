@@ -591,3 +591,118 @@ func TestFollowCNAME_DepthLimit(t *testing.T) {
 		t.Fatal("got 0 records, want at least 1")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// AddRR deduplication (RRset is a set — RFC 2181 §5.2)
+// ---------------------------------------------------------------------------
+
+// TestZone_AddRR_DuplicateCollapsedSingle: two byte-identical RRs at one
+// (owner, qtype) in the inline (single) storage form collapse to one; the
+// first insert reports stored (true), the duplicate reports skipped (false).
+func TestZone_AddRR_DuplicateCollapsedSingle(t *testing.T) {
+	z := &Zone{Origin: "example.com.", Records: make(map[string]*qtypeStore)}
+
+	if stored := z.AddRR(newTestA("a.example.com.", "192.0.2.1")); !stored {
+		t.Errorf("first insert: got stored=false, want true")
+	}
+	if stored := z.AddRR(newTestA("a.example.com.", "192.0.2.1")); stored {
+		t.Errorf("duplicate insert: got stored=true, want false")
+	}
+
+	if rrs := z.Lookup("a.example.com.", dns.TypeA); len(rrs) != 1 {
+		t.Fatalf("RRset length: got %d, want 1", len(rrs))
+	}
+}
+
+// TestZone_AddRR_DistinctRetainedInOrder: distinct RDATA at one (owner, qtype)
+// is fully retained in insertion order; every insert reports stored.
+func TestZone_AddRR_DistinctRetainedInOrder(t *testing.T) {
+	z := &Zone{Origin: "example.com.", Records: make(map[string]*qtypeStore)}
+
+	for _, ip := range []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"} {
+		if stored := z.AddRR(newTestA("a.example.com.", ip)); !stored {
+			t.Errorf("insert %s: got stored=false, want true", ip)
+		}
+	}
+
+	rrs := z.Lookup("a.example.com.", dns.TypeA)
+	if len(rrs) != 3 {
+		t.Fatalf("RRset length: got %d, want 3", len(rrs))
+	}
+	want := []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"}
+	for i, rr := range rrs {
+		if got := rr.(*dns.A).A.String(); got != want[i] {
+			t.Errorf("rrs[%d]: got %s, want %s", i, got, want[i])
+		}
+	}
+}
+
+// TestZone_AddRR_TTLExcludedFromIdentity: TTL is not part of RR identity, so a
+// later copy that differs only in TTL is a duplicate; the first occurrence
+// (with its TTL) is retained.
+func TestZone_AddRR_TTLExcludedFromIdentity(t *testing.T) {
+	z := &Zone{Origin: "example.com.", Records: make(map[string]*qtypeStore)}
+
+	first := &dns.A{
+		Hdr: dns.RR_Header{Name: "a.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+		A:   net.ParseIP("192.0.2.1").To4(),
+	}
+	second := &dns.A{
+		Hdr: dns.RR_Header{Name: "a.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+		A:   net.ParseIP("192.0.2.1").To4(),
+	}
+
+	if stored := z.AddRR(first); !stored {
+		t.Errorf("first insert (TTL 300): got stored=false, want true")
+	}
+	if stored := z.AddRR(second); stored {
+		t.Errorf("TTL-only-differing insert (TTL 60): got stored=true, want false")
+	}
+
+	rrs := z.Lookup("a.example.com.", dns.TypeA)
+	if len(rrs) != 1 {
+		t.Fatalf("RRset length: got %d, want 1", len(rrs))
+	}
+	if ttl := rrs[0].Header().Ttl; ttl != 300 {
+		t.Errorf("retained TTL: got %d, want 300 (first occurrence)", ttl)
+	}
+}
+
+// TestZone_AddRR_DuplicateCollapsedPromoted: dedup also holds in the promoted
+// (sub-map) storage form. Promotion itself, and the first record of a new
+// qtype, both report stored; a duplicate in either sub-bucket reports skipped.
+func TestZone_AddRR_DuplicateCollapsedPromoted(t *testing.T) {
+	z := &Zone{Origin: "example.com.", Records: make(map[string]*qtypeStore)}
+
+	aaaa := func() *dns.AAAA {
+		return &dns.AAAA{
+			Hdr:  dns.RR_Header{Name: "a.example.com.", Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 300},
+			AAAA: net.ParseIP("2001:db8::1"),
+		}
+	}
+
+	if stored := z.AddRR(newTestA("a.example.com.", "192.0.2.1")); !stored {
+		t.Errorf("new owner (A): got stored=false, want true")
+	}
+	if stored := z.AddRR(aaaa()); !stored {
+		t.Errorf("promote (first AAAA): got stored=false, want true")
+	}
+	if s := z.Records["a.example.com."]; s == nil || s.single {
+		t.Fatalf("expected promoted store after A+AAAA")
+	}
+	// Duplicate in the promoted AAAA bucket.
+	if stored := z.AddRR(aaaa()); stored {
+		t.Errorf("duplicate AAAA in promoted store: got stored=true, want false")
+	}
+	// Duplicate in the promoted A bucket (the originally-inline qtype).
+	if stored := z.AddRR(newTestA("a.example.com.", "192.0.2.1")); stored {
+		t.Errorf("duplicate A in promoted store: got stored=true, want false")
+	}
+
+	if rrs := z.Lookup("a.example.com.", dns.TypeAAAA); len(rrs) != 1 {
+		t.Errorf("AAAA RRset length: got %d, want 1", len(rrs))
+	}
+	if rrs := z.Lookup("a.example.com.", dns.TypeA); len(rrs) != 1 {
+		t.Errorf("A RRset length: got %d, want 1", len(rrs))
+	}
+}

@@ -10,8 +10,18 @@ import (
 
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
+)
+
+// msgDiscardDuplicate is the per-duplicate DEBUG message emitted for each
+// byte-identical RR dropped at load. msgDuplicateSummary is the per-zone WARN
+// aggregate. Held as consts so ParseFile and its tests reference the same
+// strings.
+const (
+	msgDiscardDuplicate = "zone load: discarding duplicate record"
+	msgDuplicateSummary = "zone load: duplicate record summary"
 )
 
 // ParseFile parses a single RFC 1035 zone file and returns the parsed Zone.
@@ -57,6 +67,16 @@ func ParseFile(path string, origin string, logger *zap.Logger) (*Zone, error) {
 	// them. Zone files come from trusted operator config, not network input.
 	zp.SetIncludeAllowed(true)
 
+	// Tally byte-identical RRs that AddRR discards, mirroring the backup-override
+	// drop-summary shape (classify.go): per-duplicate DEBUG plus one per-zone
+	// WARN aggregate. dupHist reuses dropHistogram for grep-stable, alphabetic
+	// serialization. The DEBUG level is checked once and the per-record call is
+	// skipped when disabled — at production scale a single zone-view can carry
+	// thousands of duplicates and zap evaluates field args at the call site
+	// even for a filtered entry.
+	dupHist := dropHistogram{}
+	debugEnabled := logger.Core().Enabled(zapcore.DebugLevel)
+
 	for rr, ok := zp.Next(); ok; rr, ok = zp.Next() {
 		// ownerName is a local lowercase fold used solely for the IsInZone
 		// bailiwick check and the warn log; the RR itself is passed to
@@ -71,11 +91,33 @@ func ParseFile(path string, origin string, logger *zap.Logger) (*Zone, error) {
 			logger.Sugar().Warnw("ignoring out-of-zone data", attrs...)
 			continue
 		}
-		z.AddRR(rr)
+		if !z.AddRR(rr) {
+			rrtype := dns.TypeToString[rr.Header().Rrtype]
+			dupHist[rrtype]++
+			if debugEnabled {
+				logger.Debug(msgDiscardDuplicate,
+					zap.String("zone", canonOrigin),
+					zap.String("owner", ownerName),
+					zap.String("type", rrtype),
+				)
+			}
+		}
 	}
 
 	if err := zp.Err(); err != nil {
 		return nil, fmt.Errorf("zone: parse %q: %w", path, err)
+	}
+
+	dupTotal := 0
+	for _, n := range dupHist {
+		dupTotal += n
+	}
+	if dupTotal > 0 {
+		logger.Warn(msgDuplicateSummary,
+			zap.String("zone", canonOrigin),
+			zap.Int("count", dupTotal),
+			zap.Object("duplicates", dupHist),
+		)
 	}
 
 	return z, nil

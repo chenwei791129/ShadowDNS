@@ -63,27 +63,46 @@ func (s *qtypeStore) Each(fn func(qtype uint16, rrs []dns.RR)) {
 	}
 }
 
-// AddRR inserts an RR into the index under (owner, qtype).
+// AddRR inserts an RR into the index under (owner, qtype) and reports whether
+// it was stored (true) or skipped as a byte-identical duplicate (false).
 // Used by ParseFile internally; can also be used by tests.
+//
+// Deduplication invariant: an RRset never contains two RRs for which
+// dns.IsDuplicate is true (owner + type + RDATA equal, TTL excluded). When an
+// incoming RR matches one already stored at its (owner, qtype), the first-
+// stored occurrence (with its TTL) is kept and the later copy is discarded —
+// returning false. Distinct records (differing RDATA) are all retained. The
+// check is enforced here, at the single insertion choke point, so every load
+// path (inline records and $INCLUDE-expanded fragments alike) is covered.
+//
+// The drop itself is silent; AddRR holds no logger. Callers that ingest
+// operator-visible data SHOULD inspect a false return and log it for
+// observability (ParseFile aggregates these into a per-zone summary), so a
+// gap between records-on-disk and records-served stays debuggable.
 //
 // Case-preservation invariant: the lowercase owner is used solely as the map
 // index key (per RFC 4343 case-insensitive matching). The RR itself is stored
 // without mutation, so rr.Header().Name retains its original byte-for-byte
 // case for on-wire transmission. Callers of Lookup must pre-fold the qname
 // via dnsutil.LookupKey to hit this index.
-func (z *Zone) AddRR(rr dns.RR) {
+func (z *Zone) AddRR(rr dns.RR) bool {
 	if z.Records == nil {
 		z.Records = make(map[string]*qtypeStore)
 	}
 	key := strings.ToLower(rr.Header().Name)
 	qtype := rr.Header().Rrtype
 
+	stored := true
 	s, ok := z.Records[key]
 	switch {
 	case !ok:
 		z.Records[key] = &qtypeStore{single: true, qtype: qtype, rrs: []dns.RR{rr}}
 	case s.single && s.qtype == qtype:
-		s.rrs = append(s.rrs, rr)
+		if containsDuplicate(s.rrs, rr) {
+			stored = false
+		} else {
+			s.rrs = append(s.rrs, rr)
+		}
 	case s.single:
 		// Promote: re-install the inline slice into the sub-map under its
 		// original qtype so that any slice previously returned by Lookup keeps
@@ -93,13 +112,34 @@ func (z *Zone) AddRR(rr dns.RR) {
 		s.qtype = 0
 		s.rrs = nil
 	default:
-		s.sub[qtype] = append(s.sub[qtype], rr)
+		if containsDuplicate(s.sub[qtype], rr) {
+			stored = false
+		} else {
+			s.sub[qtype] = append(s.sub[qtype], rr)
+		}
 	}
 
-	// Cache SOA reference for quick access.
-	if soa, ok := rr.(*dns.SOA); ok {
-		z.SOA = soa
+	// Cache SOA reference for quick access. Only when actually stored, so z.SOA
+	// always points at a record present in z.Records.
+	if stored {
+		if soa, ok := rr.(*dns.SOA); ok {
+			z.SOA = soa
+		}
 	}
+	return stored
+}
+
+// containsDuplicate reports whether rrs already holds a record byte-identical
+// to rr per dns.IsDuplicate (owner + type + RDATA, TTL excluded). The scan is
+// bounded by the size of the single (owner, qtype) RRset, which is tiny in
+// practice; this is load-time work and never touches the query hot path.
+func containsDuplicate(rrs []dns.RR, rr dns.RR) bool {
+	for _, existing := range rrs {
+		if dns.IsDuplicate(existing, rr) {
+			return true
+		}
+	}
+	return false
 }
 
 // LookupWildcard attempts wildcard matching per RFC 4592 when exact lookup

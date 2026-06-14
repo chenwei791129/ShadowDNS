@@ -10,6 +10,7 @@ import (
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/chenwei791129/ShadowDNS/internal/logging"
 )
@@ -523,4 +524,170 @@ func TestParseFile_WildcardOwnerName(t *testing.T) {
 			}
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Resource-record deduplication logging at load
+// ---------------------------------------------------------------------------
+
+// writeZonePlusFragment writes a fragment file and a main zone file that
+// declares inlineBody and then $INCLUDEs the fragment, so records appearing in
+// both bodies reach the parser twice. Returns the main file path.
+func writeZonePlusFragment(t *testing.T, inlineBody, fragmentBody string) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	fragmentPath := filepath.Join(dir, "fragment.zone")
+	if err := os.WriteFile(fragmentPath, []byte(fragmentBody), 0o600); err != nil {
+		t.Fatalf("write fragment: %v", err)
+	}
+
+	main := `$TTL 3600
+@ IN SOA ns1.example.com. root.ns1.example.com. ( 1 300 120 86400 3600 )
+@ IN NS  ns1.example.com.
+` + inlineBody + `$include "` + fragmentPath + `"
+`
+	mainPath := filepath.Join(dir, "main.zone")
+	if err := os.WriteFile(mainPath, []byte(main), 0o600); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+	return mainPath
+}
+
+// TestParseFile_DuplicateInclude_CollapsedAndLogged: a CNAME declared inline
+// and again via $INCLUDE collapses to a length-1 RRset; with DEBUG enabled a
+// per-record DEBUG (zone/owner/type) and exactly one WARN summary are emitted.
+func TestParseFile_DuplicateInclude_CollapsedAndLogged(t *testing.T) {
+	line := "alias IN CNAME target.example.com.\n"
+	path := writeZonePlusFragment(t, line, line)
+
+	logger, obs := newObserverLogger() // DEBUG enabled
+	z, err := ParseFile(path, "example.com.", logger)
+	if err != nil {
+		t.Fatalf("ParseFile error: %v", err)
+	}
+
+	if rrs := z.Lookup("alias.example.com.", dns.TypeCNAME); len(rrs) != 1 {
+		t.Fatalf("CNAME RRset length: got %d, want 1", len(rrs))
+	}
+
+	// One WARN summary: zone origin, total count 1, histogram {CNAME: 1}.
+	summaries := obs.FilterMessage(msgDuplicateSummary).All()
+	if len(summaries) != 1 {
+		t.Fatalf("summary entries: got %d, want exactly 1", len(summaries))
+	}
+	entry := summaries[0]
+	if entry.Level != zapcore.WarnLevel {
+		t.Errorf("summary level: got %v, want WarnLevel", entry.Level)
+	}
+	fields := entry.ContextMap()
+	if got, want := fields["zone"], "example.com."; got != want {
+		t.Errorf("summary zone: got %v, want %v", got, want)
+	}
+	if got := fields["count"]; got != int64(1) {
+		t.Errorf("summary count: got %v, want 1", got)
+	}
+	hist, ok := fields["duplicates"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary duplicates field: got %#v, want map[string]any", fields["duplicates"])
+	}
+	if got := hist["CNAME"]; got != int64(1) {
+		t.Errorf("duplicates[CNAME]: got %v, want 1", got)
+	}
+
+	// Exactly one per-record DEBUG with zone/owner/type.
+	debugs := obs.FilterMessage(msgDiscardDuplicate).FilterLevelExact(zapcore.DebugLevel).All()
+	if len(debugs) != 1 {
+		t.Fatalf("per-record DEBUG entries: got %d, want 1", len(debugs))
+	}
+	dfields := debugs[0].ContextMap()
+	if got, want := dfields["zone"], "example.com."; got != want {
+		t.Errorf("DEBUG zone: got %v, want %v", got, want)
+	}
+	if got, want := dfields["owner"], "alias.example.com."; got != want {
+		t.Errorf("DEBUG owner: got %v, want %v", got, want)
+	}
+	if got, want := dfields["type"], "CNAME"; got != want {
+		t.Errorf("DEBUG type: got %v, want %v", got, want)
+	}
+}
+
+// TestParseFile_DuplicateDebugSkippedWhenDisabled: when DEBUG is disabled, no
+// per-record DEBUG is emitted, but the aggregated WARN summary still fires.
+func TestParseFile_DuplicateDebugSkippedWhenDisabled(t *testing.T) {
+	line := "alias IN CNAME target.example.com.\n"
+	path := writeZonePlusFragment(t, line, line)
+
+	core, obs := observer.New(zapcore.WarnLevel) // DEBUG disabled
+	logger := zap.New(core)
+	if _, err := ParseFile(path, "example.com.", logger); err != nil {
+		t.Fatalf("ParseFile error: %v", err)
+	}
+
+	if n := obs.FilterMessage(msgDiscardDuplicate).Len(); n != 0 {
+		t.Errorf("per-record DEBUG entries with DEBUG disabled: got %d, want 0", n)
+	}
+	if n := obs.FilterMessage(msgDuplicateSummary).Len(); n != 1 {
+		t.Errorf("WARN summary entries: got %d, want 1", n)
+	}
+}
+
+// TestParseFile_DuplicateSummaryHistogram: 3 duplicate A records and 1
+// duplicate CNAME at various owners produce one WARN summary with count 4 and
+// histogram {A: 3, CNAME: 1}.
+func TestParseFile_DuplicateSummaryHistogram(t *testing.T) {
+	body := `a1 IN A 192.0.2.1
+a2 IN A 192.0.2.2
+a3 IN A 192.0.2.3
+alias IN CNAME target.example.com.
+`
+	path := writeZonePlusFragment(t, body, body)
+
+	logger, obs := newObserverLogger()
+	if _, err := ParseFile(path, "example.com.", logger); err != nil {
+		t.Fatalf("ParseFile error: %v", err)
+	}
+
+	summaries := obs.FilterMessage(msgDuplicateSummary).All()
+	if len(summaries) != 1 {
+		t.Fatalf("summary entries: got %d, want exactly 1", len(summaries))
+	}
+	fields := summaries[0].ContextMap()
+	if got := fields["count"]; got != int64(4) {
+		t.Errorf("summary count: got %v, want 4", got)
+	}
+	hist, ok := fields["duplicates"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary duplicates field: got %#v, want map[string]any", fields["duplicates"])
+	}
+	if got := hist["A"]; got != int64(3) {
+		t.Errorf("duplicates[A]: got %v, want 3", got)
+	}
+	if got := hist["CNAME"]; got != int64(1) {
+		t.Errorf("duplicates[CNAME]: got %v, want 1", got)
+	}
+}
+
+// TestParseFile_NoDuplicates_NoSummary: a duplicate-free zone emits neither a
+// summary nor any per-record DEBUG.
+func TestParseFile_NoDuplicates_NoSummary(t *testing.T) {
+	content := `$TTL 3600
+@ IN SOA ns1.example.com. root.ns1.example.com. ( 1 300 120 86400 3600 )
+@ IN NS  ns1.example.com.
+a1 IN A 192.0.2.1
+a2 IN A 192.0.2.2
+`
+	path := writeZoneFile(t, content)
+
+	logger, obs := newObserverLogger()
+	if _, err := ParseFile(path, "example.com.", logger); err != nil {
+		t.Fatalf("ParseFile error: %v", err)
+	}
+
+	if n := obs.FilterMessage(msgDuplicateSummary).Len(); n != 0 {
+		t.Errorf("summary entries for duplicate-free zone: got %d, want 0", n)
+	}
+	if n := obs.FilterMessage(msgDiscardDuplicate).Len(); n != 0 {
+		t.Errorf("per-record DEBUG for duplicate-free zone: got %d, want 0", n)
+	}
 }
