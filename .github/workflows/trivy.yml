@@ -1,0 +1,59 @@
+name: Trivy Security Scan
+
+# Scan Go dependencies (go.mod/go.sum) for known vulnerabilities with Trivy.
+# Runs on PRs to main, on a weekly schedule (to catch newly-disclosed CVEs in
+# unchanged code), and on manual dispatch.
+#
+# Supply-chain hardening: every third-party action is pinned to a full commit
+# SHA (not a floating tag) so a compromised/retagged release cannot be pulled
+# into the runner. The trailing comment records the human-readable version that
+# SHA corresponds to. When bumping, re-resolve the SHA from the upstream tag
+# (e.g. `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha`).
+on:
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # Weekly, Monday 06:17 UTC (offset minute to avoid cron congestion).
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read           # checkout the repository
+  security-events: write   # upload SARIF results to the Security tab
+
+jobs:
+  trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      # First pass: produce SARIF without failing the job, so results always
+      # reach the Security tab even when vulnerabilities are present.
+      - name: Trivy scan (SARIF report)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: "0"
+
+      - name: Upload SARIF to Security tab
+        uses: github/codeql-action/upload-sarif@c35d1b164463ee62a100735382aaaa525c5d3496 # codeql-bundle-v2.25.6
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+      # Second pass: gate the build. Reuses Trivy's cache from the first pass,
+      # so this is fast. Table output keeps the Actions log human-readable.
+      - name: Trivy scan (gating)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: table
+          exit-code: "1"
