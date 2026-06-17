@@ -4,7 +4,7 @@
 # English default served at the site root, `page.zh.md` is Traditional
 # Chinese under /zh/.
 site_name: ShadowDNS
-site_url: https://chenwei791129.github.io/ShadowDNS/
+site_url: https://shadowdns.awei.one/
 site_description: Authoritative DNS server with first-class zone aliasing for memory-efficient backup-domain serving
 repo_url: https://github.com/chenwei791129/ShadowDNS
 repo_name: chenwei791129/ShadowDNS
