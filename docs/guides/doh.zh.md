@@ -16,7 +16,6 @@ DoH 完全透過 [`shadowdns.yaml`](../configuration/shadowdns-yaml.md) 中的 `
 | 欄位 | 用途 |
 |------|------|
 | `listen` | DoH HTTPS 服務綁定的位址（TCP/443） |
-| `acme.email` | 註冊於 ACME 帳號的聯絡信箱 |
 | `acme.directory_url` | ACME directory 端點（例如 `https://acme-v02.api.letsencrypt.org/directory`） |
 | `acme.ip` | 簽發憑證所對應的公開 IP |
 | `acme.http01_listen` | ACME HTTP-01 challenge 回應器綁定的位址（TCP/80） |

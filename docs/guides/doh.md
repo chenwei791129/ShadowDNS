@@ -16,7 +16,6 @@ The required fields are:
 | Field | Purpose |
 |-------|---------|
 | `listen` | Address the DoH HTTPS service binds (TCP/443) |
-| `acme.email` | Contact address registered with the ACME account |
 | `acme.directory_url` | ACME directory endpoint (e.g. `https://acme-v02.api.letsencrypt.org/directory`) |
 | `acme.ip` | The public IP the certificate is issued for |
 | `acme.http01_listen` | Address the ACME HTTP-01 challenge responder binds (TCP/80) |
