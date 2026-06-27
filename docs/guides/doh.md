@@ -136,6 +136,24 @@ The `doh:` section is re-validated on SIGHUP, but changes to `doh.listen` or any
 
 ---
 
+## FAQ
+
+### Is the issued TLS certificate stored, or re-issued on every restart?
+
+**It is re-issued on every restart.** The leaf certificate (and its private key) lives only in memory — it is never written to disk. On every process start, ShadowDNS obtains a fresh certificate from the ACME directory before the listener serves its first handshake. The only ACME material persisted to disk is the **account** key (see [ACME account key persistence](#acme-account-key-persistence)), which is a different thing: it lets restarts reuse the same ACME account instead of registering a new one.
+
+This is a deliberate trade-off. The certificate is short-lived (~6 days) and restarts are expected to be far rarer than that, so re-issuing on start keeps the design simple and avoids ever writing the certificate's private key to disk.
+
+Operational consequence: **each restart is a real certificate issuance.** Persisting the account key prevents the **new-account** rate limit, but not the per-IP certificate / new-order limits. Avoid putting ShadowDNS in a crash loop or a rapid restart cycle against the **production** ACME directory; use a staging directory when you need to restart repeatedly during testing.
+
+### When the certificate auto-renews, does it run a full config reload?
+
+**No.** Renewal is independent of SIGHUP config reload — it never re-reads configuration, re-opens zone data, or restarts the listener. A background loop obtains the renewed certificate and atomically swaps it into the holder that `tls.Config.GetCertificate` reads on every handshake, so the **next** TLS handshake picks up the new certificate while in-flight connections continue uninterrupted. Nothing rebinds the port and no other subsystem is touched.
+
+The two paths are orthogonal: certificate rotation is automatic and listener-local, while a SIGHUP reload re-reads the rest of the configuration but does **not** touch the certificate (and `doh.*` changes still require a restart — see [Reload behavior (SIGHUP)](#reload-behavior-sighup)).
+
+---
+
 ## See also
 
 - [`shadowdns.yaml`](../configuration/shadowdns-yaml.md) — the `doh:` section field reference and example.

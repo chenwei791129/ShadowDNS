@@ -136,6 +136,24 @@ DoH 查詢與 UDP、TCP 一同呈現在標準 metrics 中：
 
 ---
 
+## FAQ
+
+### 簽發下來的 TLS 憑證會儲存嗎？還是每次重啟都重新簽發？
+
+**每次重啟都會重新簽發。** leaf 憑證（及其私鑰）只存在於記憶體中——從不寫入磁碟。每次行程啟動時，ShadowDNS 都會在 listener 處理第一個 handshake 之前，先向 ACME directory 取得一張全新的憑證。磁碟上唯一持久化的 ACME 素材是**帳號**金鑰（見 [ACME 帳號金鑰持久化](#acme-帳號金鑰持久化)），那是不同的東西：它讓重啟得以重用同一個 ACME 帳號，而非註冊新帳號。
+
+這是刻意的取捨。憑證為短期（約 6 天），而重啟預期遠比這稀少，因此「啟動時重簽」讓設計保持單純，也完全不必把憑證私鑰寫到磁碟。
+
+維運後果：**每次重啟都是一次真實的憑證簽發。** 持久化帳號金鑰能避免 **new-account** 速率限制，但無法避免每 IP 的憑證／new-order 限制。請勿讓 ShadowDNS 對 **production** ACME directory 陷入 crash loop 或快速重啟循環；測試時若需反覆重啟，請改用 staging directory。
+
+### 憑證自動續期後，會跑一次完整的 config reload 嗎？
+
+**不會。** 續期與 SIGHUP config reload 互相獨立——它不會重讀設定、不會重新開啟 zone 資料，也不會重啟 listener。一個背景迴圈取得續期後的憑證，並把它原子地替換進 `tls.Config.GetCertificate` 每次 handshake 都會讀取的持有點，因此**下一個** TLS handshake 就會接上新憑證，而進行中的連線不受中斷。沒有任何東西會重新綁定 port，也不會動到其他子系統。
+
+這兩條路徑彼此正交：憑證輪替是自動且僅限於 listener 本身，而 SIGHUP reload 會重讀其餘設定但**不會**動到憑證（且 `doh.*` 的變更仍需重啟——見 [Reload 行為（SIGHUP）](#reload-行為sighup)）。
+
+---
+
 ## 延伸閱讀
 
 - [`shadowdns.yaml`](../configuration/shadowdns-yaml.md) — `doh:` 區段的欄位參考與範例。
