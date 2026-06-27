@@ -50,6 +50,7 @@ ShadowDNS 透過 zone aliasing 消除這項浪費：
 | Response Rate Limiting (RRL)       | Yes           | Yes        |
 | EDNS Client Subnet (ECS, RFC 7871) | No            | Yes（opt-in，`--ecs-enable`，預設關閉） |
 | Query logging（BIND 格式）         | Yes           | Yes        |
+| DNS-over-HTTPS (DoH, RFC 8484)     | No            | 是（權威、非遞迴；經 `doh` 設定區塊啟用） |
 | CNAME Flattening（外部 target）    | No            | No         |
 | In-bailiwick CNAME Flattening      | No            | Planned    |
 | 回應端 CNAME 鏈收合                 | No            | Yes（per alias group opt-in，預設關閉） |

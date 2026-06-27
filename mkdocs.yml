@@ -86,6 +86,7 @@ plugins:
             Feature Guides: 功能指南
             How Zone Aliasing Works: Zone Aliasing 原理
             CNAME Chain Collapsing: CNAME 鏈收合
+            DNS-over-HTTPS (DoH): DNS-over-HTTPS (DoH)
             Operations: 維運
             Migrating from BIND: 從 BIND 遷移
             Monitoring: 監控
@@ -124,6 +125,7 @@ nav:
       - How Zone Aliasing Works: guides/zone-aliasing.md
       - CNAME Chain Collapsing: guides/cname-chain-collapsing.md
       - EDNS Client Subnet (ECS): guides/ecs.md
+      - DNS-over-HTTPS (DoH): guides/doh.md
       - Ephemeral TXT API: ephemeral-api.md
   - Operations:
       - Migrating from BIND: migration.md

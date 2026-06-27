@@ -1,6 +1,6 @@
 # shadowdns.yaml
 
-`shadowdns.yaml` 是 ShadowDNS 自有的統一設定檔（以 `--config` 指定），單一 YAML 文件包含兩個可選的頂層區段：`aliases`（備援網域 → root 對照表）與 `ephemeral_api`（短時效 TXT record 的 HTTP API）。任何其他頂層 key 都會在啟動時被拒絕（strict decoding）。
+`shadowdns.yaml` 是 ShadowDNS 自有的統一設定檔（以 `--config` 指定），單一 YAML 文件包含三個可選的頂層區段：`aliases`（備援網域 → root 對照表）、`ephemeral_api`（短時效 TXT record 的 HTTP API），以及 `doh`（DNS-over-HTTPS，RFC 8484）。任何其他頂層 key 都會在啟動時被拒絕（strict decoding）。
 
 ```yaml
 # shadowdns.yaml
@@ -22,6 +22,13 @@ ephemeral_api:
     - "127.0.0.1"
     - "10.0.0.0/8"
   # token: "optional-bearer-token"
+
+doh:
+  listen: "203.0.113.10:443"
+  acme:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+    ip: "203.0.113.10"
+    http01_listen: "203.0.113.10:80"
 ```
 
 ## aliases 欄位
@@ -53,12 +60,34 @@ Zone aliasing 的查詢處理細節請見 [Zone Aliasing 原理](../guides/zone-
 
 `ephemeral_api` 區段不存在時，不會啟動 HTTP API server。端點細節、request/response schema 與 `curl` 範例請見 [Ephemeral TXT API](../ephemeral-api.md)。
 
+## doh 欄位
+
+所有欄位皆為必填；載入時若有缺漏，會指名第一個缺少的欄位並失敗。
+
+| 欄位 | 必填 | 說明 |
+|------|------|------|
+| `listen` | 是 | DoH HTTPS 服務綁定的 `host:port`，例如 `203.0.113.10:443` |
+| `acme.directory_url` | 是 | 簽發 CA 的 ACME directory URL（必須是絕對的 `https://` URL） |
+| `acme.ip` | 是 | 憑證簽發對象的 IP 位址（RFC 8738 IP-identifier 憑證） |
+| `acme.http01_listen` | 是 | ACME HTTP-01 challenge 回應器綁定的 `host:port`；必須能從公開網際網路以 port 80 連到 |
+
+ACME 帳號以無聯絡 email 註冊，因此 `doh.acme` 不接受 `email` 欄位；若填入會以未知欄位導致載入失敗。（RFC 8555 的聯絡 email 為選填，且短效自動續簽的憑證讓到期通知失去意義。）
+
+`doh` 區段不存在時，不會啟動 DoH server、ACME client 或 HTTP-01 listener。
+
+DoH 重用權威查詢路徑且為**非遞迴**：只回答 ShadowDNS 託管的 zone，zone 以外的查詢會回 `REFUSED`。它**不是**通用的遞迴 DoH resolver。
+
+TLS 憑證透過 ACME HTTP-01 以 Let's Encrypt 短時效 profile（約 6 天）為該 IP 取得，並自動續期、不需重啟即熱抽換。
+
+部署流程與運維細節請見 [DNS-over-HTTPS](../guides/doh.md)。
+
 ## SIGHUP 熱重載
 
 SIGHUP 會重新讀取 `shadowdns.yaml` 並**原子性地**替換記憶體中的 alias map：
 
 - 任一區段驗證失敗時，運行中的伺服器保持先前狀態，ephemeral record 不受影響。
 - 重載成功時，ephemeral record store 會被清空。
+- `doh` 區段在重載時會重新驗證（驗證錯誤時運行中的伺服器維持不變）。但對 `doh.listen` 或任何 `doh.acme.*` 欄位的變更**不會**即時套用——必須重啟程序，並會記錄一則 advisory 提示。憑證輪替則是獨立且自動進行。
 - 每次重載嘗試都可透過 Prometheus 觀測：
     - `shadowdns_reload_total{result="success"|"failure"}` 計數重載結果
     - `shadowdns_config_last_reload_success_timestamp_seconds` 記錄最近一次成功載入設定的 Unix 時間（啟動時初始化），可用 `time() - <gauge>` 做設定過期告警

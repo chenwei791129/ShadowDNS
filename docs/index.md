@@ -48,6 +48,7 @@ In the reference deployment, memory usage is reduced by about **80%** compared w
 | Response Rate Limiting (RRL)       | Yes           | Yes        |
 | EDNS Client Subnet (ECS, RFC 7871) | No            | Yes (opt-in via `--ecs-enable`, default off) |
 | Query logging (BIND format)        | Yes           | Yes        |
+| DNS-over-HTTPS (DoH, RFC 8484)     | No            | Yes (authoritative, non-recursive; opt-in via the `doh` config section) |
 | CNAME Flattening (external targets) | No           | No         |
 | In-bailiwick CNAME Flattening      | No            | Planned    |
 | CNAME chain collapsing in responses | No           | Yes (opt-in per alias group, default off) |
