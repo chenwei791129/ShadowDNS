@@ -1,6 +1,6 @@
 // Package shadowdnscfg loads and validates the unified ShadowDNS YAML
-// configuration file. The file contains two optional top-level sections,
-// aliases and ephemeral_api, each independently validated; any failure
+// configuration file. The file contains optional top-level sections —
+// aliases, ephemeral_api, and doh — each independently validated; any failure
 // leaves the previous in-memory configuration untouched (see SIGHUP reload
 // handling in cmd/shadowdns).
 package shadowdnscfg
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 
 	"go.uber.org/zap"
@@ -31,6 +32,35 @@ type Config struct {
 	CollapseFlags      config.CollapseFlags
 	BackupOriginalCase map[string]string
 	EphemeralAPI       *EphemeralAPIConfig
+	// DoH holds the DNS-over-HTTPS server settings. Nil when the doh section
+	// is absent, in which case no DoH/ACME/HTTP-01 listeners are started.
+	DoH *DoHConfig
+}
+
+// DoHConfig holds the settings for the DNS-over-HTTPS (RFC 8484) server.
+// Present only when the doh section appears in the YAML; every field is
+// required and validated by buildDoH so a partial section fails the load.
+type DoHConfig struct {
+	// Listen is the host:port the DoH HTTPS service binds, as provided in
+	// YAML (e.g. "203.0.113.10:443").
+	Listen string
+	// ACME holds the certificate-issuance settings. Always populated when
+	// DoHConfig is non-nil (the acme section is required).
+	ACME DoHACMEConfig
+}
+
+// DoHACMEConfig holds the ACME settings used to obtain and renew the DoH
+// server's TLS certificate for an IP address (RFC 8738) via HTTP-01.
+type DoHACMEConfig struct {
+	// DirectoryURL is the ACME directory URL of the issuing CA.
+	DirectoryURL string
+	// IP is the IP address the certificate is issued for, parsed from YAML
+	// so a malformed value fails the load rather than surfacing later as an
+	// ACME order error.
+	IP netip.Addr
+	// HTTP01Listen is the host:port the ACME HTTP-01 challenge responder
+	// binds; it MUST be reachable from the public Internet as port 80.
+	HTTP01Listen string
 }
 
 // EphemeralAPIConfig holds the settings for the ephemeral TXT API server.
@@ -48,12 +78,24 @@ type EphemeralAPIConfig struct {
 type rawConfig struct {
 	Aliases      map[string]rawAliasGroup `yaml:"aliases"`
 	EphemeralAPI *rawEphemeralAPI         `yaml:"ephemeral_api"`
+	DoH          *rawDoH                  `yaml:"doh"`
 }
 
 type rawEphemeralAPI struct {
 	Listen string   `yaml:"listen"`
 	Allow  []string `yaml:"allow"`
 	Token  string   `yaml:"token"`
+}
+
+type rawDoH struct {
+	Listen string      `yaml:"listen"`
+	ACME   *rawDoHACME `yaml:"acme"`
+}
+
+type rawDoHACME struct {
+	DirectoryURL string `yaml:"directory_url"`
+	IP           string `yaml:"ip"`
+	HTTP01Listen string `yaml:"http01_listen"`
 }
 
 // rawAliasGroup is the per-key YAML shape for the aliases map. Each entry
@@ -167,15 +209,107 @@ func Load(path string, logger *zap.Logger) (*Config, error) {
 		cfg.EphemeralAPI = apiCfg
 	}
 
+	if raw.DoH != nil {
+		dohCfg, err := buildDoH(raw.DoH)
+		if err != nil {
+			return nil, fmt.Errorf("doh: %w", err)
+		}
+		cfg.DoH = dohCfg
+	}
+
 	return cfg, nil
+}
+
+// validateHostPort fails the load when addr is not a host:port with a usable
+// port. net.SplitHostPort alone accepts "host:" (empty port) and "host:bogus"
+// (unknown service), which would pass config validation and only surface later
+// as a non-fatal bind error inside the DoH goroutine — leaving DoH silently
+// dead. net.LookupPort rejects an empty or unresolvable port while still
+// allowing a named port (e.g. "https") that the listener would accept, so this
+// matches what the eventual bind will tolerate.
+func validateHostPort(field, addr string) error {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%s: invalid host:port %q: %w", field, addr, err)
+	}
+	// net.LookupPort accepts an empty port string on some platforms, so reject
+	// it explicitly; a listener bound to ":0"-equivalent here is never intended.
+	if port == "" {
+		return fmt.Errorf("%s: missing port in %q", field, addr)
+	}
+	portNum, err := net.LookupPort("tcp", port)
+	if err != nil {
+		return fmt.Errorf("%s: invalid port in %q: %w", field, addr, err)
+	}
+	// LookupPort resolves "0" to 0 without error, but binding to port 0 picks a
+	// random ephemeral port — never what an operator intends for a DoH/HTTP-01
+	// listener that must answer on a fixed port, so reject it.
+	if portNum == 0 {
+		return fmt.Errorf("%s: port 0 is not allowed in %q", field, addr)
+	}
+	return nil
+}
+
+// buildDoH validates the raw doh section and normalizes it into a DoHConfig.
+// Every field is required: a missing or malformed field fails the load with an
+// error naming the field, mirroring buildEphemeralAPI's fail-loud contract.
+func buildDoH(raw *rawDoH) (*DoHConfig, error) {
+	if raw.Listen == "" {
+		return nil, fmt.Errorf("listen: required field is missing")
+	}
+	if err := validateHostPort("listen", raw.Listen); err != nil {
+		return nil, err
+	}
+	if raw.ACME == nil {
+		return nil, fmt.Errorf("acme: required section is missing")
+	}
+	acme, err := buildDoHACME(raw.ACME)
+	if err != nil {
+		return nil, fmt.Errorf("acme: %w", err)
+	}
+	return &DoHConfig{Listen: raw.Listen, ACME: acme}, nil
+}
+
+func buildDoHACME(raw *rawDoHACME) (DoHACMEConfig, error) {
+	if raw.DirectoryURL == "" {
+		return DoHACMEConfig{}, fmt.Errorf("directory_url: required field is missing")
+	}
+	u, err := url.Parse(raw.DirectoryURL)
+	if err != nil {
+		return DoHACMEConfig{}, fmt.Errorf("directory_url: invalid URL %q: %w", raw.DirectoryURL, err)
+	}
+	// Require https: ACME account registration and certificate issuance over
+	// plaintext http are exposed to on-path tampering, and real ACME CAs serve
+	// their directory only over https. Rejecting http is a secure default.
+	if u.Scheme != "https" || u.Host == "" {
+		return DoHACMEConfig{}, fmt.Errorf("directory_url: %q must be an absolute https:// URL", raw.DirectoryURL)
+	}
+	if raw.IP == "" {
+		return DoHACMEConfig{}, fmt.Errorf("ip: required field is missing")
+	}
+	ip, err := netip.ParseAddr(raw.IP)
+	if err != nil {
+		return DoHACMEConfig{}, fmt.Errorf("ip: invalid IP address %q: %w", raw.IP, err)
+	}
+	if raw.HTTP01Listen == "" {
+		return DoHACMEConfig{}, fmt.Errorf("http01_listen: required field is missing")
+	}
+	if err := validateHostPort("http01_listen", raw.HTTP01Listen); err != nil {
+		return DoHACMEConfig{}, err
+	}
+	return DoHACMEConfig{
+		DirectoryURL: raw.DirectoryURL,
+		IP:           ip.Unmap(),
+		HTTP01Listen: raw.HTTP01Listen,
+	}, nil
 }
 
 func buildEphemeralAPI(raw *rawEphemeralAPI) (*EphemeralAPIConfig, error) {
 	if raw.Listen == "" {
 		return nil, fmt.Errorf("listen: required field is missing")
 	}
-	if _, _, err := net.SplitHostPort(raw.Listen); err != nil {
-		return nil, fmt.Errorf("listen: invalid host:port %q: %w", raw.Listen, err)
+	if err := validateHostPort("listen", raw.Listen); err != nil {
+		return nil, err
 	}
 	if len(raw.Allow) == 0 {
 		return nil, fmt.Errorf("allow: at least one IP or CIDR is required")

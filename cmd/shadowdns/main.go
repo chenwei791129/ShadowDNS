@@ -27,6 +27,7 @@ import (
 
 	"github.com/chenwei791129/ShadowDNS/internal/api"
 	"github.com/chenwei791129/ShadowDNS/internal/config"
+	"github.com/chenwei791129/ShadowDNS/internal/doh"
 	"github.com/chenwei791129/ShadowDNS/internal/ephemeral"
 	"github.com/chenwei791129/ShadowDNS/internal/logging"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
@@ -143,6 +144,18 @@ type queryLogState struct {
 // so a field added in the future cannot be silently excluded from change
 // detection.
 func queryLogConfigEqual(a, b *config.QueryLogConfig) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// dohConfigEqual reports whether two DoH configurations are identical. Both
+// nil (no doh section) compares equal; one nil and one set is a drift. The
+// whole-value comparison covers every field of DoHConfig and its nested
+// DoHACMEConfig (all comparable types, including netip.Addr), so a field added
+// later cannot be silently excluded from the reload drift check.
+func dohConfigEqual(a, b *shadowdnscfg.DoHConfig) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
@@ -358,6 +371,19 @@ func reload(
 		)
 	}
 
+	// DoH listener / ACME drift: like the DNS listen-address drift above, a
+	// change to the doh section's listener or ACME parameters is deliberately
+	// NOT applied live. The DoH HTTPS and HTTP-01 listeners stay bound to their
+	// startup configuration; the operator must restart the process to apply the
+	// change. Certificate rotation is independent of SIGHUP (handled by the ACME
+	// hot-swap). The doh section was already re-parsed and validated by the
+	// shadowdnscfg.Load call above, so an invalid section returned an error and
+	// never reaches here.
+	if !dohConfigEqual(opts.BootDoH, shadowCfg.DoH) {
+		logger.Info("reload: DoH listener/ACME settings differ from startup configuration; " +
+			"restart to apply (current DoH and HTTP-01 listeners are unchanged)")
+	}
+
 	logger.Sugar().Infow("reload complete",
 		"views", len(cfg.Views),
 		"zones", state.ZoneCount(),
@@ -401,8 +427,14 @@ type runOptions struct {
 	// Set once at startup from --reload-verify; sticky across reloads.
 	// Zero value is VerifyModeHash (the safe default).
 	ReloadVerify server.VerifyMode
-	NoColor      bool
-	Logger       *zap.Logger
+	// BootDoH is the DoH configuration bound at startup (nil when no doh
+	// section was present). Process-lifetime sticky: the DoH and HTTP-01
+	// listeners never rebind without a restart, so reload() compares the
+	// freshly-loaded doh section against this snapshot and only logs a
+	// restart advisory on drift, mirroring the DNS listen-address behavior.
+	BootDoH *shadowdnscfg.DoHConfig
+	NoColor bool
+	Logger  *zap.Logger
 	// LogReopener, when non-nil, is the file-backed sink driving zap; the
 	// serve loop installs SIGUSR1 only when this is set so subcommands
 	// running stderr-only do not inherit a signal handler with no sink.
@@ -636,6 +668,12 @@ func run(ctx context.Context, opts runOptions) error {
 	if err != nil {
 		return fmt.Errorf("loading shadowdns config: %w", err)
 	}
+	// Record the startup DoH configuration so a later SIGHUP reload can detect
+	// drift and advise a restart without rebinding listeners (the DoH HTTPS and
+	// HTTP-01 listeners started below are process-lifetime, like the DNS
+	// listeners). Setting it unconditionally — including the nil (no doh
+	// section) case — keeps the reload comparison symmetric.
+	opts.BootDoH = shadowCfg.DoH
 
 	country, asn, err := loadGeoIPIfRequired(cfg, logger)
 	if err != nil {
@@ -823,6 +861,41 @@ func run(ctx context.Context, opts runOptions) error {
 			if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
 				logger.Sugar().Warnw("metrics server shutdown error", "err", err)
 			}
+		}()
+	}
+
+	// DNS-over-HTTPS server (optional — only started when the doh section is
+	// present). It runs the HTTPS endpoint plus the ACME HTTP-01 challenge
+	// listener and manages certificate issuance/renewal, shutting both down
+	// when ctx is cancelled. Started in a goroutine like the ephemeral API and
+	// metrics servers; failures are logged and do not abort DNS service.
+	if dohSrv := doh.NewServer(srv, shadowCfg.DoH, srv.Metrics, logger); dohSrv != nil {
+		// Own cancel so shutdown can stop the DoH server on EVERY run() exit
+		// path, not only signal-driven ctx cancellation. If a DNS listener dies
+		// at runtime, srv.Serve returns with the parent ctx still alive (the
+		// shutdown-order contract below); the DoH server's own listeners are
+		// healthy, so it would never observe a stop and the drain wait would
+		// deadlock. dohCancel breaks that.
+		dohCtx, dohCancel := context.WithCancel(ctx)
+		dohDone := make(chan struct{})
+		go func() {
+			defer close(dohDone)
+			logger.Sugar().Infow("DoH server starting",
+				"listen", shadowCfg.DoH.Listen,
+				"http01_listen", shadowCfg.DoH.ACME.HTTP01Listen,
+			)
+			if err := dohSrv.Run(dohCtx); err != nil {
+				logger.Sugar().Errorw("DoH server exited with error", "err", err)
+			}
+		}()
+		// Mirror the metrics server's defer-Shutdown: actively stop the DoH
+		// server and wait for its graceful drain (HTTPS + ACME HTTP-01
+		// listeners) before the process exits, so in-flight connections are not
+		// abruptly cut. Run() returns within its own bounded shutdown timeout,
+		// so this wait is bounded.
+		defer func() {
+			dohCancel()
+			<-dohDone
 		}()
 	}
 

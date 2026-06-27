@@ -38,6 +38,9 @@ type Metrics struct {
 	viewSelected    *prometheus.CounterVec
 
 	lastReloadSuccessTimestamp prometheus.Gauge
+
+	dohCertRenewalsTotal     *prometheus.CounterVec
+	dohCertNotAfterTimestamp prometheus.Gauge
 }
 
 // New creates a fresh prometheus.Registry, registers all ShadowDNS collectors
@@ -135,6 +138,23 @@ func New() *Metrics {
 		Help:      "Successful view resolutions on the main query path, partitioned by view and whether an ECS-derived geo address was available to the matcher.",
 	}, []string{"view", "ecs_geo"})
 
+	dohCertRenewalsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "shadowdns",
+		Subsystem: "doh",
+		Name:      "cert_renewals_total",
+		Help:      "DoH TLS certificate ACME obtain/renew attempts, partitioned by result (success or failure).",
+	}, []string{"result"})
+	// Pre-initialise both series so failure alerts never see an absent metric.
+	dohCertRenewalsTotal.WithLabelValues("success")
+	dohCertRenewalsTotal.WithLabelValues("failure")
+
+	dohCertNotAfterTimestamp := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "shadowdns",
+		Subsystem: "doh",
+		Name:      "cert_not_after_timestamp_seconds",
+		Help:      "Unix timestamp of the current DoH TLS certificate's NotAfter (expiry); 0 before the first certificate is obtained. Alert on time() approaching this value to catch stalled renewals.",
+	})
+
 	reg.MustRegister(
 		// Standard Go runtime and process collectors. The custom registry does
 		// not auto-register these (unlike the default registerer), so add them
@@ -154,6 +174,8 @@ func New() *Metrics {
 		lastReloadSuccessTimestamp,
 		ecsQueriesTotal,
 		viewSelected,
+		dohCertRenewalsTotal,
+		dohCertNotAfterTimestamp,
 	)
 
 	return &Metrics{
@@ -172,6 +194,9 @@ func New() *Metrics {
 		viewSelected:    viewSelected,
 
 		lastReloadSuccessTimestamp: lastReloadSuccessTimestamp,
+
+		dohCertRenewalsTotal:     dohCertRenewalsTotal,
+		dohCertNotAfterTimestamp: dohCertNotAfterTimestamp,
 	}
 }
 
@@ -329,4 +354,23 @@ func (m *Metrics) RecordViewSelected(view string, ecsGeo bool) {
 		ecsGeoLabel = "true"
 	}
 	m.viewSelected.WithLabelValues(view, ecsGeoLabel).Inc()
+}
+
+// RecordDoHCertRenewal increments shadowdns_doh_cert_renewals_total for the
+// given result ("success" or "failure"). Safe to call on a nil receiver so the
+// DoH certificate manager needs no metrics-disabled special case.
+func (m *Metrics) RecordDoHCertRenewal(result string) {
+	if m == nil {
+		return
+	}
+	m.dohCertRenewalsTotal.WithLabelValues(result).Inc()
+}
+
+// SetDoHCertNotAfter sets shadowdns_doh_cert_not_after_timestamp_seconds to the
+// current certificate's expiry. Safe to call on a nil receiver.
+func (m *Metrics) SetDoHCertNotAfter(t time.Time) {
+	if m == nil {
+		return
+	}
+	m.dohCertNotAfterTimestamp.Set(float64(t.Unix()))
 }

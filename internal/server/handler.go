@@ -126,6 +126,27 @@ func attachOPT(m *dns.Msg, qo queryOpt) {
 	m.Extra = append(m.Extra, opt)
 }
 
+// protocolReporter is implemented by transport writers that know their own
+// transport label (e.g. the DoH synthetic writer's Protocol() == "doh"). When
+// the writer implements it, its label overrides the UDP/TCP socket detection
+// for the per-query proto metric — a non-UDP synthetic writer is otherwise
+// indistinguishable from a TCP writer.
+type protocolReporter interface {
+	Protocol() string
+}
+
+// protoFromWriter resolves the metrics proto label: the writer's own transport
+// label when it reports one, else "udp"/"tcp" from the socket type.
+func protoFromWriter(w dns.ResponseWriter) string {
+	if pr, ok := w.(protocolReporter); ok {
+		return pr.Protocol()
+	}
+	if dnsutil.IsUDP(w) {
+		return "udp"
+	}
+	return "tcp"
+}
+
 // ServeDNS implements dns.Handler. It is the entry point for every DNS query.
 func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	var mw *metrics.ResponseWriter
@@ -151,10 +172,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		w = mw
 
 		defer func() {
-			proto := "tcp"
-			if dnsutil.IsUDP(realW) {
-				proto = "udp"
-			}
+			proto := protoFromWriter(realW)
 			qtypeStr := "unknown"
 			if len(req.Question) == 1 {
 				if name, ok := dns.TypeToString[req.Question[0].Qtype]; ok {
