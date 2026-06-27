@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+
+	"github.com/chenwei791129/ShadowDNS/internal/httpserver"
 )
 
 // doGET issues a DoH GET with the base64url-encoded query and returns the
@@ -349,7 +351,7 @@ func TestHandler_ZoneTransferRefused(t *testing.T) {
 }
 
 func TestHardenedServer_HasNonZeroTimeouts(t *testing.T) {
-	s := newHardenedServer(":0", nil)
+	s := httpserver.NewServer(":0", nil)
 	if s.ReadTimeout == 0 || s.WriteTimeout == 0 || s.IdleTimeout == 0 || s.ReadHeaderTimeout == 0 {
 		t.Errorf("timeouts must all be non-zero: read=%v write=%v idle=%v header=%v",
 			s.ReadTimeout, s.WriteTimeout, s.IdleTimeout, s.ReadHeaderTimeout)

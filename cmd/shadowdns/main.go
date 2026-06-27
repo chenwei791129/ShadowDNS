@@ -29,6 +29,7 @@ import (
 	"github.com/chenwei791129/ShadowDNS/internal/config"
 	"github.com/chenwei791129/ShadowDNS/internal/doh"
 	"github.com/chenwei791129/ShadowDNS/internal/ephemeral"
+	"github.com/chenwei791129/ShadowDNS/internal/httpserver"
 	"github.com/chenwei791129/ShadowDNS/internal/logging"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/querylog"
@@ -803,11 +804,29 @@ func run(ctx context.Context, opts runOptions) error {
 			return st.AllOrigins()
 		}
 		apiSrv := api.NewServer(shadowCfg.EphemeralAPI, ephemeralStore, zoneLister, logger)
+		// Own cancel so shutdown can stop the API server on EVERY run() exit
+		// path, not only signal-driven ctx cancellation. If a DNS listener dies
+		// at runtime, srv.Serve returns with the parent ctx still alive (the
+		// shutdown-order contract below); the API server's own listener is
+		// healthy, so it would never observe a stop and its in-flight connections
+		// would be cut by process exit. apiCancel breaks that, mirroring the DoH
+		// and metrics servers.
+		apiCtx, apiCancel := context.WithCancel(ctx)
+		apiDone := make(chan struct{})
 		go func() {
+			defer close(apiDone)
 			logger.Sugar().Infow("ephemeral API server starting", "listen", shadowCfg.EphemeralAPI.Listen)
-			if err := apiSrv.Run(ctx); err != nil {
+			if err := apiSrv.Run(apiCtx); err != nil {
 				logger.Sugar().Errorw("ephemeral API server exited with error", "err", err)
 			}
+		}()
+		// Registered after the goroutine starts (avoids a defer-with-no-server
+		// window): actively stop the API server and wait for its graceful drain
+		// before the process exits. Run() returns within the shared shutdown
+		// timeout, so this wait is bounded.
+		defer func() {
+			apiCancel()
+			<-apiDone
 		}()
 	}
 
@@ -847,7 +866,11 @@ func run(ctx context.Context, opts runOptions) error {
 			registerPProfHandlers(mux)
 			logger.Sugar().Infow("pprof endpoints enabled", "path", "/debug/pprof/")
 		}
-		metricsSrv := &http.Server{Addr: opts.MetricsAddr, Handler: mux}
+		// WithWriteTimeout(0) leaves the write timeout unbounded: the metrics mux
+		// hosts the optional /debug/pprof/profile and /debug/pprof/trace streaming
+		// endpoints, which a fixed write timeout would truncate mid-stream. Read,
+		// idle, and header timeouts still apply.
+		metricsSrv := httpserver.NewServer(opts.MetricsAddr, mux, httpserver.WithWriteTimeout(0))
 
 		go func() {
 			logger.Sugar().Infow("metrics server starting", "addr", opts.MetricsAddr)
@@ -855,13 +878,10 @@ func run(ctx context.Context, opts runOptions) error {
 				logger.Sugar().Errorw("metrics server failed", "err", err)
 			}
 		}()
-		defer func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
-				logger.Sugar().Warnw("metrics server shutdown error", "err", err)
-			}
-		}()
+		// The existing defer already covers both run() exit paths (signal-driven
+		// and listener-death); it now drains through the shared primitive (single
+		// graceful-shutdown deadline) instead of an inlined 5s literal.
+		defer httpserver.Drain(metricsSrv, "metrics server", logger)
 	}
 
 	// DNS-over-HTTPS server (optional — only started when the doh section is

@@ -8,26 +8,24 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
 	"strings"
-	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/chenwei791129/ShadowDNS/internal/dnsutil"
 	"github.com/chenwei791129/ShadowDNS/internal/ephemeral"
+	"github.com/chenwei791129/ShadowDNS/internal/httpserver"
 	"github.com/chenwei791129/ShadowDNS/internal/shadowdnscfg"
 )
 
-// TTL clamp bounds and shutdown timeout are fixed by spec.
+// TTL clamp bounds and the TXT value length limit are fixed by spec.
 const (
-	MinTTL          = 1
-	MaxTTL          = 3600
-	ShutdownTimeout = 5 * time.Second
+	MinTTL = 1
+	MaxTTL = 3600
 	// MaxValueBytes is the RFC 1035 TXT character-string length limit.
 	MaxValueBytes = 255
 )
@@ -75,7 +73,7 @@ func NewServer(cfg *shadowdnscfg.EphemeralAPIConfig, store *ephemeral.Store, zon
 }
 
 // Run binds to cfg.Listen and serves until ctx is cancelled, then shuts down
-// gracefully with a 5-second deadline for in-flight requests.
+// gracefully within the shared graceful-shutdown deadline for in-flight requests.
 func (s *Server) Run(ctx context.Context) error {
 	ln, err := net.Listen("tcp", s.cfg.Listen)
 	if err != nil {
@@ -84,36 +82,13 @@ func (s *Server) Run(ctx context.Context) error {
 	return s.Serve(ctx, ln)
 }
 
-// Serve serves on the supplied listener until ctx is cancelled, then shuts
-// down gracefully. The listener is closed by http.Server.Shutdown.
+// Serve serves on the supplied listener until ctx is cancelled, then shuts down
+// gracefully via the shared httpserver lifecycle primitive (hardened connection
+// timeouts, single graceful-shutdown deadline). The listener is closed by
+// http.Server.Shutdown.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
-	httpServer := &http.Server{
-		Handler:           s.handler,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- httpServer.Serve(ln)
-	}()
-
-	select {
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
-		defer cancel()
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			s.logger.Warn("api: graceful shutdown failed", zap.Error(err))
-			return err
-		}
-		// Drain Serve's final error (http.ErrServerClosed).
-		<-errCh
-		return nil
-	case err := <-errCh:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return err
-	}
+	srv := httpserver.NewServer("", s.handler)
+	return httpserver.Serve(ctx, srv, "ephemeral API", func() error { return srv.Serve(ln) }, s.logger)
 }
 
 // ---------- middleware ----------

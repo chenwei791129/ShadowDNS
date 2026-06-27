@@ -16,6 +16,7 @@ import (
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
 
+	"github.com/chenwei791129/ShadowDNS/internal/httpserver"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
 	"github.com/chenwei791129/ShadowDNS/internal/shadowdnscfg"
@@ -32,33 +33,6 @@ const (
 	// the query path runs.
 	maxBodyBytes = 65535
 )
-
-// Connection hygiene timeouts shared by the DoH HTTPS server and the ACME
-// HTTP-01 listener. DoH is connection-oriented and the source set is firewall-
-// restricted, so these bound slow-loris and idle-connection exposure without
-// needing to be tight.
-const (
-	readTimeout       = 10 * time.Second
-	writeTimeout      = 10 * time.Second
-	idleTimeout       = 120 * time.Second
-	readHeaderTimeout = 5 * time.Second
-	// shutdownTimeout bounds graceful shutdown drain time (spec: up to 5s).
-	shutdownTimeout = 5 * time.Second
-)
-
-// newHardenedServer returns an *http.Server with read/write/idle/header
-// timeouts set. Shared by the DoH HTTPS server and the ACME HTTP-01 listener
-// so neither is left with net/http's unbounded defaults.
-func newHardenedServer(addr string, h http.Handler) *http.Server {
-	return &http.Server{
-		Addr:              addr,
-		Handler:           h,
-		ReadTimeout:       readTimeout,
-		WriteTimeout:      writeTimeout,
-		IdleTimeout:       idleTimeout,
-		ReadHeaderTimeout: readHeaderTimeout,
-	}
-}
 
 // Server serves DNS-over-HTTPS (RFC 8484) by decoding HTTP requests and
 // dispatching them through the shared authoritative query path. Construct with
@@ -120,8 +94,8 @@ func (s *Server) runWith(ctx context.Context, responder *challengeResponder, cm 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	challengeSrv := newHardenedServer(s.cfg.ACME.HTTP01Listen, responder.Handler())
-	dohSrv := newHardenedServer(s.cfg.Listen, s.Handler())
+	challengeSrv := httpserver.NewServer(s.cfg.ACME.HTTP01Listen, responder.Handler())
+	dohSrv := httpserver.NewServer(s.cfg.Listen, s.Handler())
 	dohSrv.TLSConfig = &tls.Config{
 		GetCertificate: cm.GetCertificate,
 		MinVersion:     tls.VersionTLS12,
@@ -134,90 +108,74 @@ func (s *Server) runWith(ctx context.Context, responder *challengeResponder, cm 
 		cm.run(runCtx)
 	}()
 
-	// Buffered for both serve goroutines so neither leaks if shutdown wins the
-	// race.
+	// Each listener's serve + graceful drain runs through the shared httpserver
+	// primitive. Both block on runCtx, so cancelling it (below) drives whichever
+	// listener is still serving through its own bounded drain — this is how the
+	// cross-listener failure propagation is preserved on top of the shared
+	// primitive. Buffered for both serve goroutines so neither leaks if shutdown
+	// wins the race. httpserver.Serve absorbs http.ErrServerClosed, so a value
+	// here is either nil (clean stop) or a real bind/serve failure.
 	errCh := make(chan error, 2)
 	go func() {
 		s.logger.Sugar().Infow("doh: ACME HTTP-01 listener starting", "listen", s.cfg.ACME.HTTP01Listen)
-		errCh <- challengeSrv.ListenAndServe()
+		errCh <- httpserver.Serve(runCtx, challengeSrv, "doh ACME HTTP-01", challengeSrv.ListenAndServe, s.logger)
 	}()
 	go func() {
 		s.logger.Sugar().Infow("doh: HTTPS server starting", "listen", s.cfg.Listen)
 		// Empty cert/key filenames: the certificate is supplied by
 		// TLSConfig.GetCertificate (the ACME-managed atomic holder).
-		errCh <- dohSrv.ListenAndServeTLS("", "")
+		errCh <- httpserver.Serve(runCtx, dohSrv, "doh HTTPS", func() error { return dohSrv.ListenAndServeTLS("", "") }, s.logger)
 	}()
 
-	var serveErr error
 	select {
 	case <-ctx.Done():
 	case err := <-errCh:
-		// A listener failed to bind/serve before shutdown was requested; tear
-		// the other one down too and surface the error.
-		if !errors.Is(err, http.ErrServerClosed) {
-			serveErr = err
-			s.logger.Sugar().Errorw("doh: server exited with error", "err", err)
-		}
+		// A listener stopped before shutdown was requested. Hand the result back
+		// so the collector below remains the single site that logs serve errors
+		// and captures the first one; cancel() then tears down the sibling and
+		// the renewal loop. errCh has capacity 2 with at most one value
+		// outstanding at this point, so the re-send never blocks.
+		errCh <- err
 	}
 
-	// Stop the renewal loop before waiting for it, so wg.Wait() cannot block on
-	// the errCh-failure path where the parent ctx is still alive.
+	// Cancel runCtx so the renewal loop stops and any still-serving listener
+	// begins its graceful drain. Without this, wg.Wait() below could block on the
+	// errCh-failure path (parent ctx still alive), leaking the renewal goroutine
+	// and hammering the ACME directory for an endpoint that never serves.
 	cancel()
-	// Drain both listeners AND the renewal loop concurrently under one
-	// shutdownTimeout budget, so the worst-case graceful shutdown stays within
-	// the single deadline the spec documents (up to 5s). Running them in
-	// sequence would sum their deadlines (~10s) and exceed what main.go's
-	// deferred drain — and any outer systemd TimeoutStopSec — budgets for.
-	var swg sync.WaitGroup
-	swg.Add(3)
-	go func() { defer swg.Done(); shutdownServer(challengeSrv, s.logger, "doh ACME HTTP-01") }()
-	go func() { defer swg.Done(); shutdownServer(dohSrv, s.logger, "doh HTTPS") }()
-	go func() {
-		defer swg.Done()
-		// Bound the wait for the renewal loop: an in-flight lego obtain() does
-		// not observe ctx cancellation (lego's ObtainForCSR takes no context),
-		// so cm.run can stay blocked inside it. Don't let that hold shutdown
-		// past the deadline — the goroutine is harmless once the process exits.
-		renewDone := make(chan struct{})
-		go func() { wg.Wait(); close(renewDone) }()
-		select {
-		case <-renewDone:
-		case <-time.After(shutdownTimeout):
-			s.logger.Warn("doh: certificate renewal loop still running at shutdown deadline; abandoning it")
-		}
-	}()
-	swg.Wait()
 
-	// Surface any second serve error the select above did not consume. Both
-	// serve goroutines send exactly once; when both listeners fail to bind the
-	// errors arrive immediately and are buffered, so a non-blocking drain
-	// captures the one the select dropped instead of leaving its cause unlogged.
-	// ErrServerClosed from the normal shutdown is ignored.
-drain:
-	for {
-		select {
-		case err := <-errCh:
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				s.logger.Sugar().Errorw("doh: listener exited with error", "err", err)
-				if serveErr == nil {
-					serveErr = err
-				}
+	// Bound the renewal-loop wait. Start the deadline at cancel time so it elapses
+	// concurrently with the listener drains below, keeping the worst-case graceful
+	// shutdown within a single httpserver.ShutdownTimeout budget rather than
+	// summing per-component deadlines (~10s, which would exceed main.go's deferred
+	// drain and any outer systemd TimeoutStopSec). An in-flight lego obtain() does
+	// not observe ctx cancellation (lego's ObtainForCSR takes no context), so
+	// cm.run can stay blocked inside it — the goroutine is harmless once the
+	// process exits.
+	renewDone := make(chan struct{})
+	go func() { wg.Wait(); close(renewDone) }()
+	deadline := time.After(httpserver.ShutdownTimeout)
+
+	// Collect both listener results. Each httpserver.Serve already performed its
+	// server's bounded graceful drain (triggered by cancel), concurrently with the
+	// other and with the renewal wait. This is the sole serve-error reporting site.
+	var serveErr error
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			s.logger.Sugar().Errorw("doh: listener exited with error", "err", err)
+			if serveErr == nil {
+				serveErr = err
 			}
-		default:
-			break drain
 		}
 	}
-	return serveErr
-}
 
-// shutdownServer gracefully shuts srv down with the standard drain deadline,
-// logging a warning on failure.
-func shutdownServer(srv *http.Server, logger *zap.Logger, label string) {
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Sugar().Warnw(label+": graceful shutdown failed", "err", err)
+	select {
+	case <-renewDone:
+	case <-deadline:
+		s.logger.Warn("doh: certificate renewal loop still running at shutdown deadline; abandoning it")
 	}
+
+	return serveErr
 }
 
 // Handler returns the DoH HTTP handler. Registering method-qualified patterns
