@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.23.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.22.0...v0.23.0) (2026-06-27)
+
+
+### Features
+
+* **doh:** add DNS-over-HTTPS endpoint (RFC 8484) ([2e38bc9](https://github.com/chenwei791129/ShadowDNS/commit/2e38bc930ef5842474f18a29d61b031e88993310))
+* **doh:** persist ACME account key across restarts ([7420b6e](https://github.com/chenwei791129/ShadowDNS/commit/7420b6e7f4708f54dc2e896e139722827acf997d))
+
+
+### Bug Fixes
+
+* **deps:** bump go-git, x/crypto, x/net to clear Trivy HIGH CVEs ([96d12ee](https://github.com/chenwei791129/ShadowDNS/commit/96d12ee049dbde8d9512ccfb8af310d5d3ece39e))
+* **docs:** drop non-existent acme.email field from DoH guide ([22da067](https://github.com/chenwei791129/ShadowDNS/commit/22da067718fb2a973c73090b29cb14940acf6f76))
+
 ## [0.22.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.21.0...v0.22.0) (2026-06-14)
 
 
