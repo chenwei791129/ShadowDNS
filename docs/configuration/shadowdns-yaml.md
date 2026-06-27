@@ -29,6 +29,7 @@ doh:
     directory_url: "https://acme-v02.api.letsencrypt.org/directory"
     ip: "203.0.113.10"
     http01_listen: "203.0.113.10:80"
+    account_key_file: "/var/lib/shadowdns/acme/account.key"
 ```
 
 ## aliases fields
@@ -70,6 +71,7 @@ All fields are required; loading fails naming the first missing field.
 | `acme.directory_url` | Yes | ACME directory URL of the issuing CA (must be an absolute `https://` URL) |
 | `acme.ip` | Yes | The IP address the certificate is issued for (RFC 8738 IP-identifier certificate) |
 | `acme.http01_listen` | Yes | The `host:port` the ACME HTTP-01 challenge responder binds to; MUST be reachable from the public Internet as port 80 |
+| `acme.account_key_file` | Yes | Absolute path to the persisted ACME account private key (PKCS#8 PEM, mode `0600`). Generated on first use when absent and reused across restarts so re-registration is idempotent and does not exhaust the ACME new-account rate limit. Use a path under the systemd `StateDirectory` (`/var/lib/shadowdns`). This file is a **secret** — keep it `0600` and owned by the service user. Changing it requires a restart to take effect |
 
 The ACME account is registered without a contact email, so `doh.acme` accepts no `email` field; including one fails the load as an unknown field. (Contact email is optional under RFC 8555, and the short-lived auto-renewed certificate makes expiry notifications moot.)
 

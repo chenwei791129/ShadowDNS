@@ -29,6 +29,7 @@ doh:
     directory_url: "https://acme-v02.api.letsencrypt.org/directory"
     ip: "203.0.113.10"
     http01_listen: "203.0.113.10:80"
+    account_key_file: "/var/lib/shadowdns/acme/account.key"
 ```
 
 ## aliases 欄位
@@ -70,6 +71,7 @@ Zone aliasing 的查詢處理細節請見 [Zone Aliasing 原理](../guides/zone-
 | `acme.directory_url` | 是 | 簽發 CA 的 ACME directory URL（必須是絕對的 `https://` URL） |
 | `acme.ip` | 是 | 憑證簽發對象的 IP 位址（RFC 8738 IP-identifier 憑證） |
 | `acme.http01_listen` | 是 | ACME HTTP-01 challenge 回應器綁定的 `host:port`；必須能從公開網際網路以 port 80 連到 |
+| `acme.account_key_file` | 是 | 持久化 ACME 帳號私鑰的絕對路徑（PKCS#8 PEM、權限 `0600`）。檔案不存在時於首次使用產生，並跨重啟重用，使重新註冊具冪等性、不會耗盡 ACME new-account 速率限制。請使用 systemd `StateDirectory`（`/var/lib/shadowdns`）之下的路徑。此檔為**機密**——務必保持 `0600` 且擁有者為服務使用者。變更此欄位需重啟才會生效 |
 
 ACME 帳號以無聯絡 email 註冊，因此 `doh.acme` 不接受 `email` 欄位；若填入會以未知欄位導致載入失敗。（RFC 8555 的聯絡 email 為選填，且短效自動續簽的憑證讓到期通知失去意義。）
 

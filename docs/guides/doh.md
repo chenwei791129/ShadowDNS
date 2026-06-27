@@ -20,6 +20,7 @@ The required fields are:
 | `acme.directory_url` | ACME directory endpoint (e.g. `https://acme-v02.api.letsencrypt.org/directory`) |
 | `acme.ip` | The public IP the certificate is issued for |
 | `acme.http01_listen` | Address the ACME HTTP-01 challenge responder binds (TCP/80) |
+| `acme.account_key_file` | Absolute path to the persisted ACME account private key (see [ACME account key persistence](#acme-account-key-persistence)) |
 
 See [`shadowdns.yaml`](../configuration/shadowdns-yaml.md) for the full field tables and an example block.
 
@@ -67,6 +68,31 @@ To build `query.bin`, capture a wire-format query — for example with `dig +noe
 The DoH listener serves TLS with a certificate issued **for the IP address** (`acme.ip`), obtained automatically via ACME HTTP-01 validation using the Let's Encrypt short-lived certificate profile (~6-day validity). ShadowDNS auto-renews the certificate well before expiry and hot-swaps it into the running listener **without restarting** — in-flight and subsequent connections pick up the new certificate transparently.
 
 Because the certificate is bound to the IP rather than a hostname, clients connect to the IP directly (as in the curl examples above).
+
+---
+
+## ACME account key persistence
+
+ShadowDNS persists its ACME **account** private key to the absolute path set in `acme.account_key_file` and reuses it across restarts and registration retries. The recommended location is under the systemd state directory:
+
+```yaml
+acme:
+  account_key_file: "/var/lib/shadowdns/acme/account.key"
+```
+
+The packaged systemd unit declares `StateDirectory=shadowdns`, so `/var/lib/shadowdns` is created on every start owned by the service user with mode `0700`.
+
+Behavior:
+
+- **First start** — when the file does not exist, ShadowDNS generates a new P256 account key and writes it to the path as PKCS#8 PEM with permissions `0600`, then registers the ACME account.
+- **Restart / retry** — the same key is loaded, so the ACME directory returns the *existing* account (RFC 8555 §7.3) instead of registering a new one. This is what keeps re-registration idempotent and avoids exhausting the per-source-IP **new-account** rate limit during crash loops or repeated registration failures.
+- **Corrupt or unreadable key file** — ShadowDNS **fails loudly**: it logs an error naming the file and does **not** silently mint a replacement key or register a new account (a silent rebuild is exactly what would trip the rate limit). Because the obtainer is not cached on failure, the error recurs on every renewal retry until you repair or remove the file; DoH serves no certificate until then.
+
+Operational notes:
+
+- The account key is a **secret**. Keep it `0600` and owned by the service user; do not commit it or copy it into shared locations.
+- Persistence relies on a **static** service user (`User=shadowdns`). Do not switch the unit to `DynamicUser=yes` — a per-boot UID would change `StateDirectory` ownership and make the persisted key unreadable, silently reintroducing new-account churn.
+- Changing `account_key_file` **requires a process restart** to take effect. On SIGHUP reload it is detected as DoH config drift and logged with a "restart to apply" advisory, like the other `doh.acme.*` fields.
 
 ---
 

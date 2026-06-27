@@ -20,6 +20,7 @@ DoH 完全透過 [`shadowdns.yaml`](../configuration/shadowdns-yaml.md) 中的 `
 | `acme.directory_url` | ACME directory 端點（例如 `https://acme-v02.api.letsencrypt.org/directory`） |
 | `acme.ip` | 簽發憑證所對應的公開 IP |
 | `acme.http01_listen` | ACME HTTP-01 challenge 回應器綁定的位址（TCP/80） |
+| `acme.account_key_file` | 持久化 ACME 帳號私鑰的絕對路徑（見 [ACME 帳號金鑰持久化](#acme-帳號金鑰持久化)） |
 
 完整欄位表與範例區塊見 [`shadowdns.yaml`](../configuration/shadowdns-yaml.md)。
 
@@ -67,6 +68,31 @@ curl -sS -H 'content-type: application/dns-message' \
 DoH listener 以一張**為 IP 位址**（`acme.ip`）簽發的憑證提供 TLS，該憑證透過 ACME HTTP-01 驗證自動取得，採用 Let's Encrypt 的短期憑證 profile（約 6 天效期）。ShadowDNS 會在到期前充分提早自動續期，並把新憑證**不重啟**地熱替換進運行中的 listener——進行中與後續的連線都會透明地接上新憑證。
 
 由於憑證綁定的是 IP 而非主機名，用戶端直接連到該 IP（如上方 curl 範例）。
+
+---
+
+## ACME 帳號金鑰持久化
+
+ShadowDNS 會把 ACME **帳號**私鑰持久化到 `acme.account_key_file` 指定的絕對路徑，並跨重啟與註冊重試重用。建議放在 systemd 狀態目錄之下：
+
+```yaml
+acme:
+  account_key_file: "/var/lib/shadowdns/acme/account.key"
+```
+
+打包的 systemd unit 宣告了 `StateDirectory=shadowdns`，因此 `/var/lib/shadowdns` 會在每次啟動時由服務使用者以 `0700` 權限建立。
+
+行為：
+
+- **首次啟動**——檔案不存在時，ShadowDNS 產生一把新的 P256 帳號金鑰，以 PKCS#8 PEM、`0600` 權限寫入該路徑，再註冊 ACME 帳號。
+- **重啟／重試**——載入同一把金鑰，因此 ACME directory 會回傳*既有*帳號（RFC 8555 §7.3），而非註冊新帳號。這正是讓重新註冊具冪等性、並在 crash loop 或反覆註冊失敗時避免耗盡每來源 IP 的 **new-account** 速率限制的關鍵。
+- **金鑰檔毀損或無法讀取**——ShadowDNS **大聲失敗**：記錄一筆點名該檔的錯誤，且**不會**靜默改鑄替代金鑰或註冊新帳號（靜默重建正是會觸發速率限制的行為）。由於 obtainer 在失敗時不會被快取，此錯誤會在每次續期重試時重現，直到你修復或移除該檔為止；在那之前 DoH 無法提供任何憑證。
+
+維運注意事項：
+
+- 帳號金鑰是**機密**。請保持 `0600` 且擁有者為服務使用者；切勿提交版控或複製到共享位置。
+- 持久化保證依賴**靜態**服務使用者（`User=shadowdns`）。請勿把 unit 改成 `DynamicUser=yes`——每次開機變動的 UID 會改變 `StateDirectory` 的擁有者，使既有金鑰無法讀取，靜默重現 new-account churn。
+- 變更 `account_key_file` **需重啟行程**才會生效。在 SIGHUP reload 時會被偵測為 DoH 設定漂移，並如其他 `doh.acme.*` 欄位一樣記錄「restart to apply」提示。
 
 ---
 
