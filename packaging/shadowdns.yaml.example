@@ -85,3 +85,39 @@ ephemeral_api:
     - "127.0.0.1"
     - "10.0.0.0/8"
   # token: "change-me-to-a-long-random-string"
+
+# ---- doh ---------------------------------------------------------------
+#
+# Optional DNS-over-HTTPS (RFC 8484) server. When this section is omitted,
+# no DoH server, ACME client, or HTTP-01 challenge listener is started.
+#
+# DoH reuses the authoritative query path and is NON-RECURSIVE: only
+# zones hosted by ShadowDNS are answered; out-of-zone queries return
+# REFUSED. This is not a general recursive resolver.
+#
+# Required fields:
+#   listen — host:port the DoH HTTPS service binds, e.g. "203.0.113.10:443"
+#   acme.directory_url — ACME directory URL of the issuing CA
+#                        (absolute https:// URL)
+#   acme.ip — the IP address the certificate is issued for
+#             (RFC 8738 IP certificate)
+#   acme.http01_listen — host:port the ACME HTTP-01 challenge responder
+#                        binds; MUST be reachable from the public Internet
+#                        as port 80
+#
+# The ACME account is registered with no contact email, so acme accepts
+# no "email" field (RFC 8555 contact is optional; the short-lived
+# auto-renewed certificate makes expiry notices moot).
+#
+# The certificate is obtained for the IP via ACME HTTP-01 using the
+# Let's Encrypt short-lived profile (~6 days) and auto-renewed without a
+# restart. Port 80 (http01_listen) must be public and serves only
+# /.well-known/acme-challenge/; port 443 (listen) should be
+# firewall-restricted to trusted source IPs.
+
+# doh:
+#   listen: "203.0.113.10:443"
+#   acme:
+#     directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+#     ip: "203.0.113.10"
+#     http01_listen: "203.0.113.10:80"
