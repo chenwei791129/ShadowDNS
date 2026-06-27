@@ -21,6 +21,14 @@ ReadWritePaths=/var/log/shadowdns
 # ReadWritePaths and cleans it up on stop.
 RuntimeDirectory=shadowdns
 RuntimeDirectoryMode=0755
+# Create /var/lib/shadowdns owned by shadowdns:shadowdns with mode 0700 on
+# every start so the DoH ACME account key can be persisted under the
+# ProtectSystem=strict sandbox. systemd auto-adds this path to ReadWritePaths.
+# The unit MUST keep User=shadowdns (a static UID): DynamicUser=yes would change
+# StateDirectory ownership per boot and render a persisted key unreadable,
+# silently reintroducing ACME new-account churn.
+StateDirectory=shadowdns
+StateDirectoryMode=0700
 PrivateTmp=yes
 NoNewPrivileges=yes
 

@@ -88,9 +88,10 @@ func testDoHConfig() *shadowdnscfg.DoHConfig {
 	return &shadowdnscfg.DoHConfig{
 		Listen: "203.0.113.10:443",
 		ACME: shadowdnscfg.DoHACMEConfig{
-			DirectoryURL: "https://acme.example.com/dir",
-			IP:           netip.MustParseAddr("203.0.113.10"),
-			HTTP01Listen: "203.0.113.10:80",
+			DirectoryURL:   "https://acme.example.com/dir",
+			IP:             netip.MustParseAddr("203.0.113.10"),
+			HTTP01Listen:   "203.0.113.10:80",
+			AccountKeyFile: "/var/lib/shadowdns/acme/account.key",
 		},
 	}
 }

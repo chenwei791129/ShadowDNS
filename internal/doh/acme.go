@@ -115,8 +115,9 @@ func (c *challengeResponder) Handler() http.Handler {
 }
 
 // acmeUser implements lego's registration.User for a single ACME account whose
-// key lives only in memory (regenerated on every process restart, like the DNS
-// cookie secret).
+// key is persisted to disk (loadOrCreateAccountKey) and reused across process
+// restarts and registration retries, so re-registration with the same key is
+// idempotent and does not mint a new ACME account.
 type acmeUser struct {
 	key crypto.PrivateKey
 	reg *registration.Resource
@@ -136,9 +137,9 @@ func (u *acmeUser) GetPrivateKey() crypto.PrivateKey        { return u.key }
 // called. The HTTP-01 challenges are answered by responder, so the caller MUST
 // have responder's listener running on the configured http01_listen.
 func newLegoObtainer(cfg shadowdnscfg.DoHACMEConfig, responder challenge.Provider) (func(context.Context) (*tls.Certificate, error), error) {
-	accountKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	accountKey, err := loadOrCreateAccountKey(cfg.AccountKeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("doh acme: generate account key: %w", err)
+		return nil, err
 	}
 	user := &acmeUser{key: accountKey}
 

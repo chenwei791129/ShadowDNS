@@ -20,6 +20,7 @@ const dohYAMLValid = `doh:
     directory_url: "https://acme.example.com/dir"
     ip: "203.0.113.10"
     http01_listen: "203.0.113.10:80"
+    account_key_file: "/var/lib/shadowdns/acme/account.key"
 `
 
 // writeShadowYAML overwrites the dir's shadowdns.yaml with body.
@@ -49,12 +50,15 @@ func TestReload_InvalidDoHKeepsRunningServer(t *testing.T) {
 	opts.BootDoH = bootDoH
 	prevState := srv.CurrentState()
 
-	// Remove the required acme.ip field and reload.
+	// Remove only the required acme.ip field and reload. account_key_file is
+	// kept present so the load fails for exactly one reason (missing ip),
+	// independent of buildDoHACME's field validation order.
 	writeShadowYAML(t, dir, `doh:
   listen: "203.0.113.10:443"
   acme:
     directory_url: "https://acme.example.com/dir"
     http01_listen: "203.0.113.10:80"
+    account_key_file: "/var/lib/shadowdns/acme/account.key"
 `)
 	_, err := observedReload(t, opts, srv, geo, qlState)
 	if err == nil {

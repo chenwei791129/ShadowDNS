@@ -1,11 +1,13 @@
 package doh
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -42,9 +44,10 @@ func TestLegoObtainer_Integration(t *testing.T) {
 	defer func() { _ = srv.Close() }()
 
 	cfg := shadowdnscfg.DoHACMEConfig{
-		DirectoryURL: dirURL,
-		IP:           netip.MustParseAddr("127.0.0.1"),
-		HTTP01Listen: ":5002",
+		DirectoryURL:   dirURL,
+		IP:             netip.MustParseAddr("127.0.0.1"),
+		HTTP01Listen:   ":5002",
+		AccountKeyFile: filepath.Join(t.TempDir(), "account.key"),
 	}
 	obtain, err := newLegoObtainer(cfg, responder)
 	if err != nil {
@@ -65,5 +68,24 @@ func TestLegoObtainer_Integration(t *testing.T) {
 	// shortlived profile ≈ 6 days (518400s); allow a generous window.
 	if validity < 5*24*time.Hour || validity > 8*24*time.Hour {
 		t.Errorf("issued cert validity = %v, want ~6 days (shortlived profile)", validity)
+	}
+
+	// The first newLegoObtainer above took the generate-and-persist branch.
+	// Build a second obtainer from the same config and confirm the production
+	// path reuses the persisted account key (rather than minting a new one) —
+	// the load-and-reuse behavior that is the whole point of this change.
+	keyBefore, err := os.ReadFile(cfg.AccountKeyFile)
+	if err != nil {
+		t.Fatalf("account key was not persisted by the obtainer: %v", err)
+	}
+	if _, err := newLegoObtainer(cfg, responder); err != nil {
+		t.Fatalf("second newLegoObtainer: %v", err)
+	}
+	keyAfter, err := os.ReadFile(cfg.AccountKeyFile)
+	if err != nil {
+		t.Fatalf("read account key after second build: %v", err)
+	}
+	if !bytes.Equal(keyBefore, keyAfter) {
+		t.Error("account key file changed on second obtainer build; key was regenerated instead of reused")
 	}
 }

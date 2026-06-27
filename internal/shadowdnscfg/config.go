@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
@@ -61,6 +62,12 @@ type DoHACMEConfig struct {
 	// HTTP01Listen is the host:port the ACME HTTP-01 challenge responder
 	// binds; it MUST be reachable from the public Internet as port 80.
 	HTTP01Listen string
+	// AccountKeyFile is the absolute path to the persisted ACME account
+	// private key (PKCS#8 PEM, mode 0600). The key is generated on first use
+	// when the file is absent and reused across restarts and registration
+	// retries so re-registration is idempotent and does not consume the
+	// per-source-IP new-account rate limit.
+	AccountKeyFile string
 }
 
 // EphemeralAPIConfig holds the settings for the ephemeral TXT API server.
@@ -93,9 +100,10 @@ type rawDoH struct {
 }
 
 type rawDoHACME struct {
-	DirectoryURL string `yaml:"directory_url"`
-	IP           string `yaml:"ip"`
-	HTTP01Listen string `yaml:"http01_listen"`
+	DirectoryURL   string `yaml:"directory_url"`
+	IP             string `yaml:"ip"`
+	HTTP01Listen   string `yaml:"http01_listen"`
+	AccountKeyFile string `yaml:"account_key_file"`
 }
 
 // rawAliasGroup is the per-key YAML shape for the aliases map. Each entry
@@ -297,10 +305,20 @@ func buildDoHACME(raw *rawDoHACME) (DoHACMEConfig, error) {
 	if err := validateHostPort("http01_listen", raw.HTTP01Listen); err != nil {
 		return DoHACMEConfig{}, err
 	}
+	if raw.AccountKeyFile == "" {
+		return DoHACMEConfig{}, fmt.Errorf("account_key_file: required field is missing")
+	}
+	// Require an absolute path: the key is read and written by the service from
+	// a systemd StateDirectory, where a relative path would resolve against the
+	// daemon's working directory rather than the intended persistent location.
+	if !filepath.IsAbs(raw.AccountKeyFile) {
+		return DoHACMEConfig{}, fmt.Errorf("account_key_file: %q must be an absolute path", raw.AccountKeyFile)
+	}
 	return DoHACMEConfig{
-		DirectoryURL: raw.DirectoryURL,
-		IP:           ip.Unmap(),
-		HTTP01Listen: raw.HTTP01Listen,
+		DirectoryURL:   raw.DirectoryURL,
+		IP:             ip.Unmap(),
+		HTTP01Listen:   raw.HTTP01Listen,
+		AccountKeyFile: raw.AccountKeyFile,
 	}, nil
 }
 

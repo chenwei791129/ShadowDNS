@@ -16,6 +16,7 @@ doh:
     directory_url: "https://acme.example.com/dir"
     ip: "203.0.113.10"
     http01_listen: "203.0.113.10:80"
+    account_key_file: "/var/lib/shadowdns/acme/account.key"
 `
 
 func TestLoad_DoHValid(t *testing.T) {
@@ -37,6 +38,9 @@ func TestLoad_DoHValid(t *testing.T) {
 	}
 	if cfg.DoH.ACME.HTTP01Listen != "203.0.113.10:80" {
 		t.Errorf("ACME.HTTP01Listen = %q", cfg.DoH.ACME.HTTP01Listen)
+	}
+	if cfg.DoH.ACME.AccountKeyFile != "/var/lib/shadowdns/acme/account.key" {
+		t.Errorf("ACME.AccountKeyFile = %q", cfg.DoH.ACME.AccountKeyFile)
 	}
 }
 
@@ -112,8 +116,21 @@ doh:
   acme:
     directory_url: "https://acme.example.com/dir"
     ip: "203.0.113.10"
+    account_key_file: "/var/lib/shadowdns/acme/account.key"
 `,
 			wantInErr: "http01_listen",
+		},
+		{
+			name: "missing acme.account_key_file",
+			yaml: `
+doh:
+  listen: "203.0.113.10:443"
+  acme:
+    directory_url: "https://acme.example.com/dir"
+    ip: "203.0.113.10"
+    http01_listen: "203.0.113.10:80"
+`,
+			wantInErr: "account_key_file",
 		},
 	}
 	for _, tc := range cases {
@@ -232,6 +249,19 @@ doh:
     http01_listen: "203.0.113.10:bogusport"
 `,
 			wantInErr: "http01_listen",
+		},
+		{
+			name: "relative account_key_file rejected",
+			yaml: `
+doh:
+  listen: "203.0.113.10:443"
+  acme:
+    directory_url: "https://acme.example.com/dir"
+    ip: "203.0.113.10"
+    http01_listen: "203.0.113.10:80"
+    account_key_file: "relative/account.key"
+`,
+			wantInErr: "account_key_file",
 		},
 		{
 			// The ACME account is registered without a contact, so email is not

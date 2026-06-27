@@ -41,7 +41,8 @@ doh:
     directory_url: "https://127.0.0.1:1/dir"
     ip: "203.0.113.10"
     http01_listen: %q
-`, dohAddr, http01Addr))
+    account_key_file: %q
+`, dohAddr, http01Addr, filepath.Join(dir, "acme", "account.key")))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
