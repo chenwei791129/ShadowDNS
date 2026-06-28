@@ -3,9 +3,84 @@ package dnsutil
 import (
 	"net"
 	"net/netip"
+	"strings"
 
 	"github.com/miekg/dns"
 )
+
+const (
+	// ECSDefaultV4Prefix and ECSDefaultV6Prefix are the SOURCE PREFIX-LENGTH
+	// values applied when a client subnet is specified without an explicit
+	// prefix, matching the Google Public DNS edns_client_subnet defaults.
+	ECSDefaultV4Prefix = 24
+	ECSDefaultV6Prefix = 56
+)
+
+// ParseECSParam parses an "<ip>[/<prefix>]" client-subnet string (the
+// application/dns-json edns_client_subnet parameter) into a query-form
+// EDNS Client Subnet option. When the prefix is omitted it defaults to /24
+// for an IPv4 address and /56 for an IPv6 address. Host bits beyond the
+// source prefix are masked to zero so the option is not rejected as
+// malformed by ClassifyECS. It reports ok=false for an unparseable value.
+func ParseECSParam(s string) (*dns.EDNS0_SUBNET, bool) {
+	var p netip.Prefix
+	if strings.Contains(s, "/") {
+		pp, err := netip.ParsePrefix(s)
+		if err != nil {
+			return nil, false
+		}
+		p = pp
+	} else {
+		addr, err := netip.ParseAddr(s)
+		if err != nil {
+			return nil, false
+		}
+		addr = addr.Unmap()
+		bits := ECSDefaultV4Prefix
+		if addr.Is6() {
+			bits = ECSDefaultV6Prefix
+		}
+		p = netip.PrefixFrom(addr, bits)
+	}
+	opt := BuildQueryECS(p)
+	if opt == nil {
+		return nil, false
+	}
+	return opt, true
+}
+
+// BuildQueryECS constructs a query-form EDNS Client Subnet option (RFC 7871)
+// for the client subnet p. The prefix's host bits are masked to zero (the
+// classifier rejects an option whose bits are set beyond SOURCE PREFIX-LENGTH)
+// and SCOPE PREFIX-LENGTH is 0, as required for a query option. It returns nil
+// for an invalid prefix. The FAMILY and address width are derived from the
+// prefix's address, the single point where ECS family shape is built.
+func BuildQueryECS(p netip.Prefix) *dns.EDNS0_SUBNET {
+	if !p.IsValid() {
+		return nil
+	}
+	masked := p.Masked()
+	addr := masked.Addr().Unmap()
+	family := uint16(2)
+	if addr.Is4() {
+		family = 1
+	}
+	// Reject a prefix whose length exceeds the family's address width — e.g. a
+	// v4-mapped IPv6 input like ::ffff:198.51.100.0/120 unmaps to IPv4 but
+	// keeps SourceNetmask 120, which ClassifyECS would later reject as
+	// malformed (and silently discard). Catch it here so the caller returns a
+	// 400 instead of injecting an option the server drops.
+	if int(masked.Bits()) > familyBits(family) {
+		return nil
+	}
+	return &dns.EDNS0_SUBNET{
+		Code:          dns.EDNS0SUBNET,
+		Family:        family,
+		SourceNetmask: uint8(masked.Bits()),
+		SourceScope:   0,
+		Address:       net.IP(addr.AsSlice()),
+	}
+}
 
 // ECSClass is the handler-layer classification of an EDNS Client Subnet
 // option found in a query (RFC 7871). A distinct type (rather than bools)

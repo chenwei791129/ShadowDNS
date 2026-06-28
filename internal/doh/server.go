@@ -39,7 +39,10 @@ const (
 // NewServer; obtain the HTTP handler with Handler (used by Run for the HTTPS
 // listener and by tests via httptest).
 type Server struct {
-	dns     *server.Server
+	// dns is the shared authoritative query path. It is held as the dns.Handler
+	// interface (server.Server satisfies it) since only ServeDNS is invoked,
+	// which also lets tests inject a stub to exercise the empty-capture guard.
+	dns     dns.Handler
 	cfg     *shadowdnscfg.DoHConfig
 	metrics dohMetrics
 	logger  *zap.Logger
@@ -188,11 +191,20 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// handleGet decodes the base64url (no padding) `dns` query parameter per
-// RFC 8484 §4.1.1 and dispatches it.
+// handleGet serves either RFC 8484 wire-format or application/dns-json on the
+// GET path. The `dns` parameter takes precedence: when present the request is
+// always wire-format regardless of Accept, so a wire query is never misrouted
+// to the JSON parser. With no `dns` parameter and an Accept header listing
+// application/dns-json, the request is served as JSON; otherwise it falls back
+// to the wire path (which rejects the missing `dns` parameter per RFC 8484).
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
-	encoded := r.URL.Query().Get("dns")
+	query := r.URL.Query()
+	encoded := query.Get("dns")
 	if encoded == "" {
+		if acceptsDNSJSON(r.Header.Get("Accept")) {
+			s.serveJSON(w, r, query)
+			return
+		}
 		http.Error(w, "missing dns query parameter", http.StatusBadRequest)
 		return
 	}
@@ -244,20 +256,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, raw []byte) {
 	}
 
 	rw := newResponseWriter(remoteTCPAddr(r), localTCPAddr(r))
-	if isZoneTransferQuery(req) {
-		// AXFR/IXFR stream multiple DNS messages over one connection, which has
-		// no meaning in a single RFC 8484 request/response exchange (and the
-		// single-shot synthetic writer would capture only the last envelope,
-		// yielding a corrupt transfer). Refuse them at the DoH layer with a
-		// well-formed REFUSED response.
-		refused := new(dns.Msg)
-		refused.SetReply(req)
-		refused.RecursionAvailable = false
-		refused.Rcode = dns.RcodeRefused
-		_ = rw.WriteMsg(refused)
-	} else {
-		s.dns.ServeDNS(rw, req)
-	}
+	s.dispatch(rw, req)
 
 	if len(rw.packed) == 0 {
 		// ServeDNS always writes a response on every path; an empty capture
@@ -270,9 +269,36 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, raw []byte) {
 
 	h := w.Header()
 	h.Set("Content-Type", dnsMediaType)
-	h.Set("Cache-Control", "max-age="+strconv.FormatUint(uint64(minAnswerTTL(rw.msg)), 10))
+	setCacheControl(h, rw.msg)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(rw.packed)
+}
+
+// setCacheControl sets the TTL-bounded Cache-Control header shared by both DoH
+// transports: max-age is the smallest Answer TTL (0 for an empty answer), so a
+// response never advertises a lifetime beyond its shortest record. Centralizing
+// it keeps the wire and JSON paths from drifting on this cache policy.
+func setCacheControl(h http.Header, m *dns.Msg) {
+	h.Set("Cache-Control", "max-age="+strconv.FormatUint(uint64(minAnswerTTL(m)), 10))
+}
+
+// dispatch runs req through the shared authoritative query path, capturing the
+// response in rw. It is the single dispatch point for both the wire and JSON
+// transports, so they share identical zone-transfer refusal semantics: AXFR/
+// IXFR stream multiple messages over one connection, which has no meaning in a
+// single request/response exchange (and the single-shot synthetic writer would
+// capture only the last envelope), so they are refused at the DoH layer with a
+// well-formed REFUSED response rather than entering the transfer path.
+func (s *Server) dispatch(rw *responseWriter, req *dns.Msg) {
+	if isZoneTransferQuery(req) {
+		refused := new(dns.Msg)
+		refused.SetReply(req)
+		refused.RecursionAvailable = false
+		refused.Rcode = dns.RcodeRefused
+		_ = rw.WriteMsg(refused)
+		return
+	}
+	s.dns.ServeDNS(rw, req)
 }
 
 // minAnswerTTL returns the smallest TTL among the response Answer records, or

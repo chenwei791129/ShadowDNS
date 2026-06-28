@@ -33,10 +33,17 @@ const protoLabel = "doh"
 type responseWriter struct {
 	remote *net.TCPAddr
 	local  *net.TCPAddr
+	// skipPack, when true, makes WriteMsg capture only the structured message
+	// (msg) and skip wire serialization. The DoH JSON path serializes from msg
+	// and never sends packed, so packing the response would be wasted work on
+	// every JSON query.
+	skipPack bool
 	// msg holds the response message passed to WriteMsg (nil if only Write was
-	// used); the handler reads its Answer TTLs to bound the HTTP cache header.
+	// used); the handler reads its Answer TTLs to bound the HTTP cache header
+	// and, on the JSON path, serializes it into the response body.
 	msg *dns.Msg
-	// packed is the wire-format response captured from WriteMsg/Write.
+	// packed is the wire-format response captured from WriteMsg/Write. It is
+	// left empty when skipPack is set.
 	packed []byte
 }
 
@@ -47,18 +54,30 @@ func newResponseWriter(remote, local *net.TCPAddr) *responseWriter {
 	return &responseWriter{remote: remote, local: local}
 }
 
+// newJSONResponseWriter builds a writer for a DoH JSON request: it captures the
+// structured message but skips wire serialization, since the JSON path reads
+// only the message.
+func newJSONResponseWriter(remote, local *net.TCPAddr) *responseWriter {
+	return &responseWriter{remote: remote, local: local, skipPack: true}
+}
+
 func (w *responseWriter) LocalAddr() net.Addr  { return w.local }
 func (w *responseWriter) RemoteAddr() net.Addr { return w.remote }
 
-// WriteMsg packs m and captures both the message and its wire form. ServeDNS
-// assembles a complete message (compression on, no UDP truncation for the
-// synthetic non-UDP writer) before calling this exactly once per query.
+// WriteMsg captures the response message and, unless skipPack is set, its wire
+// form. ServeDNS assembles a complete message (compression on, no UDP
+// truncation for the synthetic non-UDP writer) before calling this exactly once
+// per query. The JSON path sets skipPack so the message is captured without the
+// wasted wire serialization it never sends.
 func (w *responseWriter) WriteMsg(m *dns.Msg) error {
+	w.msg = m
+	if w.skipPack {
+		return nil
+	}
 	packed, err := m.Pack()
 	if err != nil {
 		return err
 	}
-	w.msg = m
 	w.packed = packed
 	return nil
 }

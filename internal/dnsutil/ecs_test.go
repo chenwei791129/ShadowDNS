@@ -302,3 +302,56 @@ func TestClassifyECS_WireRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestParseECSParam(t *testing.T) {
+	tests := []struct {
+		name        string
+		param       string
+		wantOK      bool
+		wantFamily  uint16
+		wantNetmask uint8
+		wantAddr    string
+	}{
+		// Default prefix by family (spec example table).
+		{name: "ipv4 default /24", param: "198.51.100.0", wantOK: true, wantFamily: 1, wantNetmask: 24, wantAddr: "198.51.100.0"},
+		{name: "ipv4 explicit /16", param: "198.51.100.0/16", wantOK: true, wantFamily: 1, wantNetmask: 16, wantAddr: "198.51.0.0"},
+		{name: "ipv6 default /56", param: "2001:db8::", wantOK: true, wantFamily: 2, wantNetmask: 56, wantAddr: "2001:db8::"},
+		// Host bits beyond the prefix are masked rather than rejected.
+		{name: "ipv4 host bits masked", param: "198.51.100.5/24", wantOK: true, wantFamily: 1, wantNetmask: 24, wantAddr: "198.51.100.0"},
+		// Unparseable values.
+		{name: "garbage", param: "notanip", wantOK: false},
+		{name: "bad prefix", param: "198.51.100.0/33", wantOK: false},
+		{name: "empty", param: "", wantOK: false},
+		// v4-mapped IPv6 prefix wider than the IPv4 family unmaps to IPv4 but
+		// keeps an out-of-range netmask; must be rejected, not silently built
+		// into an option ClassifyECS would later discard as malformed.
+		{name: "v4-mapped over-width", param: "::ffff:198.51.100.0/120", wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opt, ok := ParseECSParam(tt.param)
+			if ok != tt.wantOK {
+				t.Fatalf("ParseECSParam(%q) ok = %v, want %v", tt.param, ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if opt.Family != tt.wantFamily {
+				t.Errorf("Family = %d, want %d", opt.Family, tt.wantFamily)
+			}
+			if opt.SourceNetmask != tt.wantNetmask {
+				t.Errorf("SourceNetmask = %d, want %d", opt.SourceNetmask, tt.wantNetmask)
+			}
+			if opt.SourceScope != 0 {
+				t.Errorf("SourceScope = %d, want 0 (query form)", opt.SourceScope)
+			}
+			if got := opt.Address.String(); got != tt.wantAddr {
+				t.Errorf("Address = %s, want %s", got, tt.wantAddr)
+			}
+			// A built option must classify as valid (host bits masked).
+			if class, _ := ClassifyECS(opt); class != ECSValid {
+				t.Errorf("ClassifyECS = %v, want ECSValid", class)
+			}
+		})
+	}
+}
