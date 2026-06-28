@@ -42,6 +42,23 @@ doh:
 | `rewrite_rdata_labels` | 否（預設 `false`） | 設為 `true` 時，RDATA 名稱欄位（CNAME/SRV target、NS、MX、PTR、SOA 名稱）套用 label-anywhere 改寫——值內出現的 root label 序列全數替換為備援 origin，而不只是 in-bailiwick 後綴。適用於以 templated CDN 式 target 將 root origin 嵌在中間 label 的 zone |
 | `collapse_cname_chain` | 否（預設 `false`） | 設為 `true` 時，此 root 與其所有成員的回應會收合 zone 內 CNAME 鏈——見 [CNAME 鏈收合](../guides/cname-chain-collapsing.md) |
 
+### `rewrite_rdata_labels`：`false` 與 `true` 的實際差異
+
+CDN 託管的 zone 經常回傳**模板化 CNAME**——target 把 zone 自己的 origin 當成中間 label 嵌入，後面再接 CDN 供應商的後綴。假設 `example.com` 是 root、`example.net` 是它的其中一個備援成員，而 root 對 `assets.example.com` 的權威紀錄是：
+
+```text
+assets.example.com.  300  IN  CNAME  assets.example.com.c.cdn.example.org.
+```
+
+此時對備援名稱發出查詢——`assets.example.net A`。無論哪種設定，ShadowDNS 都會把 **owner name** 改寫回備援 namespace；兩種設定的差別只在 **CNAME target** 怎麼改寫：
+
+| `rewrite_rdata_labels` | `assets.example.net` 回傳的 CNAME target | 正確？ |
+|------|------|------|
+| `false`（預設） | `assets.example.com.c.cdn.example.org.` | ✗ —— target 以 `.example.org` 結尾，root origin `example.com` 落在*中間* label，並非 in-bailiwick 後綴。保守規則不會動它，備援因此洩漏了 root 的名字。 |
+| `true` | `assets.example.net.c.cdn.example.org.` | ✓ —— label-anywhere 規則把嵌入的 `example.com` 替換成備援 origin `example.net`，與原生託管的 `example.net` zone 回傳結果完全一致。 |
+
+當 root 的紀錄指向把 root origin 當成嵌入 label 的模板化 CDN target 時，就要設 `rewrite_rdata_labels: true`。一般 zone 的 RDATA 名稱若不是 in-bailiwick 就是真正的外部名稱，維持預設 `false`，避免把剛好等於 root origin 的 label 誤改寫。
+
 ## aliases 規則
 
 - 同一個備援網域在所有 root 之間（正規化後）最多只能出現一次。

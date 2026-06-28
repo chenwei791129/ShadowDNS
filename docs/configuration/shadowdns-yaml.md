@@ -42,6 +42,23 @@ Each key under `aliases` is a root domain; the value is an object:
 | `rewrite_rdata_labels` | No (default `false`) | When `true`, RDATA name fields (CNAME/SRV targets, NS, MX, PTR, SOA names) get a label-anywhere rewrite — every root-label sequence inside the value is replaced with the backup origin, not just the in-bailiwick suffix. For zones using templated CDN-style targets that embed the root origin as a middle label |
 | `collapse_cname_chain` | No (default `false`) | When `true`, in-zone CNAME chains are collapsed in responses for this root and all of its members — see [CNAME Chain Collapsing](../guides/cname-chain-collapsing.md) |
 
+### `rewrite_rdata_labels`: `false` vs `true` in practice
+
+CDN-fronted zones often return a **templated CNAME** whose target embeds the zone's own origin as a middle label before the CDN provider's suffix. Suppose `example.com` is the root and `example.net` is one of its backup members, and the root's authoritative record for `assets.example.com` is:
+
+```text
+assets.example.com.  300  IN  CNAME  assets.example.com.c.cdn.example.org.
+```
+
+A query then arrives for the backup name — `assets.example.net A`. ShadowDNS rewrites the **owner name** back into the backup namespace either way; the two settings differ only in how the **CNAME target** is rewritten:
+
+| `rewrite_rdata_labels` | CNAME target returned for `assets.example.net` | Correct? |
+|------|------|------|
+| `false` (default) | `assets.example.com.c.cdn.example.org.` | ✗ — the target ends in `.example.org`, so the root origin `example.com` sits as a *middle* label, not an in-bailiwick suffix. The conservative rule leaves it untouched, and the backup leaks the root's name. |
+| `true` | `assets.example.net.c.cdn.example.org.` | ✓ — the label-anywhere rule replaces the embedded `example.com` with the backup origin `example.net`, exactly what a natively-served `example.net` zone would return. |
+
+Set `rewrite_rdata_labels: true` whenever a root's records point at templated CDN targets that carry the root origin as an embedded label. Leave it `false` (the default) for ordinary zones whose RDATA names are either in-bailiwick or genuinely external, where a label that coincidentally equals the root origin should not be rewritten.
+
 ## aliases rules
 
 - A given backup domain may appear at most once across all roots (after normalization).
