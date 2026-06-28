@@ -70,6 +70,22 @@ Because the certificate is bound to the IP rather than a hostname, clients conne
 
 ---
 
+## ACME HTTP-01 listener hardening
+
+The HTTP-01 responder on port 80 (`acme.http01_listen`) is, by design, the **only fully public HTTP surface ShadowDNS exposes** — it must accept connections from the entire Internet so the ACME server can reach it. To keep that attack surface and fingerprint as small as possible, the listener answers exactly **one** kind of request and drops everything else.
+
+A request is served (`200 OK` with the key authorization body) only when **all** of the following hold:
+
+- the method is **GET**, and
+- the path is **under** `/.well-known/acme-challenge/` (the trailing slash matters), and
+- the token names a challenge that is **currently being presented** for an in-flight authorization.
+
+Every other request — an unknown path, an unknown or empty token, the bare `/.well-known/acme-challenge` with no trailing slash, or any non-GET method — is **aborted at the connection level**. ShadowDNS sends **no HTTP response whatsoever**: no status line, no headers, no body. The client sees a connection reset / EOF, and the server logs no stack trace. This is the same posture as nginx's `return 444`. In particular there is **no** `404` for unknown paths and **no** `301` redirect for the slash-less subtree path — both of those would otherwise leak that a server is listening and what it is.
+
+This hardening has **no effect on legitimate certificate issuance or renewal**: the ACME validator only ever fetches the exact token ShadowDNS just began presenting, which is the one request shape that is served `200`. Certificates continue to be issued and renewed normally.
+
+---
+
 ## ACME account key persistence
 
 ShadowDNS persists its ACME **account** private key to the absolute path set in `acme.account_key_file` and reuses it across restarts and registration retries. The recommended location is under the systemd state directory:
@@ -99,7 +115,7 @@ Operational notes:
 
 DoH uses two TCP ports with very different exposure requirements:
 
-- **Port 80** (`acme.http01_listen`) **must be reachable from the public Internet** so the ACME server can complete HTTP-01 validation. This responder serves **only** `/.well-known/acme-challenge/` — every other path returns `404`. It carries no DNS data.
+- **Port 80** (`acme.http01_listen`) **must be reachable from the public Internet** so the ACME server can complete HTTP-01 validation. This responder is ShadowDNS's only fully public HTTP surface, so it is hardened to answer exactly one kind of request: a GET for a live challenge token returns `200` with the key authorization; **every other request is dropped at the connection level** — no HTTP response is sent at all (no `404`, no `301` redirect), the client just sees a reset/EOF. See [ACME HTTP-01 listener hardening](#acme-http-01-listener-hardening). It carries no DNS data.
 - **Port 443** (`listen`, the DoH service) **should be restricted by firewall to trusted source IPs**. It does **not** need to be reachable by the ACME server, only by the operators who use it to verify records.
 
 A typical deployment opens port 80 to the world (challenge-only) and limits port 443 to a small allowlist of operator addresses.
@@ -125,6 +141,7 @@ DoH queries are visible in the standard metrics alongside UDP and TCP:
 - `shadowdns_dns_requests_total` carries a `proto="doh"` label, distinct from `proto="udp"` and `proto="tcp"`, so DoH traffic can be counted and rate-tracked separately.
 - `shadowdns_doh_cert_renewals_total{result="success"|"failure"}` counts certificate renewal attempts by outcome.
 - `shadowdns_doh_cert_not_after_timestamp_seconds` records the current certificate's expiry as a Unix timestamp, for alerting on imminent expiry.
+- `shadowdns_doh_acme_dropped_total{reason="unknown_path"|"unknown_token"|"bad_method"}` counts the probe connections the port 80 HTTP-01 listener aborted without responding (see [ACME HTTP-01 listener hardening](#acme-http-01-listener-hardening)). Use it to observe how much port 80 is being probed.
 
 See [Monitoring](../operations/monitoring.md) for how these are scraped and dashboarded.
 

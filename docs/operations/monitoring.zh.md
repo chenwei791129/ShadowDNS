@@ -55,6 +55,7 @@ scrape_configs:
 | `shadowdns_reload_total` | counter | `result` | SIGHUP reload 嘗試次數 |
 | `shadowdns_config_last_reload_success_timestamp_seconds` | gauge | — | 最近一次成功載入的 Unix 時間 |
 | `shadowdns_panics_total` | counter | — | handler 復原的 panic 數 |
+| `shadowdns_doh_acme_dropped_total` | counter | `reason` | ACME HTTP-01 listener 中止的連線，依 `reason` 分類 |
 | `go_*` | 多種 | — | Go runtime（goroutine、heap、GC） |
 | `process_*` | 多種 | — | 行程資源使用（僅限 Linux） |
 
@@ -83,6 +84,33 @@ sum(rate(shadowdns_dns_requests_total[5m]))`。
     評估** —— 並不表示 ECS 決定了最終 view。該 view 仍可能是由 IP/CIDR ACL rule
     選中的，而 ACL rule 永遠評估真實來源 IP。請把這個 label 讀作「ECS geo 參與」，
     而非「ECS 驅動的 view 選擇」。
+
+### ACME HTTP-01 listener 指標
+
+port 80 上的 ACME HTTP-01 listener 是 ShadowDNS 唯一完全暴露於公開網際網路的
+HTTP 面。對它的每個請求都會在連線層被中止 —— **不會回任何 HTTP response**（nginx
+`return 444` 語意）—— **唯一例外**是針對有效 challenge token 的 `GET`，這類請求會
+正常提供服務。中止之前，listener 會將 `shadowdns_doh_acme_dropped_total` 遞增一次，
+並以中止的 `reason` 作為 label。
+
+- `reason` 為下列之一：
+    - `unknown_path` —— 請求路徑落在 `/.well-known/acme-challenge/` 之外。
+    - `unknown_token` —— 路徑在 `/.well-known/acme-challenge/` 之下，但 token 未知
+      或為空（含結尾無斜線的 `/.well-known/acme-challenge`）。
+    - `bad_method` —— 在符合 challenge 路徑上使用非 `GET` 的 method。
+- 三個 `reason` series 在啟動時即預先初始化為 `0`，因此在任何探測到來前就會出現在
+  端點上。
+
+可用以下查詢觀測公開 port 80 面被探測的量與型態：
+
+```promql
+sum(rate(shadowdns_doh_acme_dropped_total[5m])) by (reason)
+```
+
+!!! note "中止不計入 panic"
+    listener 透過 `panic(http.ErrAbortHandler)` 中止連線，但這**不會**遞增
+    `shadowdns_panics_total` —— 該 counter 只追蹤 DNS `ServeDNS` 路徑上復原的
+    panic，而此 listener 不在該路徑上。
 
 ## 匯入 Grafana dashboard
 

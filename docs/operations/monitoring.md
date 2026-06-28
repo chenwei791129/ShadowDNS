@@ -60,6 +60,7 @@ moving on to Grafana.
 | `shadowdns_reload_total` | counter | `result` | SIGHUP reload attempts |
 | `shadowdns_config_last_reload_success_timestamp_seconds` | gauge | — | Unix time of the last successful load |
 | `shadowdns_panics_total` | counter | — | Panics recovered by handlers |
+| `shadowdns_doh_acme_dropped_total` | counter | `reason` | Connections aborted by the ACME HTTP-01 listener, classified by `reason` |
 | `go_*` | various | — | Go runtime (goroutines, heap, GC) |
 | `process_*` | various | — | Process resource usage (Linux-only) |
 
@@ -92,6 +93,37 @@ view resolves on the main query path. Queries refused before a view is resolved
     still have been chosen by an IP/CIDR ACL rule, which always evaluates the
     real source IP. Read this label as "ECS geo participation", not "ECS-driven
     view selection".
+
+### ACME HTTP-01 listener metrics
+
+The ACME HTTP-01 listener on port 80 is the only HTTP surface ShadowDNS exposes
+fully to the public internet. Every request to it is aborted at the connection
+level — **no HTTP response is ever returned** (nginx `return 444` semantics) —
+**except** a `GET` for a valid challenge token, which is served normally. Before
+aborting, the listener increments `shadowdns_doh_acme_dropped_total` once,
+labelled with the `reason` for the drop.
+
+- `reason` is one of:
+    - `unknown_path` — the request path falls outside
+      `/.well-known/acme-challenge/`.
+    - `unknown_token` — the path is under `/.well-known/acme-challenge/` but the
+      token is unknown or empty (this includes the trailing-slash-less
+      `/.well-known/acme-challenge`).
+    - `bad_method` — a non-`GET` method on an otherwise matching challenge path.
+- All three `reason` series are pre-initialized to `0` at startup, so they are
+  present on the endpoint before any probe arrives.
+
+Use this to observe how much — and what kind of — probing the public port 80
+surface attracts:
+
+```promql
+sum(rate(shadowdns_doh_acme_dropped_total[5m])) by (reason)
+```
+
+!!! note "Aborts do not count as panics"
+    The listener aborts a connection via `panic(http.ErrAbortHandler)`, but this
+    does **not** increment `shadowdns_panics_total` — that counter only tracks
+    panics recovered on the DNS `ServeDNS` path, which this listener is not on.
 
 ## Importing the Grafana dashboard
 
