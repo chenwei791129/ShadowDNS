@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.24.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.23.0...v0.24.0) (2026-06-28)
+
+
+### Features
+
+* **doh:** harden ACME HTTP-01 listener with nginx return 444 semantics ([d24b2ce](https://github.com/chenwei791129/ShadowDNS/commit/d24b2ce97b43ecc5b8eecbd9c3143dd7627f4113))
+* **doh:** serve application/dns-json over GET ([fff367b](https://github.com/chenwei791129/ShadowDNS/commit/fff367bacf10edb8aac1f532ecd5acee3bcbe3f4))
+
 ## [0.23.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.22.0...v0.23.0) (2026-06-27)
 
 
