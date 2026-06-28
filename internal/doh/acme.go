@@ -31,6 +31,21 @@ import (
 // acmeChallengeBasePath is the RFC 8555 HTTP-01 challenge path prefix.
 const acmeChallengeBasePath = "/.well-known/acme-challenge/"
 
+// acmeChallengeBaseNoSlash is acmeChallengeBasePath without its trailing slash,
+// derived once rather than per request. http.ServeMux would 301-redirect a
+// request to this exact path; the handwritten handler instead treats it as an
+// in-namespace request whose token lookup misses (TrimPrefix leaves the path
+// unchanged, so the lookup misses) and aborts it as unknown_token.
+var acmeChallengeBaseNoSlash = strings.TrimSuffix(acmeChallengeBasePath, "/")
+
+// Bounded reasons for an aborted ACME HTTP-01 connection, used as the `reason`
+// label of shadowdns_doh_acme_dropped_total. Cardinality is fixed at three.
+const (
+	dropReasonUnknownPath  = "unknown_path"  // path outside acmeChallengeBasePath
+	dropReasonUnknownToken = "unknown_token" // in the challenge namespace, token unknown or empty
+	dropReasonBadMethod    = "bad_method"    // a non-GET method on an otherwise-matching path
+)
+
 // acmeProfile is the Let's Encrypt certificate profile required for IP-address
 // certificates: a short-lived (~6 day) profile. Fixed because this change
 // targets the IP-certificate scenario exclusively (see design Non-Goals).
@@ -60,25 +75,56 @@ type certMetrics interface {
 	SetDoHCertNotAfter(t time.Time)
 }
 
+// acmeDropMetrics records connections aborted by the ACME HTTP-01 listener,
+// labeled by bounded reason. Implemented by *metrics.Metrics; a nil value
+// disables recording.
+type acmeDropMetrics interface {
+	RecordDoHACMEDropped(reason string)
+}
+
+// dohMetrics is the full metrics surface the DoH subsystem needs: certificate
+// renewal recording (certManager) plus ACME listener drop recording
+// (challengeResponder). Held by Server as a single value so a nil *metrics.Metrics
+// becomes one nil interface (see NewServer) shared by both consumers.
+type dohMetrics interface {
+	certMetrics
+	acmeDropMetrics
+}
+
 // challengeResponder is a long-lived ACME HTTP-01 responder. It implements
 // lego's challenge.Provider (Present/CleanUp store and drop token→keyAuth
-// pairs) and serves those key authorizations on a dedicated listener that
-// returns 404 for every path outside /.well-known/acme-challenge/. Keeping the
-// listener long-lived (rather than letting lego bring one up per solve) lets
-// the server own its timeouts and graceful shutdown and keeps port 80 bound
-// for the unpredictable multi-perspective Let's Encrypt validation.
+// pairs) and serves those key authorizations on a dedicated, fully public
+// port-80 listener. Its only legitimate traffic is a GET for a currently
+// presented challenge token; every other request aborts the connection without
+// an HTTP response (nginx `return 444` semantics) to minimize the public attack
+// surface. Keeping the listener long-lived (rather than letting lego bring one
+// up per solve) lets the server own its timeouts and graceful shutdown and
+// keeps port 80 bound for the unpredictable multi-perspective Let's Encrypt
+// validation.
 type challengeResponder struct {
-	tokens sync.Map // token(string) -> keyAuth(string)
-	logger *zap.Logger
+	tokens  sync.Map // token(string) -> keyAuth(string)
+	logger  *zap.Logger
+	metrics acmeDropMetrics // nil disables drop recording
 }
 
 var _ challenge.Provider = (*challengeResponder)(nil)
 
-func newChallengeResponder(logger *zap.Logger) *challengeResponder {
+func newChallengeResponder(logger *zap.Logger, m acmeDropMetrics) *challengeResponder {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &challengeResponder{logger: logger}
+	return &challengeResponder{logger: logger, metrics: m}
+}
+
+// recordDrop increments the drop counter for reason. The c.metrics != nil guard
+// is load-bearing, not redundant: when metrics are disabled c.metrics is a nil
+// acmeDropMetrics interface, and a method call on it would panic — the guard,
+// not RecordDoHACMEDropped's nil-receiver check, is what makes the abort path
+// safe with metrics off.
+func (c *challengeResponder) recordDrop(reason string) {
+	if c.metrics != nil {
+		c.metrics.RecordDoHACMEDropped(reason)
+	}
 }
 
 // Present stores the key authorization so the listener can serve it.
@@ -93,25 +139,47 @@ func (c *challengeResponder) CleanUp(_, token, _ string) error {
 	return nil
 }
 
-// Handler serves the stored key authorizations. Only paths under
-// /.well-known/acme-challenge/ with a known token return 200 + the key
-// authorization; everything else (including an empty token) returns 404.
+// Handler serves the stored key authorizations with nginx `return 444`
+// semantics. A request returns HTTP 200 + the key authorization only when the
+// method is GET, the path is in the challenge namespace, and the trailing token
+// matches a currently-presented authorization. Every other request increments
+// the drop counter for its reason and panics with http.ErrAbortHandler, which
+// net/http translates into closing the connection without sending any response
+// (no status line, headers, or body) and without logging a stack trace.
+//
+// A handwritten handler (not http.ServeMux) is used deliberately: ServeMux
+// would 301-redirect the trailing-slash-less /.well-known/acme-challenge to the
+// slash form, an observable fingerprint that bypasses the abort path. Here that
+// request is classified unknown_token and aborted like any other.
+//
+// This handler is not on internal/server's DNS ServeDNS path, so its panic is
+// recovered by net/http's per-request recover, never by ShadowDNS's recover,
+// and so does not increment shadowdns_panics_total.
 func (c *challengeResponder) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc(acmeChallengeBasePath, func(w http.ResponseWriter, r *http.Request) {
-		token := strings.TrimPrefix(r.URL.Path, acmeChallengeBasePath)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The challenge namespace is acmeChallengeBasePath plus its exact
+		// trailing-slash-less form (which then misses the token lookup below
+		// and aborts as unknown_token).
+		path := r.URL.Path
+		inNamespace := strings.HasPrefix(path, acmeChallengeBasePath) ||
+			path == acmeChallengeBaseNoSlash
+		if !inNamespace {
+			c.recordDrop(dropReasonUnknownPath)
+			panic(http.ErrAbortHandler)
+		}
+		if r.Method != http.MethodGet {
+			c.recordDrop(dropReasonBadMethod)
+			panic(http.ErrAbortHandler)
+		}
+		token := strings.TrimPrefix(path, acmeChallengeBasePath)
 		v, ok := c.tokens.Load(token)
 		if !ok {
-			http.NotFound(w, r)
-			return
+			c.recordDrop(dropReasonUnknownToken)
+			panic(http.ErrAbortHandler)
 		}
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = io.WriteString(w, v.(string))
 	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
-	})
-	return mux
 }
 
 // acmeUser implements lego's registration.User for a single ACME account whose

@@ -41,6 +41,7 @@ type Metrics struct {
 
 	dohCertRenewalsTotal     *prometheus.CounterVec
 	dohCertNotAfterTimestamp prometheus.Gauge
+	dohACMEDroppedTotal      *prometheus.CounterVec
 }
 
 // New creates a fresh prometheus.Registry, registers all ShadowDNS collectors
@@ -155,6 +156,18 @@ func New() *Metrics {
 		Help:      "Unix timestamp of the current DoH TLS certificate's NotAfter (expiry); 0 before the first certificate is obtained. Alert on time() approaching this value to catch stalled renewals.",
 	})
 
+	dohACMEDroppedTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "shadowdns",
+		Subsystem: "doh",
+		Name:      "acme_dropped_total",
+		Help:      "Connections aborted by the ACME HTTP-01 listener (nginx return 444 semantics), partitioned by reason for the probe traffic on the public port 80.",
+	}, []string{"reason"})
+	// Pre-initialise the bounded reason series so they are present with value 0
+	// from startup; probe-rate expressions then never see an absent metric.
+	dohACMEDroppedTotal.WithLabelValues("unknown_path")
+	dohACMEDroppedTotal.WithLabelValues("unknown_token")
+	dohACMEDroppedTotal.WithLabelValues("bad_method")
+
 	reg.MustRegister(
 		// Standard Go runtime and process collectors. The custom registry does
 		// not auto-register these (unlike the default registerer), so add them
@@ -176,6 +189,7 @@ func New() *Metrics {
 		viewSelected,
 		dohCertRenewalsTotal,
 		dohCertNotAfterTimestamp,
+		dohACMEDroppedTotal,
 	)
 
 	return &Metrics{
@@ -197,6 +211,7 @@ func New() *Metrics {
 
 		dohCertRenewalsTotal:     dohCertRenewalsTotal,
 		dohCertNotAfterTimestamp: dohCertNotAfterTimestamp,
+		dohACMEDroppedTotal:      dohACMEDroppedTotal,
 	}
 }
 
@@ -373,4 +388,19 @@ func (m *Metrics) SetDoHCertNotAfter(t time.Time) {
 		return
 	}
 	m.dohCertNotAfterTimestamp.Set(float64(t.Unix()))
+}
+
+// RecordDoHACMEDropped increments shadowdns_doh_acme_dropped_total for the given
+// bounded reason ("unknown_path", "unknown_token", or "bad_method") when the
+// ACME HTTP-01 listener aborts a connection. Safe to call on a nil *Metrics
+// receiver (e.g. direct callers / tests). Note this does NOT cover the
+// metrics-disabled path: when metrics are off the listener holds a nil
+// acmeDropMetrics interface, so challengeResponder.recordDrop must keep its own
+// interface-nil guard — a method call on the nil interface would panic before
+// ever reaching this receiver check.
+func (m *Metrics) RecordDoHACMEDropped(reason string) {
+	if m == nil {
+		return
+	}
+	m.dohACMEDroppedTotal.WithLabelValues(reason).Inc()
 }

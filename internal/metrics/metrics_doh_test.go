@@ -48,3 +48,47 @@ func TestDoHCertMetrics(t *testing.T) {
 		m.SetDoHCertNotAfter(time.Now())  // must not panic
 	})
 }
+
+// TestDoHACMEDroppedMetric covers the ACME HTTP-01 listener drop counter:
+// the three bounded reason series are pre-initialised at zero, each reason is
+// counted independently, and the nil receiver is a safe no-op.
+func TestDoHACMEDroppedMetric(t *testing.T) {
+	reasons := []string{"unknown_path", "unknown_token", "bad_method"}
+
+	t.Run("PreInitialisedAtZero", func(t *testing.T) {
+		m := metrics.New()
+
+		mf := gatherMetrics(t, m)["shadowdns_doh_acme_dropped_total"]
+		if mf == nil {
+			t.Fatal("shadowdns_doh_acme_dropped_total not found at registration")
+		}
+		for _, reason := range reasons {
+			if v, ok := findCounterValue(mf, map[string]string{"reason": reason}); !ok || v != 0 {
+				t.Errorf("dropped_total{reason=%q} = %v (found=%v), want 0", reason, v, ok)
+			}
+		}
+	})
+
+	t.Run("ReasonsCountedIndependently", func(t *testing.T) {
+		m := metrics.New()
+		m.RecordDoHACMEDropped("unknown_path")
+		m.RecordDoHACMEDropped("unknown_path")
+		m.RecordDoHACMEDropped("unknown_token")
+
+		mf := gatherMetrics(t, m)["shadowdns_doh_acme_dropped_total"]
+		if v, _ := findCounterValue(mf, map[string]string{"reason": "unknown_path"}); v != 2 {
+			t.Errorf("dropped_total{reason=unknown_path} = %f, want 2", v)
+		}
+		if v, _ := findCounterValue(mf, map[string]string{"reason": "unknown_token"}); v != 1 {
+			t.Errorf("dropped_total{reason=unknown_token} = %f, want 1", v)
+		}
+		if v, _ := findCounterValue(mf, map[string]string{"reason": "bad_method"}); v != 0 {
+			t.Errorf("dropped_total{reason=bad_method} = %f, want 0", v)
+		}
+	})
+
+	t.Run("NilReceiverSafe", func(t *testing.T) {
+		var m *metrics.Metrics
+		m.RecordDoHACMEDropped("unknown_path") // must not panic
+	})
+}

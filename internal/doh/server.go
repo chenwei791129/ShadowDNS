@@ -41,7 +41,7 @@ const (
 type Server struct {
 	dns     *server.Server
 	cfg     *shadowdnscfg.DoHConfig
-	metrics certMetrics
+	metrics dohMetrics
 	logger  *zap.Logger
 }
 
@@ -51,11 +51,11 @@ type Server struct {
 // (server.Server); it MUST be non-nil when cfg is non-nil. m records
 // certificate renewal metrics and may be nil.
 //
-// m is taken as the concrete *metrics.Metrics (not the certMetrics interface)
+// m is taken as the concrete *metrics.Metrics (not the dohMetrics interface)
 // so a nil pointer becomes a true nil interface internally — passing a nil
 // *metrics.Metrics straight into an interface field would be a non-nil
-// interface holding a nil pointer (the typed-nil trap), defeating the
-// certManager's nil check.
+// interface holding a nil pointer (the typed-nil trap), defeating the nil
+// checks in certManager and challengeResponder.
 func NewServer(dnsHandler *server.Server, cfg *shadowdnscfg.DoHConfig, m *metrics.Metrics, logger *zap.Logger) *Server {
 	if cfg == nil {
 		return nil
@@ -63,11 +63,11 @@ func NewServer(dnsHandler *server.Server, cfg *shadowdnscfg.DoHConfig, m *metric
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	var cm certMetrics
+	var dm dohMetrics
 	if m != nil {
-		cm = m
+		dm = m
 	}
-	return &Server{dns: dnsHandler, cfg: cfg, metrics: cm, logger: logger}
+	return &Server{dns: dnsHandler, cfg: cfg, metrics: dm, logger: logger}
 }
 
 // Run starts the DoH HTTPS server and the ACME HTTP-01 challenge listener,
@@ -76,7 +76,7 @@ func NewServer(dnsHandler *server.Server, cfg *shadowdnscfg.DoHConfig, m *metric
 // to run in its own goroutine (like the ephemeral API server). A nil DoH
 // Server (no doh section) makes this a no-op via the caller's nil check.
 func (s *Server) Run(ctx context.Context) error {
-	responder := newChallengeResponder(s.logger)
+	responder := newChallengeResponder(s.logger, s.metrics)
 	obtain := newLazyLegoObtainer(s.cfg.ACME, responder)
 	cm := newCertManager(obtain, s.metrics, s.logger)
 	return s.runWith(ctx, responder, cm)

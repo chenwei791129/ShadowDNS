@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 )
 
 // selfSigned builds a self-signed *tls.Certificate with the given common name
@@ -70,16 +72,71 @@ func (f *fakeCertMetrics) SetDoHCertNotAfter(t time.Time) {
 	f.lastSet = t
 }
 
-// ---- Task 4.2: HTTP-01 challenge responder ----
+// ---- HTTP-01 challenge responder: nginx `return 444` semantics ----
 
-func TestChallengeResponder_ServesKeyAuthAnd404(t *testing.T) {
-	c := newChallengeResponder(nil)
+// fakeDropMetrics records ACME HTTP-01 listener drop reasons so a handler test
+// can assert which bounded reason was counted (and that valid traffic is not).
+type fakeDropMetrics struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (f *fakeDropMetrics) RecordDoHACMEDropped(reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.counts == nil {
+		f.counts = make(map[string]int)
+	}
+	f.counts[reason]++
+}
+
+func (f *fakeDropMetrics) count(reason string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.counts[reason]
+}
+
+func (f *fakeDropMetrics) total() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.counts {
+		n += c
+	}
+	return n
+}
+
+// assertAborts invokes h with the given request and asserts it aborts the
+// connection by panicking with http.ErrAbortHandler without writing any HTTP
+// response — no status line, no headers, no body, and in particular no 301
+// redirect (the ServeMux fingerprint this change removes).
+func assertAborts(t *testing.T, h http.Handler, method, target string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	defer func() {
+		r := recover()
+		if r != http.ErrAbortHandler {
+			t.Fatalf("%s %s: recover() = %v, want http.ErrAbortHandler", method, target, r)
+		}
+		if rec.Body.Len() != 0 {
+			t.Errorf("%s %s: wrote body %q, want none", method, target, rec.Body.String())
+		}
+		if len(rec.Header()) != 0 {
+			t.Errorf("%s %s: wrote headers %v, want none", method, target, rec.Header())
+		}
+	}()
+	h.ServeHTTP(rec, httptest.NewRequest(method, target, nil))
+}
+
+func TestChallengeResponder_ServesKeyAuthAndAborts(t *testing.T) {
+	drops := &fakeDropMetrics{}
+	c := newChallengeResponder(nil, drops)
 	if err := c.Present("203.0.113.10", "tok123", "keyauth-value"); err != nil {
 		t.Fatalf("Present: %v", err)
 	}
 	h := c.Handler()
 
-	t.Run("challenge path returns key authorization", func(t *testing.T) {
+	t.Run("valid token GET returns key authorization and does not drop", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, acmeChallengeBasePath+"tok123", nil))
 		if rec.Code != http.StatusOK {
@@ -88,34 +145,127 @@ func TestChallengeResponder_ServesKeyAuthAnd404(t *testing.T) {
 		if got := rec.Body.String(); got != "keyauth-value" {
 			t.Errorf("body = %q, want keyauth-value", got)
 		}
-	})
-
-	t.Run("unknown token returns 404", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, acmeChallengeBasePath+"nope", nil))
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("status = %d, want 404", rec.Code)
+		if drops.total() != 0 {
+			t.Errorf("valid request incremented drop metric: %d", drops.total())
 		}
 	})
 
-	t.Run("non-challenge path returns 404", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("status = %d, want 404", rec.Code)
+	t.Run("unknown path aborts with reason unknown_path", func(t *testing.T) {
+		before := drops.count("unknown_path")
+		assertAborts(t, h, http.MethodGet, "/")
+		if got := drops.count("unknown_path"); got != before+1 {
+			t.Errorf("unknown_path count = %d, want %d", got, before+1)
 		}
 	})
 
-	t.Run("cleanup removes token", func(t *testing.T) {
-		if err := c.CleanUp("203.0.113.10", "tok123", "keyauth-value"); err != nil {
+	t.Run("unknown token aborts with reason unknown_token", func(t *testing.T) {
+		before := drops.count("unknown_token")
+		assertAborts(t, h, http.MethodGet, acmeChallengeBasePath+"nope")
+		if got := drops.count("unknown_token"); got != before+1 {
+			t.Errorf("unknown_token count = %d, want %d", got, before+1)
+		}
+	})
+
+	t.Run("empty token aborts with reason unknown_token", func(t *testing.T) {
+		before := drops.count("unknown_token")
+		assertAborts(t, h, http.MethodGet, acmeChallengeBasePath)
+		if got := drops.count("unknown_token"); got != before+1 {
+			t.Errorf("unknown_token count = %d, want %d", got, before+1)
+		}
+	})
+
+	t.Run("trailing-slash-less base path aborts without redirect, reason unknown_token", func(t *testing.T) {
+		before := drops.count("unknown_token")
+		assertAborts(t, h, http.MethodGet, "/.well-known/acme-challenge")
+		if got := drops.count("unknown_token"); got != before+1 {
+			t.Errorf("unknown_token count = %d, want %d", got, before+1)
+		}
+	})
+
+	t.Run("non-GET method on challenge path aborts with reason bad_method", func(t *testing.T) {
+		before := drops.count("bad_method")
+		assertAborts(t, h, http.MethodPost, acmeChallengeBasePath+"tok123")
+		if got := drops.count("bad_method"); got != before+1 {
+			t.Errorf("bad_method count = %d, want %d", got, before+1)
+		}
+	})
+
+	// Self-contained: uses its own responder so it does not mutate the shared
+	// fixture's tokens (which the other subtests rely on still being present).
+	// This keeps the subtests order- and parallel-independent.
+	t.Run("cleanup makes a previously-valid token abort", func(t *testing.T) {
+		localDrops := &fakeDropMetrics{}
+		lc := newChallengeResponder(nil, localDrops)
+		if err := lc.Present("203.0.113.10", "tok123", "keyauth-value"); err != nil {
+			t.Fatalf("Present: %v", err)
+		}
+		if err := lc.CleanUp("203.0.113.10", "tok123", "keyauth-value"); err != nil {
 			t.Fatalf("CleanUp: %v", err)
 		}
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, acmeChallengeBasePath+"tok123", nil))
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("status after cleanup = %d, want 404", rec.Code)
+		assertAborts(t, lc.Handler(), http.MethodGet, acmeChallengeBasePath+"tok123")
+		if got := localDrops.count("unknown_token"); got != 1 {
+			t.Errorf("unknown_token count after cleanup = %d, want 1", got)
 		}
 	})
+}
+
+// counterValue returns the value of the series in the named metric family whose
+// labels match want exactly, and whether such a series exists.
+func counterValue(t *testing.T, m *metrics.Metrics, name string, want map[string]string) (float64, bool) {
+	t.Helper()
+	mfs, err := m.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, metric := range mf.GetMetric() {
+			labels := make(map[string]string, len(metric.GetLabel()))
+			for _, lp := range metric.GetLabel() {
+				labels[lp.GetName()] = lp.GetValue()
+			}
+			match := true
+			for k, v := range want {
+				if labels[k] != v {
+					match = false
+					break
+				}
+			}
+			if match {
+				return metric.GetCounter().GetValue(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+// TestChallengeResponder_AbortDoesNotIncrementPanics drives the handler through
+// a real net/http server (so net/http's per-request recover handles the
+// ErrAbortHandler panic, as in production) with real metrics injected, and
+// proves the abort path increments shadowdns_doh_acme_dropped_total but never
+// shadowdns_panics_total — the responder is not on ShadowDNS's ServeDNS recover.
+func TestChallengeResponder_AbortDoesNotIncrementPanics(t *testing.T) {
+	m := metrics.New()
+	c := newChallengeResponder(nil, m)
+	srv := httptest.NewServer(c.Handler())
+	defer srv.Close()
+
+	// An unknown-path GET: net/http closes the connection without a response,
+	// so the client observes a transport error rather than a status code.
+	resp, err := http.Get(srv.URL + "/")
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatalf("expected aborted connection (transport error), got status %d", resp.StatusCode)
+	}
+
+	if v, ok := counterValue(t, m, "shadowdns_doh_acme_dropped_total", map[string]string{"reason": "unknown_path"}); !ok || v < 1 {
+		t.Errorf("dropped_total{reason=unknown_path} = %v (found=%v), want >= 1", v, ok)
+	}
+	if v, ok := counterValue(t, m, "shadowdns_panics_total", nil); !ok || v != 0 {
+		t.Errorf("shadowdns_panics_total = %v (found=%v), want 0 (abort must not count as a ShadowDNS panic)", v, ok)
+	}
 }
 
 // ---- Task 4.3: hot-swap and renewal-failure handling ----

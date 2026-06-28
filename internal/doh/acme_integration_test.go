@@ -33,7 +33,7 @@ func TestLegoObtainer_Integration(t *testing.T) {
 		t.Skip("set SHADOWDNS_ACME_PEBBLE_DIR (and LEGO_CA_CERTIFICATES) to run the pebble ACME integration test")
 	}
 
-	responder := newChallengeResponder(nil)
+	responder := newChallengeResponder(nil, nil)
 	ln, err := net.Listen("tcp", ":5002")
 	if err != nil {
 		t.Fatalf("bind http-01 listener: %v", err)

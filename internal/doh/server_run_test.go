@@ -38,7 +38,7 @@ func TestServer_RunServesThenShutsDown(t *testing.T) {
 
 	cert := selfSigned(t, "doh-test", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 	cm := newCertManager(func(context.Context) (*tls.Certificate, error) { return cert, nil }, nil, nil)
-	responder := newChallengeResponder(nil)
+	responder := newChallengeResponder(nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
