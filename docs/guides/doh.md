@@ -62,6 +62,96 @@ To build `query.bin`, capture a wire-format query — for example with `dig +noe
 
 ---
 
+## application/dns-json format
+
+Alongside the RFC 8484 wire format, the `/dns-query` endpoint serves the Google Public DNS / CloudFlare de-facto `application/dns-json` format on **GET** requests. This lets you verify records with `curl` + `jq` and zero client-side encoding — no need to hand-assemble a base64url wire query.
+
+!!! note
+    `application/dns-json` is **not** an RFC; it follows the Google Public DNS response schema. Field ordering and whitespace are not significant — only field names, types, and values are.
+
+### Format negotiation
+
+The format is chosen on the GET path as follows:
+
+- A request that carries a `?dns=` parameter is **always** handled as RFC 8484 wire-format, regardless of its `Accept` header. The `?dns=` parameter takes precedence, so a wire query is never misrouted to the JSON parser.
+- A request with **no** `?dns=` parameter and an `Accept` header that lists `application/dns-json` is served as JSON, with `Content-Type: application/dns-json`.
+- **POST** is always wire-format; the JSON format is GET-only (matching Google / CloudFlare).
+
+### Query parameters
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `name` | yes | The query name. Must be non-empty. Normalized to a trailing-dot FQDN; on-wire letter case is preserved (so `ExAmple.COM` is echoed verbatim). |
+| `type` | no (default `A`) | DNS record type. Accepts a mnemonic **case-insensitively** (`TXT`, `txt`, `Txt`) or a numeric code in the range 0–65535. |
+| `edns_client_subnet` | no | A client subnet as `<ip>[/<prefix>]` injected as an EDNS Client Subnet option (see below). When the prefix is omitted it defaults to `/24` for IPv4 and `/56` for IPv6. |
+| `cd` | no | Accepted but **ignored** — ShadowDNS is non-recursive and does no DNSSEC validation. It never sets the response `CD` bit. |
+
+The `do` and `ct` parameters are not honored; their presence is ignored and does not cause an error.
+
+### Response schema
+
+A successful response is a JSON object following the Google Public DNS schema:
+
+```json
+{
+  "Status": 0,
+  "TC": false,
+  "RD": true,
+  "RA": false,
+  "AD": false,
+  "CD": false,
+  "Question": [{ "name": "www.example.com.", "type": 1 }],
+  "Answer": [{ "name": "www.example.com.", "type": 1, "TTL": 300, "data": "203.0.113.20" }]
+}
+```
+
+- `Status` is the integer DNS RCODE (e.g. `0` NOERROR, `3` NXDOMAIN, `5` REFUSED).
+- `RD` is always `true` (the dispatched query sets recursion-desired); `CD` is always `false`.
+- `Answer[].data` is the RDATA in DNS presentation format with the record header stripped, so multi-field RDATA (SOA, MX) and quoted TXT data are preserved intact.
+- The response carries the same `Cache-Control: max-age=N` header as the wire path, bounded by the smallest Answer TTL.
+
+DNS-level outcomes are conveyed in `Status`, not via HTTP error codes:
+
+| Condition | HTTP status |
+|-----------|-------------|
+| Well-formed query (any RCODE, including REFUSED / NXDOMAIN / empty answer) | `200 OK` |
+| Missing, empty, or malformed `name` (a label over 63 octets or a name over 255 octets), unparseable `type`, or unparseable `edns_client_subnet` | `400 Bad Request` |
+| Dispatched query produced no captured response (internal failure) | `500 Internal Server Error` |
+
+### Zone transfers are refused
+
+`type=AXFR` and `type=IXFR` are refused with `Status` 5 (REFUSED) and an empty `Answer`, identical to the wire path — a zone transfer is a multi-message stream with no representation in a single JSON response.
+
+### curl + jq examples
+
+```bash
+# Look up an A record as JSON
+curl -sS -H 'accept: application/dns-json' \
+  'https://203.0.113.10/dns-query?name=www.example.com&type=A' | jq
+
+# Extract just the answer data
+curl -sS -H 'accept: application/dns-json' \
+  'https://203.0.113.10/dns-query?name=www.example.com&type=TXT' \
+  | jq -r '.Answer[].data'
+```
+
+### Simulating a client subnet (ECS)
+
+When ECS is enabled on the server (`--ecs-enable`), the `edns_client_subnet` parameter lets a single host simulate queries from any network, so you can verify split-horizon / GeoIP view selection without sourcing traffic from that network:
+
+```bash
+curl -sS -H 'accept: application/dns-json' \
+  'https://203.0.113.10/dns-query?name=www.example.com&type=A&edns_client_subnet=198.51.100.0/24' \
+  | jq '{Answer, edns_client_subnet}'
+```
+
+Host bits beyond the prefix are masked automatically (e.g. `198.51.100.5/24` becomes `198.51.100.0/24`), so a sloppy value does not produce a FORMERR. When ECS is in effect, the response includes an `edns_client_subnet` field formatted as `<network>/<source-prefix>/<scope-prefix>`. ShadowDNS is authoritative and does not narrow the scope to a geo boundary, so the **scope-prefix echoes the source-prefix** — it confirms the subnet was accepted and used for view selection, nothing more.
+
+!!! warning
+    When `--ecs-enable` is **off** (the default), an injected `edns_client_subnet` is silently ignored — exactly as for a wire query carrying ECS while ECS is disabled — and the response carries no `edns_client_subnet` field.
+
+---
+
 ## TLS and certificates
 
 The DoH listener serves TLS with a certificate issued **for the IP address** (`acme.ip`), obtained automatically via ACME HTTP-01 validation using the Let's Encrypt short-lived certificate profile (~6-day validity). ShadowDNS auto-renews the certificate well before expiry and hot-swaps it into the running listener **without restarting** — in-flight and subsequent connections pick up the new certificate transparently.

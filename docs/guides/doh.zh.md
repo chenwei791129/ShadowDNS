@@ -62,6 +62,96 @@ curl -sS -H 'content-type: application/dns-message' \
 
 ---
 
+## application/dns-json 格式
+
+除了 RFC 8484 wire format，`/dns-query` 端點在 **GET** 請求上也提供 Google Public DNS／CloudFlare 的事實格式 `application/dns-json`。這讓你能用 `curl` + `jq`、零用戶端編碼即可驗證紀錄——不必手動組出 base64url 的 wire 查詢。
+
+!!! note
+    `application/dns-json` **並非** RFC；它對齊 Google Public DNS 的回應 schema。JSON 的欄位順序與空白不具規範性——只有欄位名稱、型別與值具意義。
+
+### 格式協商
+
+GET 路徑上的格式選擇規則如下：
+
+- 帶有 `?dns=` 參數的請求**一律**以 RFC 8484 wire-format 處理，不論其 `Accept` header。`?dns=` 參數優先，因此 wire 查詢絕不會被誤導到 JSON 解析。
+- **沒有** `?dns=` 參數、且 `Accept` header 列出 `application/dns-json` 的請求，會以 JSON 提供，`Content-Type` 為 `application/dns-json`。
+- **POST** 一律為 wire-format；JSON 格式僅限 GET（對齊 Google／CloudFlare）。
+
+### 查詢參數
+
+| 參數 | 必填 | 說明 |
+|------|------|------|
+| `name` | 是 | 查詢名稱，不可為空。會正規化為結尾帶點的 FQDN；on-wire 大小寫予以保留（因此 `ExAmple.COM` 會原樣回傳）。 |
+| `type` | 否（預設 `A`） | DNS 紀錄型別。接受**大小寫不敏感**的 mnemonic（`TXT`、`txt`、`Txt`）或 0–65535 範圍內的數值碼。 |
+| `edns_client_subnet` | 否 | 以 `<ip>[/<prefix>]` 表示的 client subnet，會被注入為 EDNS Client Subnet option（見下）。省略 prefix 時，IPv4 預設 `/24`、IPv6 預設 `/56`。 |
+| `cd` | 否 | 被接受但**忽略**——ShadowDNS 非遞迴、不做 DNSSEC 驗證，且永遠不會設定回應的 `CD` bit。 |
+
+`do` 與 `ct` 參數不被理會；出現時予以忽略，且不會造成錯誤。
+
+### 回應 schema
+
+成功的回應是一個對齊 Google Public DNS schema 的 JSON 物件：
+
+```json
+{
+  "Status": 0,
+  "TC": false,
+  "RD": true,
+  "RA": false,
+  "AD": false,
+  "CD": false,
+  "Question": [{ "name": "www.example.com.", "type": 1 }],
+  "Answer": [{ "name": "www.example.com.", "type": 1, "TTL": 300, "data": "203.0.113.20" }]
+}
+```
+
+- `Status` 是整數 DNS RCODE（例如 `0` NOERROR、`3` NXDOMAIN、`5` REFUSED）。
+- `RD` 永遠為 `true`（送出的查詢設了 recursion-desired）；`CD` 永遠為 `false`。
+- `Answer[].data` 是剝除紀錄 header 後的 RDATA presentation format，因此多欄位 RDATA（SOA、MX）與帶引號的 TXT 資料都會完整保留。
+- 回應帶有與 wire 路徑相同的 `Cache-Control: max-age=N` header，受最小的 Answer TTL 上限約束。
+
+DNS 層的結果以 `Status` 表達，而非用 HTTP 錯誤碼：
+
+| 情況 | HTTP 狀態碼 |
+|------|-------------|
+| 格式正確的查詢（任何 RCODE，含 REFUSED／NXDOMAIN／空答） | `200 OK` |
+| 缺少、空白或格式不正確的 `name`（label 超過 63 octets 或整體超過 255 octets）、無法解析的 `type`、或無法解析的 `edns_client_subnet` | `400 Bad Request` |
+| 送出的查詢未捕獲任何回應（內部失敗） | `500 Internal Server Error` |
+
+### 拒絕 zone transfer
+
+`type=AXFR` 與 `type=IXFR` 會以 `Status` 5（REFUSED）與空 `Answer` 拒絕，與 wire 路徑相同——zone transfer 是多訊息串流，在單一 JSON 回應中無法表達。
+
+### curl + jq 範例
+
+```bash
+# 以 JSON 查詢一筆 A 紀錄
+curl -sS -H 'accept: application/dns-json' \
+  'https://203.0.113.10/dns-query?name=www.example.com&type=A' | jq
+
+# 只取出 answer 的 data
+curl -sS -H 'accept: application/dns-json' \
+  'https://203.0.113.10/dns-query?name=www.example.com&type=TXT' \
+  | jq -r '.Answer[].data'
+```
+
+### 模擬 client subnet（ECS）
+
+當伺服器啟用 ECS（`--ecs-enable`）時，`edns_client_subnet` 參數讓單一主機就能模擬來自任意網段的查詢，因此你不必從該網段送出流量即可驗證 split-horizon／GeoIP 的 view 選擇：
+
+```bash
+curl -sS -H 'accept: application/dns-json' \
+  'https://203.0.113.10/dns-query?name=www.example.com&type=A&edns_client_subnet=198.51.100.0/24' \
+  | jq '{Answer, edns_client_subnet}'
+```
+
+prefix 以外的 host bits 會被自動遮罩（例如 `198.51.100.5/24` 變成 `198.51.100.0/24`），因此草率的值不會造成 FORMERR。當 ECS 生效時，回應會包含一個 `edns_client_subnet` 欄位，格式為 `<network>/<source-prefix>/<scope-prefix>`。ShadowDNS 是權威伺服器、不會把 scope 縮小到 geo 邊界，因此 **scope-prefix 即 source-prefix 的回顯**——它只證明該 subnet 被接受並用於 view 選擇，僅此而已。
+
+!!! warning
+    當 `--ecs-enable` **關閉**（預設）時，注入的 `edns_client_subnet` 會被靜默忽略——與 wire 查詢攜帶 ECS 但 ECS 未啟用時完全相同——且回應不會帶任何 `edns_client_subnet` 欄位。
+
+---
+
 ## TLS 與憑證
 
 DoH listener 以一張**為 IP 位址**（`acme.ip`）簽發的憑證提供 TLS，該憑證透過 ACME HTTP-01 驗證自動取得，採用 Let's Encrypt 的短期憑證 profile（約 6 天效期）。ShadowDNS 會在到期前充分提早自動續期，並把新憑證**不重啟**地熱替換進運行中的 listener——進行中與後續的連線都會透明地接上新憑證。
