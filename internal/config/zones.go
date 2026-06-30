@@ -272,7 +272,9 @@ func LoadNamedConf(path string, logger *zap.Logger) (*Config, error) {
 
 	cfg := &Config{Path: path, ACLs: make(map[string][]Element)}
 
-	if err := loadFile(path, cfg, logger); err != nil {
+	// Seed loadFile with an empty active-include set; it threads this set through
+	// the recursive include walk to detect cycles (see loadFile's doc comment).
+	if err := loadFile(path, cfg, logger, map[string]bool{}); err != nil {
 		return nil, err
 	}
 
@@ -399,11 +401,30 @@ func warnDuplicateTopLevelZones(zones []Zone, logger *zap.Logger) {
 
 // loadFile reads a single file (named.conf or any included file) and appends
 // parsed views / options into cfg.
-func loadFile(path string, cfg *Config, logger *zap.Logger) error {
+//
+// activeIncludes is the set of absolute paths currently on the include chain
+// (the path being loaded plus every ancestor that included it). It is used to
+// detect include cycles: before following an `include`, the target's absolute
+// path is checked against this set. The current file's absolute path is added on
+// entry and removed on return, so the SAME file legitimately included from two
+// separate branches of an acyclic tree is not falsely flagged — only a file
+// already on the active chain (a real cycle) is rejected.
+func loadFile(path string, cfg *Config, logger *zap.Logger, activeIncludes map[string]bool) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("%s: cannot read file: %w", path, err)
 	}
+
+	// Resolve the current file to an absolute path so cycle detection compares
+	// canonical keys regardless of how the include was spelled (relative vs
+	// absolute). filepath.Abs only fails if the working directory cannot be
+	// determined; fall back to the literal path so loading still proceeds.
+	absPath, absErr := filepath.Abs(path)
+	if absErr != nil {
+		absPath = path
+	}
+	activeIncludes[absPath] = true
+	defer delete(activeIncludes, absPath)
 
 	lx := newLexer(data, 0)
 	fileDir := filepath.Dir(path)
@@ -459,7 +480,20 @@ func loadFile(path string, cfg *Config, logger *zap.Logger) error {
 			if !filepath.IsAbs(includePath) {
 				includePath = filepath.Join(fileDir, includePath)
 			}
-			if err := loadFile(includePath, cfg, logger); err != nil {
+			// Resolve to an absolute path to test against the active include chain
+			// with a canonical key. If the target is already being loaded by this
+			// file or one of its ancestors, following it would loop forever, so
+			// reject it as a load error rather than recursing.
+			includeAbs, iErr := filepath.Abs(includePath)
+			if iErr != nil {
+				includeAbs = includePath
+			}
+			if activeIncludes[includeAbs] {
+				// Report the canonical absolute path that keyed the cycle so the
+				// message names the same file the detection matched on.
+				return fmt.Errorf("%s: include cycle detected at %s", path, includeAbs)
+			}
+			if err := loadFile(includePath, cfg, logger, activeIncludes); err != nil {
 				return err
 			}
 
