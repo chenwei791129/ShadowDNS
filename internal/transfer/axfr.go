@@ -17,6 +17,7 @@ import (
 // Rules:
 //   - AXFR over UDP → REFUSED (RFC 5936 §2.1)
 //   - z == nil → REFUSED (zone not loaded)
+//   - z.SOA == nil → REFUSED (SOA-less zone; never stream a nil SOA)
 //   - Otherwise streams SOA → all records → SOA over TCP
 //
 // MUST NOT panic on any input.
@@ -29,6 +30,14 @@ func HandleAXFR(w dns.ResponseWriter, req *dns.Msg, z *zone.Zone, logger *zap.Lo
 
 	// Zone guard: if the zone is not loaded, REFUSED.
 	if z == nil {
+		replyRefused(w, req)
+		return
+	}
+
+	// SOA guard: a zone with no apex SOA cannot be transferred. Streaming a nil
+	// SOA would dereference a nil pointer while packing inside the transfer
+	// goroutine (a fault no per-query recover covers), so refuse instead.
+	if z.SOA == nil {
 		replyRefused(w, req)
 		return
 	}
@@ -46,8 +55,9 @@ func HandleAXFR(w dns.ResponseWriter, req *dns.Msg, z *zone.Zone, logger *zap.Lo
 // rewriteRDATALabels selects between in-bailiwick suffix-only and label-anywhere
 // RDATA rewriting (see alias.RewriteRR).
 //
-// rootZone MUST not be nil. backupZone MAY be nil (alias declared without its
-// own .fwd file).
+// rootZone MUST not be nil and MUST have a non-nil apex SOA; a SOA-less
+// backing root zone is refused (RCODE=REFUSED). backupZone MAY be nil (alias
+// declared without its own .fwd file).
 //
 // Case contract (RFC 4343 / preserve-dns-name-case-in-responses):
 //   - backupOrigin MUST be the lookup-fold backup FQDN; used to derive the
@@ -67,6 +77,14 @@ func HandleAliasAXFR(w dns.ResponseWriter, req *dns.Msg, backupOrigin, backupOri
 
 	// rootZone must be present.
 	if rootZone == nil {
+		replyRefused(w, req)
+		return
+	}
+
+	// SOA guard: backup-SOA synthesis dereferences the root SOA, so a backing
+	// root zone with no apex SOA cannot be transferred. Refuse instead of
+	// crashing (BackupSOA would nil-dereference on a nil source SOA).
+	if rootZone.SOA == nil {
 		replyRefused(w, req)
 		return
 	}

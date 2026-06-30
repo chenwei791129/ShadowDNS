@@ -3,6 +3,7 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chenwei791129/ShadowDNS/internal/config"
@@ -38,6 +39,87 @@ func singleViewConfig(zones []config.Zone) *config.Config {
 				Zones:        zones,
 			},
 		},
+	}
+}
+
+// writeSOALessZoneFile writes a zone file that contains records but no apex SOA
+// to dir and returns its path. Such a file parses successfully, leaving
+// z.SOA == nil, which a root zone must not be allowed to serve.
+func writeSOALessZoneFile(t *testing.T, dir, filename, origin string) string {
+	t.Helper()
+	content := "$ORIGIN " + origin + "\n" +
+		origin + " 300 IN NS ns1." + origin + "\n" +
+		"www." + origin + " 300 IN A 192.0.2.1\n"
+	path := filepath.Join(dir, filename)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writeSOALessZoneFile %q: %v", path, err)
+	}
+	return path
+}
+
+// ---------------------------------------------------------------------------
+// SOA-less root zone rejected at load (fix-axfr-soa-less-zone-crash)
+// ---------------------------------------------------------------------------
+
+// TestBuildState_SOALessRootZoneRejected verifies that a zone classified as a
+// root zone whose file has records but no apex SOA is rejected at load:
+// BuildState returns a non-nil error whose message names the offending zone
+// origin, so the invalid zone never becomes servable.
+func TestBuildState_SOALessRootZoneRejected(t *testing.T) {
+	dir := t.TempDir()
+
+	zoneFile := writeSOALessZoneFile(t, dir, "example.com.zone", "example.com.")
+	cfg := singleViewConfig([]config.Zone{
+		{Name: "example.com", Type: "master", File: zoneFile},
+	})
+
+	_, _, err := BuildState(cfg, config.AliasMap{}, nil, nil, nil, nil, VerifyModeHash, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected BuildState to reject a SOA-less root zone; got nil error")
+	}
+	if !strings.Contains(err.Error(), "example.com.") {
+		t.Errorf("error must name the offending zone origin %q; got %q", "example.com.", err.Error())
+	}
+}
+
+// TestBuildState_SOALessRootZoneReloadRetainsPriorState verifies the fail-soft
+// reload model: when a SIGHUP reload introduces a SOA-less root zone, BuildState
+// returns an error and the previous state's zone pointers are left intact, so
+// the caller keeps serving the prior good state.
+func TestBuildState_SOALessRootZoneReloadRetainsPriorState(t *testing.T) {
+	dir := t.TempDir()
+
+	zoneFile := writeBuildTestZoneFile(t, dir, "example.com.zone", "example.com.", "1")
+	cfg := singleViewConfig([]config.Zone{
+		{Name: "example.com", Type: "master", File: zoneFile},
+	})
+
+	prevState, _, err := BuildState(cfg, config.AliasMap{}, nil, nil, nil, nil, VerifyModeHash, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("initial BuildState: %v", err)
+	}
+	prevZone := prevState.RootZones["default"]["example.com."]
+	if prevZone == nil {
+		t.Fatal("example.com. missing from initial state; test setup error")
+	}
+
+	// Rewrite the zone file to drop the SOA — reload must now fail.
+	if err := os.WriteFile(zoneFile, []byte(
+		"$ORIGIN example.com.\n"+
+			"example.com. 300 IN NS ns1.example.com.\n"+
+			"www.example.com. 300 IN A 192.0.2.1\n",
+	), 0o644); err != nil {
+		t.Fatalf("rewrite zone file: %v", err)
+	}
+
+	_, _, err = BuildState(cfg, config.AliasMap{}, nil, nil, nil, &prevState, VerifyModeHash, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected reload BuildState to fail on a SOA-less root zone; got nil error")
+	}
+
+	// Previous state must be intact: its zone pointer is unchanged.
+	if prevState.RootZones["default"]["example.com."] != prevZone {
+		t.Error("prior state zone pointer was mutated by a failed reload (fail-soft violated)")
 	}
 }
 
