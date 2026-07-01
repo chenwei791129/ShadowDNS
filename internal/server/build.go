@@ -83,6 +83,13 @@ func BuildState(
 			case zone.RoleBackupOverride:
 				backupZones[v.Name][origin] = parsed
 			default:
+				// A root zone with no apex SOA can never be served (responses
+				// and AXFR both require the SOA). Reject it as a load error so
+				// the invalid zone never becomes servable; on reload the
+				// existing fail-soft model retains the prior state.
+				if parsed.SOA == nil {
+					return ServerState{}, BuildSummary{}, fmt.Errorf("view %q zone %q: root zone has no apex SOA record", v.Name, origin)
+				}
 				rootZones[v.Name][origin] = parsed
 			}
 			fingerprints[v.Name][origin] = fp
