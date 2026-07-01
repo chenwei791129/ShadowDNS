@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.24.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.24.0...v0.24.1) (2026-07-01)
+
+
+### Bug Fixes
+
+* **config:** detect named.conf include cycles instead of crashing with stack overflow ([#20](https://github.com/chenwei791129/ShadowDNS/issues/20)) ([85a4fb3](https://github.com/chenwei791129/ShadowDNS/commit/85a4fb31d23994c0fcef1a80302772de8c968627)), closes [#14](https://github.com/chenwei791129/ShadowDNS/issues/14)
+* **prune-backup:** keep a valid zone file at the path during rewrite to survive mid-apply crash ([#21](https://github.com/chenwei791129/ShadowDNS/issues/21)) ([3cbfb84](https://github.com/chenwei791129/ShadowDNS/commit/3cbfb84163e687c7a81a5a5969704e345b8103fa)), closes [#16](https://github.com/chenwei791129/ShadowDNS/issues/16)
+* **prune-backup:** refuse symlinked paths and preserve file ownership on rewrite ([#24](https://github.com/chenwei791129/ShadowDNS/issues/24)) ([c22fbf1](https://github.com/chenwei791129/ShadowDNS/commit/c22fbf1eb4611182b009445558ce3507feeb2205)), closes [#17](https://github.com/chenwei791129/ShadowDNS/issues/17)
+* **transfer:** prevent AXFR streamAXFR goroutine/memory leak on mid-stream write error ([#18](https://github.com/chenwei791129/ShadowDNS/issues/18)) ([ff0b680](https://github.com/chenwei791129/ShadowDNS/commit/ff0b680608d57168f99aa7d44a7fc66411bd9bd6)), closes [#10](https://github.com/chenwei791129/ShadowDNS/issues/10)
+* **transfer:** refuse AXFR for SOA-less zones and reject them at load to prevent crash ([#19](https://github.com/chenwei791129/ShadowDNS/issues/19)) ([41a550d](https://github.com/chenwei791129/ShadowDNS/commit/41a550d1356a5ab04f8f356d9e0e917f45c90995)), closes [#12](https://github.com/chenwei791129/ShadowDNS/issues/12)
+
 ## [0.24.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.23.0...v0.24.0) (2026-06-28)
 
 
