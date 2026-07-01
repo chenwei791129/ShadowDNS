@@ -90,6 +90,32 @@ func (s *Server) serveJSON(w http.ResponseWriter, r *http.Request, q url.Values)
 		http.Error(w, "invalid name query parameter", http.StatusBadRequest)
 		return
 	}
+	// Canonicalize the name to the exact on-wire presentation form the
+	// wire-format path produces. dns.IsDomainName is a structural validator
+	// that accepts raw control bytes (e.g. a newline in the URL name), and
+	// dns.Fqdn does not escape; without this step those bytes would reach
+	// Question[0].Name verbatim and, via the query log, let an unauthenticated
+	// client forge log lines (the wire path is safe only because
+	// UnpackDomainName escapes control bytes to \DDD). A wire round-trip
+	// applies that same escaping, so control bytes and master-file special
+	// characters are rendered identically to a wire-unpacked query and no raw
+	// control byte survives downstream. The buffer is stack-allocated (a wire
+	// name is at most 255 octets).
+	var wire [256]byte
+	off, err := dns.PackDomainName(fqdn, wire[:], 0, nil, false)
+	if err != nil {
+		// Unreachable for an IsDomainName-valid name (<=255 octets); guarded
+		// defensively so a name that cannot be encoded on the wire is rejected
+		// rather than dispatched or surfaced as a 500.
+		http.Error(w, "invalid name query parameter", http.StatusBadRequest)
+		return
+	}
+	canonical, _, err := dns.UnpackDomainName(wire[:off], 0)
+	if err != nil {
+		http.Error(w, "invalid name query parameter", http.StatusBadRequest)
+		return
+	}
+	fqdn = canonical
 	qtype, ok := parseQType(q.Get("type"))
 	if !ok {
 		http.Error(w, "invalid type query parameter", http.StatusBadRequest)
