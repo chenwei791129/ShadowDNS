@@ -240,7 +240,7 @@ func TestResolveWildcard_NilRootZone_DoesNotPanic(t *testing.T) {
 			t.Errorf("ResolveWildcard panicked with nil rootZone: %v", r)
 		}
 	}()
-	rrs := ResolveWildcard("backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, false)
+	rrs, _ := ResolveWildcard("backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, false)
 	if rrs != nil {
 		t.Errorf("expected nil, got %v", rrs)
 	}
@@ -456,7 +456,13 @@ func TestResolveWildcard_BackupOriginalCase(t *testing.T) {
 	rootZone := buildZone("root.com.")
 	rootZone.AddRR(newA("*.root.com.", "10.0.0.42"))
 
-	rrs := ResolveWildcard("any.example.com.", dns.TypeA, "example.com.", "Example.com.", rootZone, false)
+	rrs, wcOwner := ResolveWildcard("any.example.com.", dns.TypeA, "example.com.", "Example.com.", rootZone, false)
+	// The wildcard owner is the root-namespace "*." node the answer was
+	// synthesized from, NOT the per-label rewritten qname — this is the stable
+	// RRL aggregation key for all labels covered by the wildcard.
+	if wcOwner != "*.root.com." {
+		t.Errorf("wildcard owner = %q, want *.root.com. (the root-namespace *. node)", wcOwner)
+	}
 
 	if len(rrs) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(rrs))
@@ -713,10 +719,13 @@ func TestResolveWildcardCollapse_WildcardCNAMEStart(t *testing.T) {
 		t.Fatalf("test setup: wildcard CNAME lookup found=%v len=%d", found, len(storedWildcard))
 	}
 
-	rrs, nodata := ResolveWildcardCollapse("HoSt.w.BaCkup.Com.", dns.TypeA, "backup.com.", "Backup.Com.", rootZone, false)
+	rrs, nodata, wcOwner := ResolveWildcardCollapse("HoSt.w.BaCkup.Com.", dns.TypeA, "backup.com.", "Backup.Com.", rootZone, false)
 
 	if nodata {
 		t.Fatal("nodata = true, want false")
+	}
+	if wcOwner != "*.w.root.com." {
+		t.Errorf("wildcard owner = %q, want *.w.root.com. (the *. node)", wcOwner)
 	}
 	if len(rrs) != 1 {
 		t.Fatalf("expected 1 record, got %d: %v", len(rrs), rrs)
@@ -742,7 +751,7 @@ func TestResolveWildcardCollapse_NoData(t *testing.T) {
 	rootZone := buildZone("root.com.",
 		cnameWithTTL("*.w.root.com.", "ghost.root.com.", 300),
 	)
-	rrs, nodata := ResolveWildcardCollapse("host.w.backup.com.", dns.TypeA, "backup.com.", "backup.com.", rootZone, false)
+	rrs, nodata, _ := ResolveWildcardCollapse("host.w.backup.com.", dns.TypeA, "backup.com.", "backup.com.", rootZone, false)
 	if !nodata {
 		t.Fatal("nodata = false, want true (dangling wildcard chain tail)")
 	}
@@ -757,12 +766,15 @@ func TestResolveWildcardCollapse_PlainQtypeMatchesResolveWildcard(t *testing.T) 
 	build := func() *zone.Zone {
 		return buildZone("root.com.", aWithTTL("*.root.com.", "192.0.2.5", 300))
 	}
-	want := ResolveWildcard("any.Backup.Com.", dns.TypeA, "backup.com.", "Backup.Com.", build(), false)
+	want, wantOwner := ResolveWildcard("any.Backup.Com.", dns.TypeA, "backup.com.", "Backup.Com.", build(), false)
 
-	rrs, nodata := ResolveWildcardCollapse("any.Backup.Com.", dns.TypeA, "backup.com.", "Backup.Com.", build(), false)
+	rrs, nodata, gotOwner := ResolveWildcardCollapse("any.Backup.Com.", dns.TypeA, "backup.com.", "Backup.Com.", build(), false)
 
 	if nodata {
 		t.Fatal("nodata = true, want false")
+	}
+	if gotOwner != wantOwner {
+		t.Errorf("collapse wildcard owner = %q, want ResolveWildcard parity %q", gotOwner, wantOwner)
 	}
 	if len(rrs) != len(want) || len(rrs) != 1 {
 		t.Fatalf("len(rrs) = %d, want %d", len(rrs), len(want))
@@ -780,7 +792,7 @@ func TestResolveCollapse_NilRootZone_DoesNotPanic(t *testing.T) {
 	if rrs, nodata := ResolveCNAMEFallbackCollapse("q.backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, false); rrs != nil || nodata {
 		t.Errorf("ResolveCNAMEFallbackCollapse(nil root) = (%v, %v), want (nil, false)", rrs, nodata)
 	}
-	if rrs, nodata := ResolveWildcardCollapse("q.backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, false); rrs != nil || nodata {
-		t.Errorf("ResolveWildcardCollapse(nil root) = (%v, %v), want (nil, false)", rrs, nodata)
+	if rrs, nodata, owner := ResolveWildcardCollapse("q.backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, false); rrs != nil || nodata || owner != "" {
+		t.Errorf("ResolveWildcardCollapse(nil root) = (%v, %v, %q), want (nil, false, \"\")", rrs, nodata, owner)
 	}
 }
