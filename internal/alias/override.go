@@ -46,7 +46,7 @@ func Resolve(qname string, qtype uint16, backupOrigin, backupOriginalCase string
 	if rrs := ResolveExact(qname, qtype, backupOrigin, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels); len(rrs) > 0 {
 		return rrs
 	}
-	if rrs := ResolveWildcard(qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels); len(rrs) > 0 {
+	if rrs, _ := ResolveWildcard(qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels); len(rrs) > 0 {
 		return rrs
 	}
 	return nil
@@ -118,12 +118,17 @@ func ResolveExact(qname string, qtype uint16, backupOrigin, backupOriginalCase s
 }
 
 // ResolveWildcard performs the wildcard-synthesis portion of backup-zone
-// resolution. Returns nil when no wildcard covers the rewritten qname.
+// resolution. Returns nil records when no wildcard covers the rewritten qname.
+// The second return value is the matched wildcard owner node in root-namespace
+// form ("*.<root-origin>", the stored wildcard node name BEFORE it is rewritten
+// to the query name) — empty when no wildcard matched. Callers use it as the
+// rate-limit account name so a flood of distinct labels under one wildcard
+// aggregates into a single account instead of one per label.
 //
 // MUST NOT panic on any input.
-func ResolveWildcard(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
+func ResolveWildcard(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, string) {
 	if rootZone == nil {
-		return nil
+		return nil, ""
 	}
 
 	qnameFold := dnsutil.LookupKey(qname)
@@ -139,10 +144,12 @@ func ResolveWildcard(qname string, qtype uint16, backupOrigin, backupOriginalCas
 		// backupZoneHasName → rootZone.HasWildcard and sets RCODE=NOERROR
 		// (NODATA) instead of NXDOMAIN. If that call chain is ever short-
 		// circuited, this coupling must be revisited.
-		return nil
+		return nil, ""
 	}
 
-	return synthesizeWildcardRRs(wRRs, qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels)
+	// wRRs are the stored wildcard RRs; their owner is the "*.<root-origin>"
+	// node, taken before synthesizeWildcardRRs rewrites owners to the qname.
+	return synthesizeWildcardRRs(wRRs, qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels), wRRs[0].Header().Name
 }
 
 // synthesizeWildcardRRs is the legacy wildcard-emission tail shared by
@@ -220,9 +227,14 @@ func collapseChainAt(qname string, qtype uint16, backupOrigin, backupOriginalCas
 // for the nodata contract.
 //
 // MUST NOT panic on any input.
-func ResolveWildcardCollapse(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, bool) {
+// The third return value is the matched wildcard owner node in root-namespace
+// form ("*.<root-origin>") — empty when no wildcard produced records — used by
+// the caller as the rate-limit account name to aggregate wildcard floods (see
+// ResolveWildcard). It is set for both the direct wildcard-qtype hit and the
+// wildcard-CNAME-chain outcome, since both emit wildcard-synthesized answers.
+func ResolveWildcardCollapse(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, bool, string) {
 	if rootZone == nil {
-		return nil, false
+		return nil, false, ""
 	}
 
 	qnameFold := dnsutil.LookupKey(qname)
@@ -230,15 +242,16 @@ func ResolveWildcardCollapse(qname string, qtype uint16, backupOrigin, backupOri
 
 	if qtype != dns.TypeCNAME {
 		if wRRs, wFound := rootZone.LookupWildcard(rootQName, qtype); wFound && len(wRRs) > 0 {
-			return synthesizeWildcardRRs(wRRs, qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels), false
+			return synthesizeWildcardRRs(wRRs, qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels), false, wRRs[0].Header().Name
 		}
 	}
 
 	wCNAMEs, _ := rootZone.LookupWildcard(rootQName, dns.TypeCNAME)
 	if len(wCNAMEs) == 0 {
-		return nil, false
+		return nil, false, ""
 	}
-	return collapseBackupResult(rootZone.CollapseCNAME(wCNAMEs, qtype), qname, rootZone, backupOriginalCase, rewriteRDATALabels)
+	rrs, nodata := collapseBackupResult(rootZone.CollapseCNAME(wCNAMEs, qtype), qname, rootZone, backupOriginalCase, rewriteRDATALabels)
+	return rrs, nodata, wCNAMEs[0].Header().Name
 }
 
 // collapseBackupResult assembles the backup-namespace response for a collapse

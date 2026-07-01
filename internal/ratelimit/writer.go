@@ -23,6 +23,29 @@ import (
 type ResponseWriter struct {
 	dns.ResponseWriter
 	limiter *Limiter
+
+	// responsesNameOverride, when non-empty, replaces the imputed account name
+	// for CategoryResponses at WriteMsg time. The handler sets it (via
+	// SetResponsesAccountName) only for wildcard-synthesized positive answers,
+	// so a flood of distinct labels covered by one wildcard aggregates into a
+	// single account keyed by the wildcard owner instead of one full-credit
+	// account per label. It is per-query state: this wrapper is constructed
+	// fresh per query and discarded after the single WriteMsg, so the override
+	// is set at most once and never leaks across queries.
+	responsesNameOverride string
+}
+
+// SetResponsesAccountName overrides the imputed account name used for a
+// CategoryResponses verdict on this query's response. Intended for wildcard-
+// synthesized positive answers, where the handler supplies the wildcard owner
+// (already lookup-key folded) so the flood aggregates per wildcard owner. A nil
+// receiver is a no-op so callers need not branch on whether rate limiting is
+// enabled.
+func (w *ResponseWriter) SetResponsesAccountName(name string) {
+	if w == nil {
+		return
+	}
+	w.responsesNameOverride = name
 }
 
 // NewResponseWriter wraps inner with rate limiting driven by l. A nil l makes
@@ -49,6 +72,15 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 
 	category := ClassifyResponse(m)
 	name := ImputedName(m, category)
+	// For a wildcard-synthesized positive answer the handler supplies the
+	// wildcard owner as the account name so distinct labels under one wildcard
+	// fold into a single account; ImputedName cannot detect wildcard synthesis
+	// from the message alone (the synthesized owner is rewritten to the query
+	// name). Only CategoryResponses is overridden — negative/error categories
+	// already aggregate correctly.
+	if category == CategoryResponses && w.responsesNameOverride != "" {
+		name = w.responsesNameOverride
+	}
 	switch w.limiter.Decide(ip, category, name) {
 	case Drop:
 		return nil
