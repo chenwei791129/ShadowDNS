@@ -1,8 +1,8 @@
 package transfer
 
 import (
+	"fmt"
 	"slices"
-	"sync"
 
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
@@ -160,33 +160,56 @@ func streamAXFR(w dns.ResponseWriter, req *dns.Msg, soa *dns.SOA, records []dns.
 		logger = zap.NewNop()
 	}
 	tr := new(dns.Transfer)
-	ch := make(chan *dns.Envelope)
 
-	var wg sync.WaitGroup
-	wg.Add(1)
+	// Build the full envelope sequence up front: SOA → records → SOA. Holding
+	// the envelopes in a slice lets us size the channel buffer to exactly the
+	// number of sends, so the buffer invariant stays correct even if the
+	// sequence ever grows (e.g. chunking a large zone into multiple envelopes).
+	envelopes := []*dns.Envelope{{RR: []dns.RR{soa}}}
+	if len(records) > 0 {
+		envelopes = append(envelopes, &dns.Envelope{RR: records})
+	}
+	envelopes = append(envelopes, &dns.Envelope{RR: []dns.RR{soa}})
+
+	// Buffer the channel to cover every send. dns.Transfer.Out returns on the
+	// first write error to the peer and does NOT drain the channel; with an
+	// unbuffered channel the producer's subsequent sends would block forever
+	// once the consumer goroutine has exited, stranding the goroutine and the
+	// referenced zone-record slice for the process lifetime. Sizing the buffer
+	// to cover all sends lets every send complete even with no live receiver, so
+	// the producer always reaches close(ch) and the goroutine is joined.
+	ch := make(chan *dns.Envelope, len(envelopes))
+
+	// Buffered so the transfer goroutine can always send its result and exit,
+	// even if the producer never reads it (defense in depth).
+	errCh := make(chan error, 1)
 	go func() {
-		defer wg.Done()
-		if err := tr.Out(w, req, ch); err != nil {
-			logger.Sugar().Warnw("AXFR stream error",
-				"zone", soa.Hdr.Name,
-				"err", err.Error(),
-			)
-		}
+		// Recover any panic raised while packing/writing an envelope so a single
+		// failed transfer cannot crash the process; the rest of the server keeps
+		// serving. The recovered failure is surfaced as an error on errCh.
+		defer func() {
+			if r := recover(); r != nil {
+				errCh <- fmt.Errorf("panic during AXFR transfer: %v", r)
+			}
+		}()
+		errCh <- tr.Out(w, req, ch)
 	}()
 
-	// Stream: SOA first.
-	ch <- &dns.Envelope{RR: []dns.RR{soa}}
-
-	// Stream: all non-SOA records (can be a single envelope or split).
-	if len(records) > 0 {
-		ch <- &dns.Envelope{RR: records}
+	// Stream every envelope; the buffer guarantees no send blocks even if the
+	// consumer has already exited on a write error.
+	for _, env := range envelopes {
+		ch <- env
 	}
 
-	// Stream: SOA last (closing sentinel).
-	ch <- &dns.Envelope{RR: []dns.RR{soa}}
-
 	close(ch)
-	wg.Wait()
+
+	// Join on the transfer goroutine and log any failure (peer abort or panic).
+	if err := <-errCh; err != nil {
+		logger.Sugar().Warnw("AXFR stream error",
+			"zone", soa.Hdr.Name,
+			"err", err.Error(),
+		)
+	}
 }
 
 // collectNonSOA returns all non-SOA records from the zone in a deterministic order.
