@@ -56,7 +56,7 @@ shadowdns prune-backup \
 - 不可覆寫的紀錄類型（`TXT`/`MX`/`SRV` 以外的全部）一律標記為冗餘。
 - 可覆寫類型只有在整個 RRSet 與 root 完全一致（忽略 TTL 與順序）時才標記。
 - `SOA` 與 apex `NS` RRSet 永遠保留，確保 zone file 維持 RFC 1035 有效。
-- `--apply` 時每個改寫的檔案以原子方式替換，改寫前的副本保留在 `<path>.bak`。
+- `--apply` 時每個改寫的檔案以原子方式替換，改寫前的副本保留在 `<path>.bak`。替換後的檔案會保留原檔的擁有者（uid/gid）與權限位元，因此非 root 的 daemon 在改寫後仍保有讀取權限。若備援路徑是 symlink，會回報錯誤拒絕處理，而非把它壓平成一般檔案。
 
 ### shadowdns completion
 
