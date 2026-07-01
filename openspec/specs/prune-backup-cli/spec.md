@@ -1,4 +1,5 @@
 ## Requirements
+
 <!-- @trace
 source: prune-redundant-backup-records
 updated: 2026-05-04
@@ -1022,3 +1023,33 @@ tests:
   - cmd/shadowdns/prune_backup_test.go
   - internal/server/server_test.go
 -->
+
+---
+### Requirement: prune-backup rewrite keeps a valid file at the path at all times
+
+The prune-backup apply step SHALL rewrite a zone file so that the original file remains in place at its path until a fully-written replacement is atomically renamed over it. The apply step SHALL NOT remove or rename the original away from its path before the replacement content has been written and fsync'd. The `.bak` backup SHALL be produced from the original while the original still resides at its path (via hardlink where possible, otherwise a byte copy). After the replacement is renamed into place, the apply step SHALL fsync the containing directory. The original file's permission bits SHALL be preserved on the replacement.
+
+#### Scenario: Successful apply leaves both new file and backup
+
+- **WHEN** the apply step rewrites a zone file successfully
+- **THEN** the path holds the new content with the original permission bits, and the `.bak` path holds the pre-apply content
+
+#### Scenario: Crash during apply never leaves the path missing
+
+- **WHEN** the apply step is interrupted at any point after the backup is created and up to the final atomic rename
+- **THEN** the zone-file path still resolves to a complete valid file — either the original content or the fully-written new content — and is never absent
+
+---
+### Requirement: prune-backup refuses symlinked paths and preserves file ownership
+
+The prune-backup apply step SHALL NOT silently replace a symlinked zone-file path with a regular file. Before rewriting, it SHALL detect a symlink at the path via a non-following stat and, when the path is a symlink, SHALL return a descriptive error identifying the symlink and SHALL leave the symlink intact. For a regular file, the apply step SHALL preserve the original file's ownership (uid/gid) on the replacement in addition to its permission bits, so a daemon running as a non-root user retains read access after the rewrite. Ownership preservation SHALL be best-effort where the platform or filesystem disallows it and SHALL be implemented so non-Unix builds still compile.
+
+#### Scenario: Symlinked path is refused
+
+- **WHEN** the apply step is asked to rewrite a zone-file path that is a symlink
+- **THEN** it returns a descriptive error mentioning the symlink and the symlink is left intact (not replaced by a regular file)
+
+#### Scenario: Ownership preserved on regular-file rewrite
+
+- **WHEN** the apply step rewrites a regular zone file on a platform that permits chown
+- **THEN** the rewritten file's uid and gid match the original file's uid and gid, in addition to preserving its permission bits

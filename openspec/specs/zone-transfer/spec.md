@@ -91,6 +91,7 @@ tests:
   - internal/transfer/notify_test.go
 -->
 
+---
 ### Requirement: Stream alias-zone AXFR with rewritten records
 
 When a client requests AXFR for a backup zone, the zone-transfer subsystem SHALL produce the stream by reading records from the corresponding root zone and applying the same owner-name and in-bailiwick rewrite rules that the alias-resolver uses for standard queries. TXT/MX/SRV overrides from the backup zone SHALL replace inherited records for their respective (owner, type) pairs in the stream.
@@ -182,6 +183,7 @@ tests:
   - internal/transfer/notify_test.go
 -->
 
+---
 ### Requirement: Enforce allow-transfer ACL
 
 The zone-transfer subsystem SHALL consult the `allow-transfer` ACL declared in `named.conf` options (globally) before serving any AXFR. Only source IP addresses explicitly present in the ACL SHALL be served; all others SHALL receive `RCODE=REFUSED`.
@@ -278,6 +280,7 @@ tests:
   - internal/transfer/notify_test.go
 -->
 
+---
 ### Requirement: Send NOTIFY on zone content change
 
 On startup after all zones are loaded, and on every zone reload, the zone-transfer subsystem SHALL send DNS NOTIFY messages to each NS record target of the zone (excluding the zone's own primary, if identifiable via SOA MNAME) **unless NOTIFY is disabled**. NOTIFY SHALL be sent over UDP to port 53; NOTIFY SHALL be retried up to 3 times on failure with exponential backoff (1s, 2s, 4s).
@@ -576,6 +579,7 @@ tests:
   - internal/prunebackup/rewrite_test.go
 -->
 
+---
 ### Requirement: Deny IXFR by responding with full AXFR
 
 The zone-transfer subsystem SHALL NOT implement incremental transfer. On receiving an IXFR query (QTYPE=251), the server SHALL fall back to a full AXFR response per RFC 1995 (section 4), which is the protocol-defined fallback when the server cannot supply an incremental delta.
@@ -662,6 +666,7 @@ tests:
   - internal/transfer/notify_test.go
 -->
 
+---
 ### Requirement: Refuse unknown or unsupported transfer types
 
 The zone-transfer subsystem SHALL return `RCODE=REFUSED` for any zone-transfer-class query (AXFR or IXFR) that targets a zone not loaded by the server.
@@ -747,3 +752,38 @@ tests:
   - internal/alias/soa_test.go
   - internal/transfer/notify_test.go
 -->
+
+---
+### Requirement: AXFR streaming survives a mid-stream peer abort without leaking
+
+The zone-transfer subsystem SHALL complete its AXFR/IXFR streaming routine and release all per-transfer resources even when the peer aborts the connection after the stream has begun. When a write to the peer fails partway through the envelope sequence, the streaming routine SHALL NOT block indefinitely, SHALL NOT leak the goroutine that produces envelopes, and SHALL NOT retain the materialized zone-record set beyond the request. The success-path behavior (SOA → records → SOA ordering, UDP refusal, transfer-ACL gating) SHALL remain unchanged.
+
+#### Scenario: Peer aborts after the first envelope
+
+- **WHEN** a permitted client begins an AXFR over TCP and then aborts the connection after receiving the first envelope, causing a subsequent write to fail
+- **THEN** the streaming routine returns promptly without blocking, and neither the producer goroutine nor the zone-record set is retained after the request completes
+
+#### Scenario: Repeated mid-stream aborts do not accumulate resources
+
+- **WHEN** a permitted client repeatedly opens AXFR connections and aborts each one mid-stream
+- **THEN** the number of live goroutines and the retained zone-record allocations do not grow without bound across the repeated attempts
+
+#### Scenario: A panic while packing an envelope does not crash the process
+
+- **WHEN** packing an envelope inside the transfer goroutine raises a panic
+- **THEN** the panic is recovered, the transfer fails for that single request, and the server process continues serving other requests
+
+---
+### Requirement: AXFR refuses a zone without a usable SOA instead of crashing
+
+The zone-transfer subsystem SHALL NOT attempt to stream or synthesize a transfer for a zone whose apex SOA is absent. When `HandleAXFR` is invoked for a zone whose SOA is nil, it SHALL return `RCODE=REFUSED` and SHALL NOT pass a nil SOA into the streaming routine. When `HandleAliasAXFR` is invoked and the backing root zone's SOA is nil, it SHALL return `RCODE=REFUSED` and SHALL NOT invoke backup-SOA synthesis with a nil SOA. The process SHALL NOT crash in either case.
+
+#### Scenario: AXFR for a zone with no SOA is refused
+
+- **WHEN** `HandleAXFR` is invoked over TCP for a loaded zone whose apex SOA is absent
+- **THEN** the server returns `RCODE=REFUSED` and the process keeps serving other zones without crashing
+
+#### Scenario: Alias AXFR with a SOA-less backing root zone is refused
+
+- **WHEN** `HandleAliasAXFR` is invoked for a backup zone whose backing root zone has no apex SOA
+- **THEN** the server returns `RCODE=REFUSED` and does not call backup-SOA synthesis with a nil SOA
