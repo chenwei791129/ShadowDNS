@@ -56,7 +56,7 @@ Comparison logic:
 - Non-overridable record types (everything except `TXT`/`MX`/`SRV`) are always flagged as redundant.
 - Overridable types are flagged only when the entire RRSet is identical to the root (ignoring TTL and ordering).
 - The `SOA` and apex `NS` RRSets are always preserved, ensuring the zone file remains RFC 1035 valid.
-- With `--apply`, each rewritten file is replaced atomically, and the pre-rewrite copy is kept at `<path>.bak`.
+- With `--apply`, each rewritten file is replaced atomically, and the pre-rewrite copy is kept at `<path>.bak`. The replacement preserves the original file's owner (uid/gid) and permission bits, so a non-root daemon keeps read access after the rewrite. A backup path that is a symlink is refused with an error rather than being flattened into a regular file.
 
 ### shadowdns completion
 

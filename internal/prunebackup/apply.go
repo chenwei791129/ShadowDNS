@@ -22,9 +22,13 @@ var errSimulatedCrash = errors.New("prunebackup: simulated crash (test only)")
 var afterBackupHook func() error
 
 // applyFile atomically replaces path with newContent while keeping a complete,
-// valid file at path at all times. Steps:
+// valid file at path at all times. It refuses to operate through a symlink
+// (returning an error) so the link topology is never silently flattened, and it
+// preserves the original file's ownership on the replacement. Steps:
+//  0. Lstat the path; if it is a symlink, return an error without rewriting.
 //  1. Write the new content to a sibling temp file, then Sync and Chmod it to
-//     the original mode (so a non-root daemon keeps read access).
+//     the original mode, and best-effort Chown it to the original uid/gid (so a
+//     non-root daemon keeps read access).
 //  2. Produce path+".bak" from the original while it still resides at path —
 //     hardlink (os.Link) when possible, else a byte copy across filesystems —
 //     after removing any pre-existing .bak.
@@ -40,6 +44,17 @@ var afterBackupHook func() error
 func applyFile(path string, newContent []byte, logger *zap.Logger) error {
 	if logger == nil {
 		logger = zap.NewNop()
+	}
+
+	// Refuse to rewrite through a symlink. os.Stat below follows symlinks, so
+	// without this non-following check the rename would flatten the link into a
+	// regular file and silently destroy the topology. Lstat inspects the link
+	// itself; an operator who genuinely wants to rewrite the target must point
+	// prune-backup at the resolved path.
+	if li, err := os.Lstat(path); err != nil {
+		return fmt.Errorf("prunebackup: lstat %q: %w", path, err)
+	} else if li.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("prunebackup: refusing to rewrite %q: path is a symlink", path)
 	}
 
 	// Capture the original file mode so the rewritten file inherits the
@@ -78,6 +93,15 @@ func applyFile(path string, newContent []byte, logger *zap.Logger) error {
 	if err := os.Chmod(tmpName, origMode); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("prunebackup: chmod %q: %w", tmpName, err)
+	}
+
+	// Preserve the original file's ownership on the replacement so a non-root
+	// daemon (e.g. shadowdns running as its own user) keeps read access after
+	// the rewrite. This is best-effort: on platforms/filesystems where chown is
+	// not permitted the rewrite still succeeds with the invoking user as owner.
+	if attempted, err := preserveOwner(tmpName, origInfo); attempted && err != nil {
+		logger.Sugar().Warnw("could not preserve original ownership; rewritten file keeps invoking user's owner",
+			"path", path, "error", err)
 	}
 
 	// Step 2: back up the original while it is still at path. Removing any
