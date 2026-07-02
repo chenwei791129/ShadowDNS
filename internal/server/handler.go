@@ -47,6 +47,16 @@ type queryOpt struct {
 	// respECS is the ECS option to emit in the response (echo of the query
 	// option with the scope set); nil when the response carries none.
 	respECS *dns.EDNS0_SUBNET
+	// rrl points at this query's rate-limit response writer, or nil when rate
+	// limiting is disabled. It is captured when the writer is installed and
+	// assigned once qo exists, so replyWithAnswer can set a wildcard account
+	// name override on it. Never dereferenced without a nil check.
+	rrl *ratelimit.ResponseWriter
+	// rrlWildcardOwner is the lookup-key-folded wildcard owner ("*.<origin>")
+	// for a wildcard-synthesized positive answer, or empty for any other
+	// answer. When non-empty it becomes the RRL account name for the response
+	// so distinct labels under one wildcard aggregate into a single account.
+	rrlWildcardOwner string
 }
 
 // parseQueryOpt extracts the EDNS0 OPT record fields from req in one pass.
@@ -163,8 +173,13 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// is still observed by metrics (which count the produced response; RRL
 	// actions are tracked by the limiter's own counters). A single atomic load
 	// pins this query to one limiter generation even if a reload swaps it.
+	// rlWriter is captured here (before qo exists) so it can be stored on qo
+	// once parseQueryOpt runs below; replyWithAnswer uses it to set the
+	// wildcard account-name override for wildcard-synthesized answers.
+	var rlWriter *ratelimit.ResponseWriter
 	if limiter := s.RateLimiter.Load(); limiter != nil {
-		w = ratelimit.NewResponseWriter(w, limiter)
+		rlWriter = ratelimit.NewResponseWriter(w, limiter)
+		w = rlWriter
 	}
 
 	if s.Metrics != nil {
@@ -207,6 +222,10 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Single per-query OPT parse — must run before the opcode and
 	// question-count checks so early-exit error responses can echo OPT too.
 	qo := parseQueryOpt(req)
+	// Store the rate-limit writer captured above now that qo exists, so
+	// wildcard-synthesis sites can set qo.rrlWildcardOwner and replyWithAnswer
+	// can apply it. nil when rate limiting is disabled.
+	qo.rrl = rlWriter
 
 	// Unsupported opcodes → NOTIMP.
 	if req.Opcode != dns.OpcodeQuery {
@@ -490,6 +509,11 @@ func (s *Server) handleRootQuery(
 	// response preserves the client-supplied case.
 	wRRs, wFound := rootZone.LookupWildcard(qname, qtype)
 	if wFound && len(wRRs) > 0 {
+		// Aggregate a wildcard flood under one RRL account: key on the wildcard
+		// owner ("*.parent", the stored owner before rewriteWildcardOwner
+		// rewrites it to qnameOrig). Set on qo before both the collapse call
+		// (qo is copied by value, carrying the owner) and the direct reply.
+		qo.rrlWildcardOwner = dnsutil.LookupKey(wRRs[0].Header().Name)
 		// Collapse hook point 3: direct CNAME-type query hitting a wildcard
 		// CNAME. The stored wildcard slice is fed raw — the collapse only
 		// consumes RDATA and TTL, so the owner pre-copy would be wasted.
@@ -501,6 +525,8 @@ func (s *Server) handleRootQuery(
 	}
 	if qtype != dns.TypeCNAME {
 		if wCNAMEs, _ := rootZone.LookupWildcard(qname, dns.TypeCNAME); len(wCNAMEs) > 0 {
+			// Same wildcard-owner RRL aggregation for the wildcard-CNAME chain.
+			qo.rrlWildcardOwner = dnsutil.LookupKey(wCNAMEs[0].Header().Name)
 			// Collapse hook point 4: same raw-slice rationale as point 3.
 			if s.collapseRootCNAME(w, req, qo, rootZone, match, qname, qnameOrig, qtype, wCNAMEs, st) {
 				return
@@ -653,10 +679,30 @@ func (s *Server) handleBackupQuery(
 	}
 
 	// CNAME fallback per RFC 1034 §3.6.2, then wildcard synthesis.
+	//
+	// RRL account-name note (alias wildcard paths below): the wildcard owner
+	// returned here is the root-namespace node ("*.<root-origin>"), which is the
+	// real synthesis source, whereas non-wildcard backup answers key on the
+	// backup-namespace query name. This asymmetry is intentional: it is the
+	// actual wildcard node ("*.<backup-origin>" does not exist as a real node),
+	// and because the RRL key also includes the client block, aggregating every
+	// flood that resolves via one root wildcard (even across backup aliases) to
+	// a single account per block is exactly the anti-reflection behavior wanted
+	// — an attacker cannot multiply their per-second allowance by spreading a
+	// spoofed-victim flood across alias domains that share the wildcard. RRL is
+	// a DoS mitigation, not per-zone QoS, so cross-alias aggregation is correct.
 	if st.CollapseFlags[match.RootZone] {
 		rrs, nodata := alias.ResolveCNAMEFallbackCollapse(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels)
 		if !nodata && len(rrs) == 0 {
-			rrs, nodata = alias.ResolveWildcardCollapse(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels)
+			// Only the wildcard resolver's answer is wildcard-synthesized (the
+			// CNAME-fallback above is a real chain, keyed on the query name).
+			// Set the wildcard-owner RRL account before answeredCollapsed (a
+			// closure over qo) fires so the flood aggregates per wildcard owner.
+			var wcOwner string
+			rrs, nodata, wcOwner = alias.ResolveWildcardCollapse(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels)
+			if len(rrs) > 0 {
+				qo.rrlWildcardOwner = dnsutil.LookupKey(wcOwner)
+			}
 		}
 		if answeredCollapsed(rrs, nodata) {
 			return
@@ -667,7 +713,8 @@ func (s *Server) handleBackupQuery(
 			return
 		}
 
-		if records := alias.ResolveWildcard(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels); len(records) > 0 {
+		if records, wcOwner := alias.ResolveWildcard(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels); len(records) > 0 {
+			qo.rrlWildcardOwner = dnsutil.LookupKey(wcOwner)
 			replyWithAnswer(w, req, qo, records)
 			return
 		}
@@ -968,6 +1015,14 @@ func replyWithAnswer(w dns.ResponseWriter, req *dns.Msg, qo queryOpt, answer []d
 
 	if dnsutil.IsUDP(w) {
 		truncateForUDP(m, udpMaxSize(qo))
+	}
+
+	// For a wildcard-synthesized positive answer, key rate limiting on the
+	// wildcard owner instead of the (per-label) query name so a flood under one
+	// wildcard aggregates into a single account. Non-wildcard answers leave
+	// rrlWildcardOwner empty; SetResponsesAccountName is a no-op on a nil writer.
+	if qo.rrlWildcardOwner != "" {
+		qo.rrl.SetResponsesAccountName(qo.rrlWildcardOwner)
 	}
 
 	_ = w.WriteMsg(m)

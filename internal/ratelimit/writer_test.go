@@ -104,3 +104,46 @@ func TestRateLimitWriter(t *testing.T) {
 		}
 	})
 }
+
+// TestRateLimitWriter_WildcardOwnerOverride verifies SetResponsesAccountName
+// (the wildcard-RRL-aggregation fix, GitHub issue #11): distinct per-label
+// positive answers whose account name is overridden to a shared wildcard owner
+// fold into ONE account, whereas without the override each distinct name keys
+// its own full-credit account.
+func TestRateLimitWriter_WildcardOwnerOverride(t *testing.T) {
+	names := []string{"r1.example.com.", "r2.example.com.", "r3.example.com."}
+
+	t.Run("override aggregates distinct labels into one wildcard account", func(t *testing.T) {
+		l, _ := limiterWithClock(t, &config.RateLimitConfig{
+			ResponsesPerSecond: 1, Window: 1, Slip: 0, IPv4PrefixLength: 24, IPv6PrefixLength: 56,
+		})
+		inner := udpRW("192.0.2.5")
+		// A fresh writer per query mirrors production (one wrapper per ServeDNS).
+		for _, name := range names {
+			w := NewResponseWriter(inner, l)
+			w.SetResponsesAccountName("*.example.com.")
+			_ = w.WriteMsg(positiveMsg(name))
+		}
+		// Cap is 1 for the single shared account, so only the first is delivered.
+		if inner.writeCount != 1 {
+			t.Errorf("writeCount = %d, want 1 (distinct labels aggregated to *.example.com.)", inner.writeCount)
+		}
+	})
+
+	t.Run("without override distinct labels each get their own account", func(t *testing.T) {
+		l, _ := limiterWithClock(t, &config.RateLimitConfig{
+			ResponsesPerSecond: 1, Window: 1, Slip: 0, IPv4PrefixLength: 24, IPv6PrefixLength: 56,
+		})
+		inner := udpRW("192.0.2.5")
+		for _, name := range names {
+			w := NewResponseWriter(inner, l)
+			// No SetResponsesAccountName: each distinct name is its own account.
+			_ = w.WriteMsg(positiveMsg(name))
+		}
+		// Each of the 3 distinct names has its own full-credit account → all 3
+		// delivered. This is the pre-fix behavior the override corrects.
+		if inner.writeCount != len(names) {
+			t.Errorf("writeCount = %d, want %d (distinct per-label accounts)", inner.writeCount, len(names))
+		}
+	})
+}

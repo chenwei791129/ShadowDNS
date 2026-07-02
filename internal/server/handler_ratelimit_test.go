@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net"
+	"strconv"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -49,11 +50,16 @@ func (w *countingWriter) TsigStatus() error           { return errors.New("not s
 func (w *countingWriter) TsigTimersOnly(bool)         {}
 func (w *countingWriter) Hijack()                     {}
 
-// newRateLimitServer builds a single-view server serving www.example.com and
-// attaches the given limiter (nil ⇒ unconfigured).
-func newRateLimitServer(t *testing.T, l *ratelimit.Limiter) *Server {
+// newRateLimitServer builds a single-view server for the example.com root zone
+// and attaches the given limiter (nil ⇒ unconfigured). With no rrs it serves
+// the default www.example.com A record; pass rrs to serve a custom record set
+// (e.g. a wildcard) for wildcard-aggregation tests.
+func newRateLimitServer(t *testing.T, l *ratelimit.Limiter, rrs ...dns.RR) *Server {
 	t.Helper()
-	rootZ := buildRootZone("example.com.", makeARecord("www.example.com.", "192.0.2.1", 300))
+	if len(rrs) == 0 {
+		rrs = []dns.RR{makeARecord("www.example.com.", "192.0.2.1", 300)}
+	}
+	rootZ := buildRootZone("example.com.", rrs...)
 	srv := NewServer(ServerState{
 		Matcher:     makeAnyMatcher("default"),
 		ZoneOrigins: map[string][]string{"default": {"example.com."}},
@@ -184,6 +190,64 @@ func TestRateLimiterAtomicPointer(t *testing.T) {
 		}
 		if w.writeCount != 1 {
 			t.Errorf("delivered = %d, want 1 (limiter installed via Store takes effect)", w.writeCount)
+		}
+	})
+}
+
+// TestServerRateLimit_WildcardFloodAggregates is the end-to-end regression for
+// the wildcard-RRL-aggregation fix (GitHub issue #11): a flood of distinct
+// labels covered by one wildcard folds into a single RRL account keyed by the
+// wildcard owner, so responses-per-second trips — instead of each label keying
+// its own full-credit account and never tripping.
+func TestServerRateLimit_WildcardFloodAggregates(t *testing.T) {
+	floodDistinctLabels := func(t *testing.T, srv *Server, qtype uint16) int {
+		t.Helper()
+		w := &countingWriter{udp: true}
+		for i := 0; i < 20; i++ {
+			q := buildServeDNSRequest("r"+strconv.Itoa(i)+".example.com.", qtype, dns.ClassINET, dns.OpcodeQuery, 1)
+			srv.ServeDNS(w, q)
+		}
+		return w.writeCount
+	}
+
+	newCap1 := func(t *testing.T) *ratelimit.Limiter {
+		return mustLimiter(t, &config.RateLimitConfig{
+			ResponsesPerSecond: 1, Window: 1, Slip: 0, IPv4PrefixLength: 24, IPv6PrefixLength: 56,
+		})
+	}
+
+	t.Run("direct wildcard flood aggregates to one account", func(t *testing.T) {
+		srv := newRateLimitServer(t, newCap1(t), makeARecord("*.example.com.", "192.0.2.9", 300))
+		if got := floodDistinctLabels(t, srv, dns.TypeA); got != 1 {
+			t.Errorf("delivered = %d, want 1 (20 distinct labels aggregated to *.example.com)", got)
+		}
+	})
+
+	t.Run("wildcard-CNAME chain flood aggregates to one account", func(t *testing.T) {
+		srv := newRateLimitServer(t, newCap1(t),
+			makeCNAMERecord("*.example.com.", "target.example.com.", 300),
+			makeARecord("target.example.com.", "192.0.2.10", 300),
+		)
+		// A-type query for a distinct label hits the wildcard CNAME chain.
+		if got := floodDistinctLabels(t, srv, dns.TypeA); got != 1 {
+			t.Errorf("delivered = %d, want 1 (wildcard-CNAME chain flood aggregated)", got)
+		}
+	})
+
+	t.Run("distinct exact names are NOT aggregated (each keys its own account)", func(t *testing.T) {
+		srv := newRateLimitServer(t, newCap1(t),
+			makeARecord("a.example.com.", "192.0.2.1", 300),
+			makeARecord("b.example.com.", "192.0.2.2", 300),
+			makeARecord("c.example.com.", "192.0.2.3", 300),
+		)
+		w := &countingWriter{udp: true}
+		for _, n := range []string{"a.example.com.", "b.example.com.", "c.example.com."} {
+			srv.ServeDNS(w, buildServeDNSRequest(n, dns.TypeA, dns.ClassINET, dns.OpcodeQuery, 1))
+		}
+		// Three distinct real names → three separate accounts, each allows its
+		// first response → all delivered. Proves non-wildcard keying is unchanged.
+		if w.writeCount != 3 {
+			t.Errorf("delivered = %d, want 3 (distinct exact names not aggregated)", w.writeCount)
 		}
 	})
 }
