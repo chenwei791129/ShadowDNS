@@ -284,6 +284,180 @@ func TestReplyWithAnswer_UDPNoEDNSFallsBackTo512(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// truncateForUDP binary-search truncation tests (GitHub issue #15)
+// ---------------------------------------------------------------------------
+
+// buildTruncMsg assembles a compressed reply carrying answer, matching the
+// state truncateForUDP sees when replyWithAnswer calls it (SetReply + AA=1 +
+// Compress=true), so these unit tests exercise the real truncation path.
+func buildTruncMsg(owner string, answer []dns.RR) *dns.Msg {
+	req := buildTXTQuery(owner, 0)
+	m := new(dns.Msg)
+	m.SetReply(req)
+	m.Authoritative = true
+	m.Compress = true
+	m.Answer = answer
+	return m
+}
+
+// dropOneLoopSurvivors reproduces the pre-fix one-RR-at-a-time drop-and-repack
+// loop and returns how many Answer RRs it retains for the same input, so the
+// binary-search result can be asserted identical to the reference algorithm.
+// It operates on a copy so the caller's message is left untouched.
+func dropOneLoopSurvivors(t *testing.T, m *dns.Msg, budget int) int {
+	t.Helper()
+	ref := m.Copy()
+	for {
+		packed, err := ref.Pack()
+		if err != nil {
+			t.Fatalf("reference drop-one pack: %v", err)
+		}
+		if len(packed) <= budget {
+			return len(ref.Answer)
+		}
+		if len(ref.Answer) == 0 {
+			return 0
+		}
+		ref.Answer = ref.Answer[:len(ref.Answer)-1]
+	}
+}
+
+// ceilLog2 returns ceil(log2(n)) for n >= 1 (0 for n <= 1).
+func ceilLog2(n int) int {
+	b := 0
+	for (1 << b) < n {
+		b++
+	}
+	return b
+}
+
+// TestTruncateForUDP_LargeRRsetMatchesDropOneLoop covers tasks 2.1 and 2.2: a
+// large single-owner RRset trimmed to the 512-byte budget fits, sets TC=1,
+// keeps >0 RRs, and retains exactly the prefix a drop-one reference loop would.
+func TestTruncateForUDP_LargeRRsetMatchesDropOneLoop(t *testing.T) {
+	const (
+		owner  = "big.example.com."
+		budget = 512
+		n      = 1000
+	)
+	answer := makeTXTsAtOwner(owner, n, 5)
+
+	// Reference survivor count from the pre-fix drop-one loop, computed before
+	// truncation so the shared answer slice is still intact.
+	want := dropOneLoopSurvivors(t, buildTruncMsg(owner, answer), budget)
+
+	m := buildTruncMsg(owner, answer)
+	truncateForUDP(m, budget)
+
+	packed, err := m.Pack()
+	if err != nil {
+		t.Fatalf("pack truncated msg: %v", err)
+	}
+	if len(packed) > budget {
+		t.Errorf("packed wire size %d bytes exceeds budget %d", len(packed), budget)
+	}
+	if !m.Truncated {
+		t.Error("expected TC=1 after dropping RRs to fit budget")
+	}
+	if len(m.Answer) == 0 {
+		t.Fatal("expected >0 surviving Answer RRs")
+	}
+	if len(m.Answer) != want {
+		t.Errorf("binary search kept %d RRs; drop-one reference kept %d", len(m.Answer), want)
+	}
+	// Sanity: the input genuinely required trimming (guards against a trivially
+	// passing test where nothing was dropped).
+	if len(m.Answer) >= n {
+		t.Fatalf("test setup invalid: no RRs dropped (kept %d of %d)", len(m.Answer), n)
+	}
+}
+
+// TestTruncateForUDP_PackCallsAreLogarithmic covers task 2.4: for N RRs the
+// truncation routine performs O(log N) Pack calls, not O(N). A linear
+// implementation (~N calls) blows past the bound and fails.
+func TestTruncateForUDP_PackCallsAreLogarithmic(t *testing.T) {
+	const (
+		owner  = "big.example.com."
+		budget = 512
+		n      = 1000
+	)
+	answer := makeTXTsAtOwner(owner, n, 5)
+	m := buildTruncMsg(owner, answer)
+
+	orig := packMsg
+	var calls int
+	packMsg = func(msg *dns.Msg) ([]byte, error) {
+		calls++
+		return orig(msg)
+	}
+	defer func() { packMsg = orig }()
+
+	truncateForUDP(m, budget)
+
+	// bound = 2*ceil(log2(N)) + 4: one full-answer probe + the O(log N) search
+	// steps + a small constant slack.
+	bound := 2*ceilLog2(n) + 4
+	if calls > bound {
+		t.Errorf("truncateForUDP made %d Pack calls for N=%d; want <= %d (logarithmic)", calls, n, bound)
+	}
+	// Concrete guard from the spec example: N=1000 must stay within 24.
+	if calls > 24 {
+		t.Errorf("N=1000: %d Pack calls exceeds the spec bound of 24", calls)
+	}
+}
+
+// TestTruncateForUDP_Boundaries covers task 2.3: full answer within budget is
+// untouched with TC unset; a lone RR over budget clears the Answer and sets TC;
+// an empty Answer does not panic.
+func TestTruncateForUDP_Boundaries(t *testing.T) {
+	const owner = "big.example.com."
+
+	t.Run("full answer fits: no drop, no TC", func(t *testing.T) {
+		answer := makeTXTsAtOwner(owner, 2, 5)
+		m := buildTruncMsg(owner, answer)
+		truncateForUDP(m, 4096)
+		if len(m.Answer) != 2 {
+			t.Errorf("kept %d RRs; want 2 (nothing should be dropped)", len(m.Answer))
+		}
+		if m.Truncated {
+			t.Error("TC must not be set when the full answer fits")
+		}
+	})
+
+	t.Run("single RR over budget: Answer cleared, TC set", func(t *testing.T) {
+		// budget fits header+question but not the sole RR, so k converges to 0.
+		answer := makeTXTsAtOwner(owner, 1, 100)
+		m := buildTruncMsg(owner, answer)
+		const budget = 60
+		truncateForUDP(m, budget)
+		if len(m.Answer) != 0 {
+			t.Errorf("Answer not cleared: kept %d RRs", len(m.Answer))
+		}
+		if !m.Truncated {
+			t.Error("expected TC=1 when the only RR is dropped")
+		}
+		packed, err := m.Pack()
+		if err != nil {
+			t.Fatalf("pack header-only msg: %v", err)
+		}
+		if len(packed) > budget {
+			t.Errorf("header-only wire size %d exceeds budget %d", len(packed), budget)
+		}
+	})
+
+	t.Run("empty answer does not panic", func(t *testing.T) {
+		m := buildTruncMsg(owner, nil)
+		truncateForUDP(m, 512) // must not panic
+		if len(m.Answer) != 0 {
+			t.Errorf("empty answer became %d RRs", len(m.Answer))
+		}
+		if m.Truncated {
+			t.Error("TC must not be set for an empty answer that fits")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Case preservation tests (RFC 4343 + DNS-0x20 echo)
 // ---------------------------------------------------------------------------
 

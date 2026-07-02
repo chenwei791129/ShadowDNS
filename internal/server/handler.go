@@ -973,29 +973,71 @@ func replyWithAnswer(w dns.ResponseWriter, req *dns.Msg, qo queryOpt, answer []d
 	_ = w.WriteMsg(m)
 }
 
-// truncateForUDP mutates m so it Packs to no more than budget bytes. While
-// the packed size exceeds budget it drops the trailing Answer RR, sets TC=1,
-// and re-packs. If Answer empties before the packed size fits (oversized
-// question/authority), TC=1 is set on the header-only remainder. The caller
-// owns m.Compress; this function honours whatever setting m carries. A Pack
-// failure leaves m unchanged and returns; the subsequent WriteMsg call will
-// surface the same error through the normal path.
+// packMsg is the wire-size oracle used by truncateForUDP. It is a package
+// variable solely so tests can count Pack invocations and lock in the
+// logarithmic Pack-call bound; production always uses (*dns.Msg).Pack. The
+// indirection is a single pointer call, negligible beside Pack's serialization.
+var packMsg = (*dns.Msg).Pack
+
+// truncateForUDP mutates m so it Packs to no more than budget bytes. It keeps
+// the longest leading prefix of m.Answer that still fits and drops the trailing
+// RRs, setting TC=1 whenever any Answer RR is dropped (or the header-only
+// remainder still overflows). The retained prefix is identical to what a
+// one-RR-at-a-time drop-and-repack loop would keep, but it is found by binary
+// search over the prefix length instead: packed wire size is monotonic
+// non-decreasing in the prefix length (a longer prefix serializes to a superset;
+// name compression only adds >= 0 bytes per appended RR), so "size <= budget" is
+// monotonic and the largest feasible prefix can be located with O(log N) Pack
+// calls rather than O(N). Pack() is the only trusted wire-size oracle (it
+// accounts for compression); sizes are never estimated.
+//
+// The caller owns m.Compress; this function honours whatever setting m carries.
+// The OPT record, if present, is attached by the caller before entry and is
+// never dropped (RFC 6891). A Pack failure leaves m fully unchanged — both
+// m.Answer and m.Truncated are restored to their entry values — and returns, so
+// the subsequent WriteMsg call surfaces the same error through the normal path.
 // See RFC 6891 §6.2.5 for the requestor-advertised UDP payload size contract.
 func truncateForUDP(m *dns.Msg, budget int) {
-	for {
-		packed, err := m.Pack()
+	origAnswer := m.Answer
+	origTC := m.Truncated
+
+	// Measure the full answer first. If it already fits, drop nothing and leave
+	// TC as it was; if Pack fails, leave m unchanged.
+	packed, err := packMsg(m)
+	if err != nil {
+		return
+	}
+	if len(packed) <= budget {
+		return
+	}
+
+	// The full answer overflows. Binary-search the longest prefix that fits.
+	// Invariant: lo = largest prefix length known to fit (0 = the header-only
+	// lower bound, which may itself overflow); hi = smallest prefix length known
+	// to overflow (len(origAnswer), since the full answer just overflowed).
+	lo, hi := 0, len(origAnswer)
+	for lo+1 < hi {
+		mid := (lo + hi) / 2
+		m.Answer = origAnswer[:mid]
+		packed, err := packMsg(m)
 		if err != nil {
+			m.Answer = origAnswer
+			m.Truncated = origTC
 			return
 		}
 		if len(packed) <= budget {
-			return
+			lo = mid
+		} else {
+			hi = mid
 		}
-		m.Truncated = true
-		if len(m.Answer) == 0 {
-			return
-		}
-		m.Answer = m.Answer[:len(m.Answer)-1]
 	}
+
+	// lo is the largest prefix verified <= budget during the search (or 0 when
+	// even the header-only remainder overflows). Every accepted prefix was
+	// Pack-validated, so no post-search shrink is needed. At least one RR was
+	// dropped here (lo < len(origAnswer)), so TC is always set.
+	m.Answer = origAnswer[:lo]
+	m.Truncated = true
 }
 
 // udpMaxSize returns the maximum UDP payload size for the response.
