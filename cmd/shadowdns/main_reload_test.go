@@ -1,9 +1,10 @@
 package main
 
 // Tests for the reload-coverage-and-metrics change: GeoIP reload with
-// deferred-by-one-generation close, RRL limiter rebuild, query-log re-apply,
-// reload metrics, SIGUSR1-after-reload semantics, and the shutdown-order
-// contract.
+// reachability-driven generation lifetime (the reload path closes no
+// superseded generation; a retained reference stays usable), RRL limiter
+// rebuild, query-log re-apply, reload metrics, SIGUSR1-after-reload semantics,
+// and the shutdown-order contract.
 //
 // All fixture domains use RFC 2606 names; all paths live under t.TempDir().
 
@@ -190,18 +191,16 @@ func TestReloadGeoIP(t *testing.T) {
 		t.Fatalf("fixture lookup = (%q, %v), want (JP, true)", iso, ok)
 	}
 
-	// --- successful reload: new handles installed, old generation parked ---
+	// --- successful reload: new handles installed, retained generation stays
+	// usable (the reload path closes nothing) ---
 	if err := reload(context.Background(), opts, srv, geo, qlState, zap.NewNop()); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 	if geo.country == gen1 {
 		t.Error("geo.country still points at the startup handle; reload must open a new one")
 	}
-	if geo.prevCountry != gen1 {
-		t.Error("superseded country handle is not parked in the deferred-close slot")
-	}
 	if iso, ok := gen1.Lookup(testIP); !ok || iso != "JP" {
-		t.Errorf("superseded handle lookup = (%q, %v); it must remain open until the next reload", iso, ok)
+		t.Errorf("retained generation lookup after one reload = (%q, %v); the reload path must not close it", iso, ok)
 	}
 
 	wantSeries := map[string]string{
@@ -215,16 +214,13 @@ func TestReloadGeoIP(t *testing.T) {
 		}
 	}
 
-	// --- second reload: generation 1 is closed ---
-	gen2 := geo.country
+	// --- second reload: generation 1 is still usable (reachability-driven;
+	// the reload path closed nothing across two successive reloads) ---
 	if err := reload(context.Background(), opts, srv, geo, qlState, zap.NewNop()); err != nil {
 		t.Fatalf("second reload: %v", err)
 	}
-	if geo.prevCountry != gen2 {
-		t.Error("generation 2 should now sit in the deferred-close slot")
-	}
-	if _, ok := gen1.Lookup(testIP); ok {
-		t.Error("generation 1 still answers lookups after the second reload; it must be closed")
+	if iso, ok := gen1.Lookup(testIP); !ok || iso != "JP" {
+		t.Errorf("retained generation lookup after two reloads = (%q, %v); the reload path must not close it", iso, ok)
 	}
 
 	// --- GeoIP failure preserves existing handles and counts a failure ---
@@ -354,11 +350,11 @@ func TestReload_EnablesGeoIP(t *testing.T) {
 	requireARecord(t, resp, "203.0.113.10")
 }
 
-// TestReload_DisablesGeoIP covers the geo→no-geo transition: the superseded
-// handles follow the deferred-by-one-generation close lifecycle, the metric
-// series disappear, the completion log reports geoip_enabled=false, and the
-// ECS warning fires when --ecs-enable is active. A consecutive geo↔no-geo
-// round must not panic the deferred-close rotation.
+// TestReload_DisablesGeoIP covers the geo→no-geo transition: the outgoing
+// generation is dropped (not parked, not closed) so a retained reference to it
+// stays usable, the metric series disappear, the completion log reports
+// geoip_enabled=false, and the ECS warning fires when --ecs-enable is active. A
+// consecutive geo↔no-geo round must not panic and must still close nothing.
 func TestReload_DisablesGeoIP(t *testing.T) {
 	dir := setupReloadTestDir(t)
 	geoDir := filepath.Join(dir, "geoip")
@@ -379,7 +375,8 @@ func TestReload_DisablesGeoIP(t *testing.T) {
 	testIP := netip.MustParseAddr("203.0.113.50")
 	gen1 := geo.country
 
-	// --- disable: nil handles serve, series deleted, old gen deferred ---
+	// --- disable: nil handles serve, series deleted, outgoing gen dropped
+	// (not closed — a retained reference stays usable) ---
 	if err := os.WriteFile(filepath.Join(dir, "named.conf"), []byte(noGeoConf), 0o644); err != nil {
 		t.Fatalf("write named.conf: %v", err)
 	}
@@ -390,11 +387,8 @@ func TestReload_DisablesGeoIP(t *testing.T) {
 	if geo.country != nil || geo.asn != nil {
 		t.Error("GeoIP handles must be nil after the disabling reload")
 	}
-	if geo.prevCountry != gen1 {
-		t.Error("superseded country handle is not parked in the deferred-close slot")
-	}
 	if iso, ok := gen1.Lookup(testIP); !ok || iso != "JP" {
-		t.Errorf("superseded handle lookup = (%q, %v); it must remain open until the next reload", iso, ok)
+		t.Errorf("retained generation lookup after disabling reload = (%q, %v); the reload path must not close it", iso, ok)
 	}
 	if series := geoipGaugeSeries(t, m); len(series) != 0 {
 		t.Errorf("geoip_db_info series = %v, want none after GeoIP is disabled", series)
@@ -422,12 +416,12 @@ func TestReload_DisablesGeoIP(t *testing.T) {
 	if got := countECSWarnings(logs); got != 0 {
 		t.Errorf("ECS warnings on a GeoIP-enabled reload = %d, want 0", got)
 	}
-	// gen1 was the deferred generation; the re-enabling reload closes it.
-	if _, ok := gen1.Lookup(testIP); ok {
-		t.Error("generation 1 still answers lookups after the next reload; it must be closed")
+	// gen1 was dropped by the re-enabling reload, not closed; a retained
+	// reference to it still answers lookups (reachability-driven).
+	if iso, ok := gen1.Lookup(testIP); !ok || iso != "JP" {
+		t.Errorf("retained generation lookup after the re-enabling reload = (%q, %v); the reload path must not close it", iso, ok)
 	}
 
-	gen3 := geo.country
 	if err := os.WriteFile(filepath.Join(dir, "named.conf"), []byte(noGeoConf), 0o644); err != nil {
 		t.Fatalf("write named.conf: %v", err)
 	}
@@ -436,9 +430,6 @@ func TestReload_DisablesGeoIP(t *testing.T) {
 	}
 	if geo.country != nil {
 		t.Error("GeoIP handles must be nil after the second disabling reload")
-	}
-	if geo.prevCountry != gen3 {
-		t.Error("generation 3 should now sit in the deferred-close slot")
 	}
 }
 
