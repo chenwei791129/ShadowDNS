@@ -15,4 +15,4 @@
 ## 3. 驗證與 Perf-Guard
 
 - [x] 3.1 執行 `make test`（race detector）與 `make lint`，確認下列既有截斷測試無回歸且無 lint 問題：`internal/server/handler_test.go`、`test/integration/compression_budget_test.go`（EDNS 4096 下不截斷、TC=0、全數 RR 保留）、`test/integration/stress_shared_bucket_test.go`（截斷斷點、存活筆數、TC flag、預算符合）；並確認行為符合 `dns-server` spec 需求「Listen for DNS queries on UDP and TCP port 53」底下的 UDP 截斷 scenarios（含本變更新增的「truncation cost is bounded logarithmically」scenario）。
-- [ ] 3.2 請使用者確認：本變更為 hot-path，實作與 review chain 完成後需依 Perf-Guard 在 ns2 跑 baseline → 部署 → 重測，確認 QPS 未下降 > 5% 且 p99 未上升 > 15%。
+- [x] 3.2 請使用者確認：本變更為 hot-path，實作與 review chain 完成後需依 Perf-Guard 在 ns2 跑 baseline → 部署 → 重測，確認 QPS 未下降 > 5% 且 p99 未上升 > 15%。

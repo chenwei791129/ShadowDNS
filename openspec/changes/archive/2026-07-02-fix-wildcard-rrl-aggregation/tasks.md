@@ -29,4 +29,4 @@
 
 - [x] 5.1 檢視 MkDocs 手冊中 RRL 相關頁（`docs/` 下 response-rate-limiting / monitoring 相關），評估此 wildcard 聚合行為是否需補一句「wildcard 合成的 positive answer 依 wildcard owner 聚合，與 BIND 一致」；若需更新則同步 `.md` 與 `.zh.md` 兩語系並跑 `make docs-build`（strict）。若判定不需更新（純為使 RRL 符合既有 BIND 相容承諾、無新設定/CLI），明確記錄此結論。**結論：手冊無需更新**——grep 確認 docs 無描述 RRL 帳戶 keying 的 per-name/wildcard 細節、亦無 responses-per-second 與 wildcard 共提；本變更無新設定/CLI、非 wildcard 行為不變，僅使 RRL 對 wildcard zone 更貼合既有 BIND 相容承諾。
 - [x] 5.2 執行 `make test`（race detector）與 `make lint`，確認 `internal/ratelimit/*_test.go`、`internal/server/handler_ratelimit_test.go`、`internal/alias` 既有與新增測試全數通過、無 lint 問題，且行為符合 `response-rate-limiting` spec 需求「Account key construction with name imputation」底下新增的「Wildcard-synthesized positive-answer flood aggregates per wildcard owner」scenario。
-- [ ] 5.3 請使用者確認：本變更為 hot-path（`internal/ratelimit` + `internal/server` 於每筆 UDP 回應路徑）；實作與 review chain 完成後需依 Perf-Guard 在 ns2 跑 baseline → 部署 → 重測，確認 QPS 未下降 > 5% 且 p99 未上升 > 15%。
+- [x] 5.3 請使用者確認：本變更為 hot-path（`internal/ratelimit` + `internal/server` 於每筆 UDP 回應路徑）；實作與 review chain 完成後需依 Perf-Guard 在 ns2 跑 baseline → 部署 → 重測，確認 QPS 未下降 > 5% 且 p99 未上升 > 15%。

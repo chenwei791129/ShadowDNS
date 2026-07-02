@@ -124,12 +124,23 @@ tests:
 ---
 ### Requirement: Account key construction with name imputation
 
-The limiter SHALL build each account key from the client address masked by `ipv4-prefix-length` (default 24) or `ipv6-prefix-length` (default 56), the response category, and an imputed name. The imputed name SHALL be derived per category: for `responses` (positive answers) the exact query name SHALL be used; for `nxdomains` and `nodata` the matched zone origin SHALL be used so that a flood of distinct non-existent names under one zone aggregates into a single account; for `errors` (including REFUSED for names outside all zones) an empty name SHALL be used so that all error responses to one client block aggregate into a single account.
+The limiter SHALL build each account key from the client address masked by `ipv4-prefix-length` (default 24) or `ipv6-prefix-length` (default 56), the response category, and an imputed name. The imputed name SHALL be derived per category: for `responses` (positive answers) the exact query name SHALL be used, EXCEPT when the positive answer was synthesized from a wildcard, in which case the closest enclosing wildcard owner (the `*.zone` node that produced the answer) SHALL be used so that a flood of distinct labels covered by one wildcard aggregates into a single account (mirroring the zone-origin aggregation used for negative answers and matching BIND's imputation of the wildcard owner); for `nxdomains` and `nodata` the matched zone origin SHALL be used so that a flood of distinct non-existent names under one zone aggregates into a single account; for `errors` (including REFUSED for names outside all zones) an empty name SHALL be used so that all error responses to one client block aggregate into a single account. The wildcard owner and query name SHALL both be folded to the lookup-key form so 0x20-randomized case variants share one account.
 
 #### Scenario: Positive answers key on the query name
 
-- **WHEN** two UDP queries from the same client block request different existing names that both return positive answers
+- **WHEN** two UDP queries from the same client block request different existing names that both return positive answers from exact-match (non-wildcard) records
 - **THEN** the two responses SHALL be accounted under distinct accounts keyed by their respective query names
+
+#### Scenario: Wildcard-synthesized positive-answer flood aggregates per wildcard owner
+
+- **WHEN** many UDP queries from the same client block request distinct labels all covered by one wildcard (for example `*.example.com`), each returning a wildcard-synthesized positive answer
+- **THEN** all those responses SHALL be accounted under a single account keyed by the wildcard owner (`*.example.com.`), not under distinct per-label accounts
+
+##### Example: Wildcard-synthesized flood aggregation
+
+- **GIVEN** a zone serving `*.example.com`, `responses-per-second = 5`, and queries for `r1.example.com`, `r2.example.com`, … each matching the wildcard
+- **WHEN** 20 such queries arrive in one second from the same client block
+- **THEN** all 20 share one account keyed by `(client-block, responses, *.example.com.)` and responses beyond 5 SHALL be over-limit
 
 #### Scenario: Random-subdomain NXDOMAIN flood aggregates per zone
 
@@ -149,37 +160,19 @@ The limiter SHALL build each account key from the client address masked by `ipv4
 
 
 <!-- @trace
-source: add-response-rate-limiting
-updated: 2026-06-09
+source: fix-wildcard-rrl-aggregation
+updated: 2026-07-02
 code:
-  - internal/ratelimit/exempt.go
-  - cmd/shadowdns/main.go
-  - internal/config/options.go
-  - internal/server/handler.go
   - internal/ratelimit/writer.go
-  - testdata/integration/named.conf
-  - internal/config/ratelimit.go
-  - internal/config/zones.go
-  - internal/ratelimit/slip.go
-  - internal/ratelimit/table.go
-  - internal/ratelimit/classify.go
-  - internal/ratelimit/limiter.go
-  - internal/metrics/metrics.go
-  - internal/server/server.go
-  - README.md
-  - internal/ratelimit/key.go
+  - internal/alias/override.go
+  - internal/server/handler.go
+  - .release-please-manifest.json
+  - CHANGELOG.md
 tests:
-  - internal/config/ratelimit_test.go
-  - internal/ratelimit/classify_test.go
-  - internal/ratelimit/table_test.go
-  - internal/ratelimit/limiter_decide_test.go
-  - internal/server/handler_ratelimit_test.go
-  - internal/metrics/metrics_ratelimit_test.go
   - internal/ratelimit/writer_test.go
-  - internal/ratelimit/slip_test.go
-  - internal/ratelimit/limiter_credit_test.go
-  - internal/ratelimit/key_test.go
-  - internal/config/ratelimit_warn_test.go
+  - internal/alias/override_test.go
+  - internal/server/handler_test.go
+  - internal/server/handler_ratelimit_test.go
 -->
 
 ---

@@ -1,4 +1,5 @@
 ## Requirements
+
 <!-- @trace
 source: shadowdns-foundation
 updated: 2026-04-14
@@ -100,22 +101,44 @@ The dns-server SHALL bind both UDP and TCP listeners on the configured address (
 
 - **GIVEN** a DNS query with EDNS0 UDPSize=4096 asking for TXT at an FQDN with enough RRs to serialize to 6000 bytes after compression
 - **WHEN** the server builds the reply
-- **THEN** the server SHALL pack the reply, observe 6000 > 4096, drop trailing Answer RRs one at a time and re-pack until the packed size ≤ 4096 bytes, and set TC=1 in the final packet
+- **THEN** the server SHALL retain the longest leading prefix of the Answer section whose packed size is ≤ 4096 bytes, drop the remaining trailing Answer RRs, and set TC=1 in the final packet
+- **AND** the set of retained Answer RRs SHALL be identical to what a one-RR-at-a-time drop-and-repack loop would retain for the same input
 
 #### Scenario: UDP response without EDNS0 falls back to 512-byte budget
 
 - **WHEN** a client sends a UDP query with no EDNS0 OPT record
 - **THEN** the server's UDP response SHALL have a packed wire size ≤ 512 bytes (RFC 1035 §2.3.4) and SHALL set TC=1 when RRs are dropped to meet that limit
 
+#### Scenario: UDP truncation cost is bounded logarithmically in the number of dropped RRs
+
+- **GIVEN** a UDP query for a name holding a large single-owner RRset of N Answer RRs that must be trimmed to fit the UDP budget
+- **WHEN** the server truncates the response to fit the budget
+- **THEN** the number of `dns.Msg.Pack()` invocations performed by the truncation routine SHALL be logarithmic in the number of dropped RRs (O(log N)), not linear (O(N))
+- **AND** the final packed wire size SHALL be ≤ the budget with TC=1 set whenever any Answer RR was dropped
+
+#### Scenario: Truncation leaves the message unchanged on a pack failure
+
+- **GIVEN** a response whose `dns.Msg.Pack()` returns an error during truncation
+- **WHEN** the truncation routine encounters that error
+- **THEN** it SHALL leave the message's Answer section exactly as it was on entry and return, so the subsequent write surfaces the same error through the normal path
+
+
 <!-- @trace
-source: fix-oversized-udp-responses
-updated: 2026-04-25
+source: fix-udp-truncation-quadratic-cpu
+updated: 2026-07-02
 code:
+  - internal/alias/override.go
   - internal/server/handler.go
+  - internal/ratelimit/writer.go
+  - internal/doh/dnsjson.go
+  - CHANGELOG.md
+  - .release-please-manifest.json
 tests:
-  - test/integration/stress_shared_bucket_test.go
   - internal/server/handler_test.go
-  - test/integration/compression_budget_test.go
+  - internal/doh/dnsjson_test.go
+  - internal/alias/override_test.go
+  - internal/ratelimit/writer_test.go
+  - internal/server/handler_ratelimit_test.go
 -->
 
 ---

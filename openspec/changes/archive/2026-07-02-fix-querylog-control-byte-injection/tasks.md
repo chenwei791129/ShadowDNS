@@ -13,4 +13,4 @@
 ## 3. 驗證與 Perf-Guard
 
 - [x] 3.1 執行 `make test`（race detector）與 `make lint`，確認 `internal/doh/dnsjson_test.go` 全數通過、無 lint 問題，且行為符合 `doh-endpoint` spec 需求「application/dns-json queries are parsed from name and type parameters」底下新增的「control bytes ... escaped to match the wire path」與「the JSON path and the wire-format path yield the same question name」scenarios。
-- [ ] 3.2 請使用者確認：本變更檔案為 `internal/**`（Perf-Guard 依檔案分類屬 must-run），惟僅動 dns-json GET 路徑、不觸及 wire UDP hot path；實作與 review chain 完成後仍依 Perf-Guard 在 ns2 跑 baseline → 部署 → 重測，確認 QPS 未下降 > 5% 且 p99 未上升 > 15%（wire benchmark 預期無位移）。
+- [x] 3.2 請使用者確認：本變更檔案為 `internal/**`（Perf-Guard 依檔案分類屬 must-run），惟僅動 dns-json GET 路徑、不觸及 wire UDP hot path；實作與 review chain 完成後仍依 Perf-Guard 在 ns2 跑 baseline → 部署 → 重測，確認 QPS 未下降 > 5% 且 p99 未上升 > 15%（wire benchmark 預期無位移）。
