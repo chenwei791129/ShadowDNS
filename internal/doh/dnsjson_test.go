@@ -218,6 +218,73 @@ func TestJSON_NameCasePreserved(t *testing.T) {
 	}
 }
 
+// TestJSON_NameControlBytesEscaped is the regression test for the query-log
+// control-byte injection fix (GitHub issue #9): a dns-json name carrying raw
+// control bytes (percent-encoded in the URL) must be canonicalized to the same
+// \DDD presentation form the wire path produces, so no raw control byte reaches
+// Question[0].Name (and therefore the query log, closing the log-forging vector).
+func TestJSON_NameControlBytesEscaped(t *testing.T) {
+	srv := newAnyViewServer(t, buildRootZone("example.com.", makeA("www.example.com.", "203.0.113.20", 300)))
+	h := newDoHHandler(t, srv)
+
+	// %0A (newline), %0D (CR), %00 (NUL), %09 (tab), %7F (DEL) in the name.
+	rec := doJSON(t, h, "name=evil%0Afake%0D%00%09%7F.example.com&type=A", "", "203.0.113.5:40000")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := parseJSONBody(t, rec)
+	if len(resp.Question) != 1 {
+		t.Fatalf("Question = %+v, want exactly one", resp.Question)
+	}
+	got := resp.Question[0].Name
+
+	// The canonical form escapes each control byte as \DDD.
+	want := "evil\\010fake\\013\\000\\009\\127.example.com."
+	if got != want {
+		t.Errorf("Question name = %q, want canonicalized %q", got, want)
+	}
+	// No raw control byte may survive into the question name.
+	for _, b := range []byte(got) {
+		if b < 0x20 || b == 0x7f {
+			t.Fatalf("raw control byte 0x%02x survived into question name %q", b, got)
+		}
+	}
+}
+
+// TestJSON_NameCanonicalMatchesWirePath asserts the dns-json path and the
+// wire-format (?dns=) path yield the identical Question name for the same
+// on-wire name carrying a control byte — the cross-transport consistency the
+// spec requires. Both are our own endpoints exercised over HTTP.
+func TestJSON_NameCanonicalMatchesWirePath(t *testing.T) {
+	srv := newAnyViewServer(t, buildRootZone("example.com.", makeA("www.example.com.", "203.0.113.20", 300)))
+	h := newDoHHandler(t, srv)
+
+	// dns-json path with a percent-encoded newline in the name.
+	jsonRec := doJSON(t, h, "name=a%0Ab.example.com&type=A", "", "203.0.113.5:40000")
+	jsonResp := parseJSONBody(t, jsonRec)
+	if len(jsonResp.Question) != 1 {
+		t.Fatalf("json Question = %+v, want one", jsonResp.Question)
+	}
+
+	// wire-format path: build a query whose question name carries the same raw
+	// newline byte, base64url it, and send via ?dns=. The wire path returns an
+	// application/dns-message, so unpack it as a dns.Msg (not JSON).
+	wireName := "a\nb.example.com."
+	wireRec := doJSON(t, h, "dns="+b64query(wireName, dns.TypeA), "", "203.0.113.5:40000")
+	var wireMsg dns.Msg
+	if err := wireMsg.Unpack(wireRec.Body.Bytes()); err != nil {
+		t.Fatalf("unpack wire response: %v", err)
+	}
+	if len(wireMsg.Question) != 1 {
+		t.Fatalf("wire Question = %+v, want one", wireMsg.Question)
+	}
+
+	if jsonResp.Question[0].Name != wireMsg.Question[0].Name {
+		t.Errorf("dns-json name %q != wire-format name %q for the same on-wire name",
+			jsonResp.Question[0].Name, wireMsg.Question[0].Name)
+	}
+}
+
 // ---- Task 1.2: zone-transfer refusal ----
 
 func TestJSON_AXFRRefused(t *testing.T) {
