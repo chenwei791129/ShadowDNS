@@ -29,6 +29,7 @@ loading GeoIP: /etc/shadowdns/named.conf:42: view "asia" uses geoip match-client
 
 - mmdb 檔案直接讀入記憶體。
 - 每次 SIGHUP reload 都會**重新開啟** mmdb 檔案 —— 放入 MaxMind 的每月更新後送 SIGHUP 即可生效，不需重啟 process。
+- 無論 reload 頻率多快（包含連續快速的 SIGHUP）皆安全：查詢在其整個處理期間會持續讀取當初載入的資料庫世代，而被取代的 mmdb 只會在沒有任何進行中的查詢還能存取它時才釋放。
 - 成功重載後，`shadowdns_geoip_db_info` gauge 會反映新的 `build_time`，可用來確認更新已生效。
 - reload 套用相同的條件式邏輯，因此可透過 SIGHUP 啟用或停用 GeoIP：設定 `geoip-directory` 會當場載入 mmdb 檔案（失敗時保留舊設定）；取消設定（且不再有 geo 規則）後，伺服器會在沒有任何資料庫的狀態下繼續運行。
 
