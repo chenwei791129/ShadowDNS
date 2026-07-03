@@ -1,9 +1,10 @@
 package main
 
 // Tests for the reload-coverage-and-metrics change: GeoIP reload with
-// deferred-by-one-generation close, RRL limiter rebuild, query-log re-apply,
-// reload metrics, SIGUSR1-after-reload semantics, and the shutdown-order
-// contract.
+// reachability-driven generation lifetime (the reload path closes no
+// superseded generation; a retained reference stays usable), RRL limiter
+// rebuild, query-log re-apply, reload metrics, SIGUSR1-after-reload semantics,
+// and the shutdown-order contract.
 //
 // All fixture domains use RFC 2606 names; all paths live under t.TempDir().
 
@@ -190,18 +191,16 @@ func TestReloadGeoIP(t *testing.T) {
 		t.Fatalf("fixture lookup = (%q, %v), want (JP, true)", iso, ok)
 	}
 
-	// --- successful reload: new handles installed, old generation parked ---
+	// --- successful reload: new handles installed, retained generation stays
+	// usable (the reload path closes nothing) ---
 	if err := reload(context.Background(), opts, srv, geo, qlState, zap.NewNop()); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 	if geo.country == gen1 {
 		t.Error("geo.country still points at the startup handle; reload must open a new one")
 	}
-	if geo.prevCountry != gen1 {
-		t.Error("superseded country handle is not parked in the deferred-close slot")
-	}
 	if iso, ok := gen1.Lookup(testIP); !ok || iso != "JP" {
-		t.Errorf("superseded handle lookup = (%q, %v); it must remain open until the next reload", iso, ok)
+		t.Errorf("retained generation lookup after one reload = (%q, %v); the reload path must not close it", iso, ok)
 	}
 
 	wantSeries := map[string]string{
@@ -215,16 +214,13 @@ func TestReloadGeoIP(t *testing.T) {
 		}
 	}
 
-	// --- second reload: generation 1 is closed ---
-	gen2 := geo.country
+	// --- second reload: generation 1 is still usable (reachability-driven;
+	// the reload path closed nothing across two successive reloads) ---
 	if err := reload(context.Background(), opts, srv, geo, qlState, zap.NewNop()); err != nil {
 		t.Fatalf("second reload: %v", err)
 	}
-	if geo.prevCountry != gen2 {
-		t.Error("generation 2 should now sit in the deferred-close slot")
-	}
-	if _, ok := gen1.Lookup(testIP); ok {
-		t.Error("generation 1 still answers lookups after the second reload; it must be closed")
+	if iso, ok := gen1.Lookup(testIP); !ok || iso != "JP" {
+		t.Errorf("retained generation lookup after two reloads = (%q, %v); the reload path must not close it", iso, ok)
 	}
 
 	// --- GeoIP failure preserves existing handles and counts a failure ---
@@ -354,11 +350,11 @@ func TestReload_EnablesGeoIP(t *testing.T) {
 	requireARecord(t, resp, "203.0.113.10")
 }
 
-// TestReload_DisablesGeoIP covers the geo→no-geo transition: the superseded
-// handles follow the deferred-by-one-generation close lifecycle, the metric
-// series disappear, the completion log reports geoip_enabled=false, and the
-// ECS warning fires when --ecs-enable is active. A consecutive geo↔no-geo
-// round must not panic the deferred-close rotation.
+// TestReload_DisablesGeoIP covers the geo→no-geo transition: the outgoing
+// generation is dropped (not parked, not closed) so a retained reference to it
+// stays usable, the metric series disappear, the completion log reports
+// geoip_enabled=false, and the ECS warning fires when --ecs-enable is active. A
+// consecutive geo↔no-geo round must not panic and must still close nothing.
 func TestReload_DisablesGeoIP(t *testing.T) {
 	dir := setupReloadTestDir(t)
 	geoDir := filepath.Join(dir, "geoip")
@@ -379,7 +375,8 @@ func TestReload_DisablesGeoIP(t *testing.T) {
 	testIP := netip.MustParseAddr("203.0.113.50")
 	gen1 := geo.country
 
-	// --- disable: nil handles serve, series deleted, old gen deferred ---
+	// --- disable: nil handles serve, series deleted, outgoing gen dropped
+	// (not closed — a retained reference stays usable) ---
 	if err := os.WriteFile(filepath.Join(dir, "named.conf"), []byte(noGeoConf), 0o644); err != nil {
 		t.Fatalf("write named.conf: %v", err)
 	}
@@ -390,11 +387,8 @@ func TestReload_DisablesGeoIP(t *testing.T) {
 	if geo.country != nil || geo.asn != nil {
 		t.Error("GeoIP handles must be nil after the disabling reload")
 	}
-	if geo.prevCountry != gen1 {
-		t.Error("superseded country handle is not parked in the deferred-close slot")
-	}
 	if iso, ok := gen1.Lookup(testIP); !ok || iso != "JP" {
-		t.Errorf("superseded handle lookup = (%q, %v); it must remain open until the next reload", iso, ok)
+		t.Errorf("retained generation lookup after disabling reload = (%q, %v); the reload path must not close it", iso, ok)
 	}
 	if series := geoipGaugeSeries(t, m); len(series) != 0 {
 		t.Errorf("geoip_db_info series = %v, want none after GeoIP is disabled", series)
@@ -422,12 +416,12 @@ func TestReload_DisablesGeoIP(t *testing.T) {
 	if got := countECSWarnings(logs); got != 0 {
 		t.Errorf("ECS warnings on a GeoIP-enabled reload = %d, want 0", got)
 	}
-	// gen1 was the deferred generation; the re-enabling reload closes it.
-	if _, ok := gen1.Lookup(testIP); ok {
-		t.Error("generation 1 still answers lookups after the next reload; it must be closed")
+	// gen1 was dropped by the re-enabling reload, not closed; a retained
+	// reference to it still answers lookups (reachability-driven).
+	if iso, ok := gen1.Lookup(testIP); !ok || iso != "JP" {
+		t.Errorf("retained generation lookup after the re-enabling reload = (%q, %v); the reload path must not close it", iso, ok)
 	}
 
-	gen3 := geo.country
 	if err := os.WriteFile(filepath.Join(dir, "named.conf"), []byte(noGeoConf), 0o644); err != nil {
 		t.Fatalf("write named.conf: %v", err)
 	}
@@ -436,9 +430,6 @@ func TestReload_DisablesGeoIP(t *testing.T) {
 	}
 	if geo.country != nil {
 		t.Error("GeoIP handles must be nil after the second disabling reload")
-	}
-	if geo.prevCountry != gen3 {
-		t.Error("generation 3 should now sit in the deferred-close slot")
 	}
 }
 
@@ -889,7 +880,15 @@ func TestSigusr1AfterReload(t *testing.T) {
 		if err := syscall.Kill(syscall.Getpid(), syscall.SIGHUP); err != nil {
 			t.Fatalf("send SIGHUP: %v", err)
 		}
+		// waitForFile alone is not a reload barrier: the path-B sink file is
+		// created by a pre-swap fallible step, while qlState — which the
+		// SIGUSR1 handler reads — is updated only after the state swap (and
+		// the swap's forced GC can stretch that window on slow machines). A
+		// SIGUSR1 sent in the window reopens the retired path-A sink and
+		// flakes this test. "reload complete" is logged after every post-swap
+		// install step, so wait for it before touching the sinks.
 		waitForFile(t, qlPathB)
+		waitForFileContains(t, mainLog, "reload complete")
 
 		// The retired path-A sink is closed; remove its file so any
 		// erroneous reopen of the old sink would be visible as a recreation.
@@ -923,11 +922,14 @@ func TestSigusr1AfterReload(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		readyCh := make(chan struct{})
+		// Observer logger so the test can wait on the "reload complete"
+		// entry — the reload barrier below needs it.
+		logger, logs := newObservedLogger()
 		opts := runOptions{
 			NamedConfPath: filepath.Join(dir, "named.conf"),
 			ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 			ListenAddr:    freePortAddr(t),
-			Logger:        zap.NewNop(),
+			Logger:        logger,
 			// No LogReopener and no query log at startup: registration must
 			// not depend on a startup sink.
 			ReadyCh: readyCh,
@@ -941,7 +943,12 @@ func TestSigusr1AfterReload(t *testing.T) {
 		if err := syscall.Kill(syscall.Getpid(), syscall.SIGHUP); err != nil {
 			t.Fatalf("send SIGHUP: %v", err)
 		}
+		// waitForFile alone is not a reload barrier (the sink file is created
+		// pre-swap; qlState is installed post-swap): a SIGUSR1 sent in the
+		// window still sees no sink and reopens nothing. Wait for the
+		// completion log entry, emitted after every post-swap install step.
 		waitForFile(t, qlPath)
+		waitForReloadComplete(t, logs)
 
 		// Rotate it and confirm SIGUSR1 reopens the reload-created sink.
 		if err := os.Rename(qlPath, qlPath+".1"); err != nil {
@@ -961,7 +968,11 @@ func TestSigusr1AfterReload(t *testing.T) {
 	})
 }
 
-// waitForFile polls until path exists or fails the test after 2s.
+// waitForFile polls until path exists or fails the test after 2s. Note that
+// for a SIGHUP-created query-log file this only proves the pre-swap open step
+// ran — it is NOT a reload-completion barrier; pair it with
+// waitForFileContains/waitForReloadComplete on "reload complete" when the
+// test's next step needs the post-swap installs (QueryLog/qlState) applied.
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -972,6 +983,34 @@ func waitForFile(t *testing.T, path string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("file %s did not appear within 2s", path)
+}
+
+// waitForFileContains polls until the file at path contains substr or fails
+// the test after 5s.
+func waitForFileContains(t *testing.T, path, substr string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(path); err == nil && strings.Contains(string(b), substr) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("log %s did not contain %q within 5s", path, substr)
+}
+
+// waitForReloadComplete polls the observed logs until a "reload complete"
+// entry appears or fails the test after 5s.
+func waitForReloadComplete(t *testing.T, logs *observer.ObservedLogs) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if logs.FilterMessage("reload complete").Len() > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("no \"reload complete\" log entry within 5s")
 }
 
 // ---------------------------------------------------------------------------

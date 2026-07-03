@@ -29,6 +29,7 @@ When `geoip-directory` is unset and no view uses geo rules, the server starts an
 
 - The mmdb files are read directly into memory.
 - Every SIGHUP reload **reopens** the mmdb files — after dropping in MaxMind's monthly update, sending SIGHUP is all it takes; no process restart needed.
+- Reloads are safe at any cadence, including rapid successive SIGHUPs: a query keeps reading the database generation it loaded for its whole duration, and a superseded mmdb is released only once no in-flight query can still reach it.
 - After a successful reload, the `shadowdns_geoip_db_info` gauge reflects the new `build_time`, which can be used to confirm the update took effect.
 - The same conditional logic applies on reload, so GeoIP can be enabled or disabled by a SIGHUP: setting `geoip-directory` loads the mmdb files on the spot (failure keeps the old configuration), while unsetting it — with no geo rules left — keeps the server running without any databases.
 

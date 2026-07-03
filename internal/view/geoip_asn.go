@@ -2,6 +2,7 @@ package view
 
 import (
 	"net/netip"
+	"runtime"
 
 	maxminddb "github.com/oschwald/maxminddb-golang/v2"
 )
@@ -32,7 +33,13 @@ func (a *ASNDB) Lookup(ip netip.Addr) (uint32, bool) {
 	}
 
 	var asn uint32
-	if err := a.db.Lookup(ip).DecodePath(&asn, "autonomous_system_number"); err != nil {
+	err := a.db.Lookup(ip).DecodePath(&asn, "autonomous_system_number")
+	// Keep the reader (hence its mmap) alive until the decode above completes,
+	// so a concurrent reclamation cannot unmap it mid-decode regardless of how
+	// a caller uses the state snapshot afterward. Compile-time liveness barrier
+	// with no runtime cost.
+	runtime.KeepAlive(a.db)
+	if err != nil {
 		// Lookup errors indicate bad data or unsupported IP version;
 		// treat as no-match (not error) per audit discipline.
 		return 0, false

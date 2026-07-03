@@ -163,50 +163,22 @@ func dohConfigEqual(a, b *shadowdnscfg.DoHConfig) bool {
 	return *a == *b
 }
 
-// geoipRuntime owns the live GeoIP handles plus the generation swapped out by
-// the most recent reload. The swapped-out generation is closed at the start
-// of the next reload (or at shutdown), never immediately after the state swap
-// — in-flight queries may still resolve views against the previous state, and
-// closing an mmdb unmaps its memory (use-after-munmap is a fatal,
-// unrecoverable crash). No locking: the writers are the startup path (before
-// any goroutine starts) and the SIGHUP goroutine, and shutdown reads only
-// after that goroutine is joined.
+// geoipRuntime owns the live GeoIP handles for the current generation only.
+// Once a generation is installed, nothing in the process ever closes it —
+// neither a reload (which overwrites these references with the new generation
+// and drops the old one) nor shutdown. Closing an mmdb unmaps its memory, so
+// closing a generation a query could still be reading is a fatal,
+// unrecoverable use-after-munmap crash — and a query can outlive every join
+// the shutdown path performs (a DoH handler that outruns the bounded HTTP
+// drain keeps running after run() returns). A dropped generation stays
+// reachable — and its mmdb mapped and usable — for as long as any in-flight
+// query holds a state snapshot referencing it, and its mapping is reclaimed by
+// the mmdb reader's own runtime cleanup once it becomes unreachable (or by the
+// OS at process exit). No locking: the writers are the startup path (before
+// any goroutine starts) and the SIGHUP goroutine.
 type geoipRuntime struct {
 	country *view.CountryDB
 	asn     *view.ASNDB
-	// prevCountry/prevASN hold the generation deferred for close; nil before
-	// the first reload.
-	prevCountry *view.CountryDB
-	prevASN     *view.ASNDB
-}
-
-// closePrev closes and clears the deferred-close generation. Called at the
-// start of a reload — a full reload interval after that generation was
-// swapped out, when no in-flight query can still reference it.
-func (g *geoipRuntime) closePrev(logger *zap.Logger) {
-	if g.prevCountry != nil {
-		warnClose(g.prevCountry, "superseded country mmdb", logger)
-		g.prevCountry = nil
-	}
-	if g.prevASN != nil {
-		warnClose(g.prevASN, "superseded ASN mmdb", logger)
-		g.prevASN = nil
-	}
-}
-
-// closeAll closes every live handle (current and deferred) and clears the
-// fields so a repeated call is a no-op. Used by run()'s shutdown defer, which
-// executes after the signal goroutines are joined, and by tests.
-func (g *geoipRuntime) closeAll(logger *zap.Logger) {
-	g.closePrev(logger)
-	if g.country != nil {
-		warnClose(g.country, "country mmdb", logger)
-		g.country = nil
-	}
-	if g.asn != nil {
-		warnClose(g.asn, "ASN mmdb", logger)
-		g.asn = nil
-	}
 }
 
 // reload re-reads configuration and zone data, re-opens the GeoIP mmdb files,
@@ -215,8 +187,11 @@ func (g *geoipRuntime) closeAll(logger *zap.Logger) {
 // fallible step runs before the state swap; on any error the old state (zones,
 // GeoIP handles, limiter, query log) is preserved in full and the error is
 // returned. The GeoIP handles superseded by a successful reload are not closed
-// here — they are parked in geo's deferred-close slot and released at the
-// start of the next reload or at shutdown (deferred-by-one-generation close).
+// here — the reload path drops its reference to them and closes nothing. A
+// superseded generation stays mapped and usable while any in-flight query still
+// holds it, and its mmdb is reclaimed by the mmdb reader's own runtime cleanup
+// once it becomes unreachable (or by the OS at process exit). This is correct
+// under any reload cadence, including arbitrarily rapid successive SIGHUPs.
 func reload(
 	ctx context.Context,
 	opts runOptions,
@@ -238,11 +213,6 @@ func reload(
 			srv.Metrics.SetLastReloadSuccess(time.Now())
 		}
 	}()
-
-	// Step 0: release the GeoIP generation parked by the previous reload. A
-	// full reload interval has passed since it was swapped out, so no
-	// in-flight query can still hold a state snapshot that references it.
-	geo.closePrev(logger)
 
 	cfg, err := config.LoadNamedConf(opts.NamedConfPath, logger)
 	if err != nil {
@@ -336,10 +306,13 @@ func reload(
 		}
 	}
 
-	// Rotate the superseded GeoIP generation into the deferred-close slot —
-	// never close it here; in-flight queries may still resolve views against
-	// the pre-swap state snapshot.
-	geo.prevCountry, geo.prevASN = geo.country, geo.asn
+	// Overwrite the current generation with the new handles and close nothing.
+	// The superseded generation is simply dropped — never parked, never closed:
+	// in-flight queries may still resolve views against the pre-swap state
+	// snapshot, and its mmdb is reclaimed by the reader's own runtime cleanup
+	// once unreachable. This holds equally when newCountry/newASN are nil
+	// (GeoIP disabled by this reload): the outgoing generation is still dropped,
+	// not parked.
 	geo.country, geo.asn = newCountry, newASN
 	srv.Metrics.SetGeoIPInfo(geoipBuildEpochs(newCountry, newASN))
 
@@ -681,11 +654,14 @@ func run(ctx context.Context, opts runOptions) error {
 		return fmt.Errorf("loading GeoIP: %w", err)
 	}
 	// geo owns every live GeoIP handle from here on; reloads rotate new
-	// generations through it. The single defer covers both the normal
-	// shutdown path (it runs after the signal goroutines are joined in the
-	// function body) and every early-return path below.
+	// generations through it. Deliberately no close on any path out of this
+	// function: a straggler query can outlive the shutdown joins (the DoH
+	// drain is bounded by httpserver.ShutdownTimeout, so a slow handler may
+	// still be mid-lookup when run() returns) and closing under it would be a
+	// fatal use-after-munmap. Installed generations are reclaimed by the mmdb
+	// reader's own runtime cleanup once unreachable, or by the OS at process
+	// exit — see the geoipRuntime doc.
 	geo := &geoipRuntime{country: country, asn: asn}
-	defer geo.closeAll(logger)
 
 	state, _, err := server.BuildState(cfg, shadowCfg.Aliases, shadowCfg.AliasFlags, shadowCfg.CollapseFlags, shadowCfg.BackupOriginalCase, nil, opts.ReloadVerify, country, asn, logger)
 	if err != nil {

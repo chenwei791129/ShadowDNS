@@ -486,6 +486,26 @@ func setupReloadTestDir(t *testing.T) string {
 	return dir
 }
 
+// closeAll closes the current generation's handles and clears the fields so a
+// repeated call is a no-op. Test-only deterministic cleanup: production never
+// closes an installed generation (reload and shutdown alike drop references
+// and let the mmdb reader's runtime cleanup or process exit reclaim the
+// mapping — see the geoipRuntime doc in main.go), but tests close eagerly so
+// fixture mmaps do not accumulate across the suite. Safe here because each
+// test's queries have finished before its cleanup runs; the mmdb reader's
+// close is idempotent, so this cannot double-unmap even if the reader's own
+// cleanup later runs.
+func (g *geoipRuntime) closeAll(logger *zap.Logger) {
+	if g.country != nil {
+		warnClose(g.country, "country mmdb", logger)
+		g.country = nil
+	}
+	if g.asn != nil {
+		warnClose(g.asn, "ASN mmdb", logger)
+		g.asn = nil
+	}
+}
+
 func startReloadTestServer(t *testing.T, dir string) (*server.Server, *geoipRuntime, *atomic.Pointer[queryLogState], runOptions) {
 	t.Helper()
 

@@ -2,6 +2,7 @@ package view
 
 import (
 	"net/netip"
+	"runtime"
 
 	maxminddb "github.com/oschwald/maxminddb-golang/v2"
 )
@@ -32,7 +33,13 @@ func (c *CountryDB) Lookup(ip netip.Addr) (string, bool) {
 	}
 
 	var iso string
-	if err := c.db.Lookup(ip).DecodePath(&iso, "country", "iso_code"); err != nil {
+	err := c.db.Lookup(ip).DecodePath(&iso, "country", "iso_code")
+	// Keep the reader (hence its mmap) alive until the decode above completes,
+	// so a concurrent reclamation cannot unmap it mid-decode regardless of how
+	// a caller uses the state snapshot afterward. Compile-time liveness barrier
+	// with no runtime cost.
+	runtime.KeepAlive(c.db)
+	if err != nil {
 		// Lookup errors indicate bad data or unsupported IP version;
 		// treat as no-match (not error) per audit discipline.
 		return "", false
