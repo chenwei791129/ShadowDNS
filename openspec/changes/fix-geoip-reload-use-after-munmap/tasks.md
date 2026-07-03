@@ -25,6 +25,14 @@
 
 - [x] 5.1 Review the Operations reload page and the GeoIP configuration pages (both language files) against this change; since it is an internal reliability fix with no new config field, CLI flag, or operator-visible knob, either add a one-line robustness note about SIGHUP GeoIP-handle safety or explicitly record the conclusion that no manual update is required, then run `make docs-build` if any file changed.
 
-## 6. Perf-Guard (hot-path-adjacent)
+## 6. Review follow-up: no explicit close at shutdown either
 
-- [ ] 6.1 請使用者確認：本變更觸及 reload 路徑與 query hot path 讀取的 GeoIP generation 生命週期（`cmd/shadowdns` + `internal/view`）；實作與 review chain 完成後需依 Perf-Guard 在 ns2 跑 baseline → 部署 → 重測，確認 QPS 未下降 > 5% 且 p99 未上升 > 15%（query path 未改，預期無位移）。
+PR review found the shutdown close of the current generation shares the crash class this change fixes: the DoH listener drain is bounded by a timeout, so a slow handler can still be mid-lookup after the run loop's shutdown joins, and the deferred close-all would munmap under it.
+
+- [x] 6.1 Remove the `closeAll` shutdown defer from `run()`; no production path closes an installed generation any more — the current generation is reclaimed by the OS at process exit. Rewrite the geoipRuntime and run() comments accordingly.
+- [x] 6.2 Move `closeAll` to cmd/shadowdns/main_test.go as the test-only deterministic fixture-cleanup helper (unchanged semantics: nil-safe, no-op on second call).
+- [x] 6.3 Reconcile proposal.md / design.md / specs/sighup-reload/spec.md with the shutdown-closes-nothing lifecycle (requirement text, lifecycle-example table, acceptance criteria) and add the shutdown scenario.
+
+## 7. Perf-Guard (hot-path-adjacent)
+
+- [ ] 7.1 請使用者確認：本變更觸及 reload 路徑與 query hot path 讀取的 GeoIP generation 生命週期（`cmd/shadowdns` + `internal/view`）；實作與 review chain 完成後需依 Perf-Guard 在 ns2 跑 baseline → 部署 → 重測，確認 QPS 未下降 > 5% 且 p99 未上升 > 15%（query path 未改，預期無位移）。

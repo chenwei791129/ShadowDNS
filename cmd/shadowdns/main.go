@@ -164,35 +164,21 @@ func dohConfigEqual(a, b *shadowdnscfg.DoHConfig) bool {
 }
 
 // geoipRuntime owns the live GeoIP handles for the current generation only.
-// A reload overwrites these references with the new generation and closes
-// nothing: the superseded generation stays reachable — and its mmdb mapped and
-// usable — for as long as any in-flight query holds the previous state
-// snapshot, and its mapping is reclaimed by the mmdb reader's own runtime
-// cleanup once it becomes unreachable (or by the OS at process exit). Closing
-// an mmdb unmaps its memory, so closing a generation a query could still be
-// reading is a fatal, unrecoverable use-after-munmap crash; the reload path
-// therefore never closes. No locking: the writers are the startup path (before
-// any goroutine starts) and the SIGHUP goroutine, and shutdown reads only
-// after that goroutine is joined.
+// Once a generation is installed, nothing in the process ever closes it —
+// neither a reload (which overwrites these references with the new generation
+// and drops the old one) nor shutdown. Closing an mmdb unmaps its memory, so
+// closing a generation a query could still be reading is a fatal,
+// unrecoverable use-after-munmap crash — and a query can outlive every join
+// the shutdown path performs (a DoH handler that outruns the bounded HTTP
+// drain keeps running after run() returns). A dropped generation stays
+// reachable — and its mmdb mapped and usable — for as long as any in-flight
+// query holds a state snapshot referencing it, and its mapping is reclaimed by
+// the mmdb reader's own runtime cleanup once it becomes unreachable (or by the
+// OS at process exit). No locking: the writers are the startup path (before
+// any goroutine starts) and the SIGHUP goroutine.
 type geoipRuntime struct {
 	country *view.CountryDB
 	asn     *view.ASNDB
-}
-
-// closeAll closes the current generation's handles and clears the fields so a
-// repeated call is a no-op. Used by run()'s shutdown defer, which executes
-// after the signal goroutines are joined and no query is in flight, and by
-// tests. The mmdb reader's close is idempotent, so this explicit shutdown close
-// cannot double-unmap even if the reader's own cleanup later runs.
-func (g *geoipRuntime) closeAll(logger *zap.Logger) {
-	if g.country != nil {
-		warnClose(g.country, "country mmdb", logger)
-		g.country = nil
-	}
-	if g.asn != nil {
-		warnClose(g.asn, "ASN mmdb", logger)
-		g.asn = nil
-	}
 }
 
 // reload re-reads configuration and zone data, re-opens the GeoIP mmdb files,
@@ -668,11 +654,14 @@ func run(ctx context.Context, opts runOptions) error {
 		return fmt.Errorf("loading GeoIP: %w", err)
 	}
 	// geo owns every live GeoIP handle from here on; reloads rotate new
-	// generations through it. The single defer covers both the normal
-	// shutdown path (it runs after the signal goroutines are joined in the
-	// function body) and every early-return path below.
+	// generations through it. Deliberately no close on any path out of this
+	// function: a straggler query can outlive the shutdown joins (the DoH
+	// drain is bounded by httpserver.ShutdownTimeout, so a slow handler may
+	// still be mid-lookup when run() returns) and closing under it would be a
+	// fatal use-after-munmap. Installed generations are reclaimed by the mmdb
+	// reader's own runtime cleanup once unreachable, or by the OS at process
+	// exit — see the geoipRuntime doc.
 	geo := &geoipRuntime{country: country, asn: asn}
-	defer geo.closeAll(logger)
 
 	state, _, err := server.BuildState(cfg, shadowCfg.Aliases, shadowCfg.AliasFlags, shadowCfg.CollapseFlags, shadowCfg.BackupOriginalCase, nil, opts.ReloadVerify, country, asn, logger)
 	if err != nil {
