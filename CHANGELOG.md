@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.24.2](https://github.com/chenwei791129/ShadowDNS/compare/v0.24.1...v0.24.2) (2026-07-03)
+
+
+### Bug Fixes
+
+* **doh:** canonicalize dns-json query name to prevent query-log injection ([#27](https://github.com/chenwei791129/ShadowDNS/issues/27)) ([fd773bb](https://github.com/chenwei791129/ShadowDNS/commit/fd773bb3699b2435c35ff7aeed9561b8c6cd7dfc)), closes [#9](https://github.com/chenwei791129/ShadowDNS/issues/9)
+* **geoip:** prevent mmdb use-after-munmap on rapid double SIGHUP reload ([#30](https://github.com/chenwei791129/ShadowDNS/issues/30)) ([2714bc5](https://github.com/chenwei791129/ShadowDNS/commit/2714bc536aeb0c3a65e3735b06392b00ce3d4982))
+* **ratelimit:** aggregate wildcard-synthesized answers per wildcard owner ([#28](https://github.com/chenwei791129/ShadowDNS/issues/28)) ([2160adf](https://github.com/chenwei791129/ShadowDNS/commit/2160adfd18e604bdc59c976f990fb932b62395dd)), closes [#11](https://github.com/chenwei791129/ShadowDNS/issues/11)
+* **server:** replace O(N^2) UDP truncation with binary-search prefix trim ([#26](https://github.com/chenwei791129/ShadowDNS/issues/26)) ([44a7c1b](https://github.com/chenwei791129/ShadowDNS/commit/44a7c1b4842eb72a9c392cbb38c31d9929fb519c))
+
 ## [0.24.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.24.0...v0.24.1) (2026-07-01)
 
 
