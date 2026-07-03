@@ -130,7 +130,10 @@ func RewriteNameAnywhere(n, root, backup string) string {
 // the lookup-fold, backup is operator-authored original case.
 //
 // Supported types for value rewrite: *dns.CNAME, *dns.NS, *dns.MX, *dns.PTR,
-// *dns.SRV, *dns.SOA. Other types pass through with only the owner name rewritten.
+// *dns.SRV, *dns.SOA, *dns.HTTPS, *dns.SVCB, *dns.DNAME, *dns.NAPTR, *dns.RP,
+// *dns.KX, *dns.AFSDB, *dns.PX, *dns.RT (the coveredRRTypes set). Other types
+// pass through with only the owner name rewritten; name-bearing types outside
+// the set are withheld from backup answers by FilterBackupRRs (fail closed).
 //
 // MUST NOT panic on any input (including unsupported RR types).
 func RewriteRR(rr dns.RR, root, backup string, rewriteRDATALabels bool) dns.RR {
@@ -175,6 +178,31 @@ func rewriteRDATANames(rr dns.RR, root, backup string, rewriteRDATALabels bool) 
 		v.Ns = rewriteValue(v.Ns, root, backup)
 		v.Mbox = rewriteValue(v.Mbox, root, backup)
 		// Numeric fields (Serial, Refresh, Retry, Expire, Minttl) are not touched.
-		// A, AAAA, TXT: RDATA not modified.
+	case *dns.HTTPS:
+		// HTTPS embeds SVCB but is a distinct concrete type; the *dns.SVCB
+		// case below does not match it, so it needs its own case.
+		v.Target = rewriteValue(v.Target, root, backup)
+	case *dns.SVCB:
+		v.Target = rewriteValue(v.Target, root, backup)
+	case *dns.DNAME:
+		v.Target = rewriteValue(v.Target, root, backup)
+	case *dns.NAPTR:
+		// Order, Preference, Flags, Service, Regexp are not touched.
+		v.Replacement = rewriteValue(v.Replacement, root, backup)
+	case *dns.RP:
+		v.Mbox = rewriteValue(v.Mbox, root, backup)
+		v.Txt = rewriteValue(v.Txt, root, backup)
+	case *dns.KX:
+		v.Exchanger = rewriteValue(v.Exchanger, root, backup)
+	case *dns.AFSDB:
+		v.Hostname = rewriteValue(v.Hostname, root, backup)
+	case *dns.PX:
+		v.Map822 = rewriteValue(v.Map822, root, backup)
+		v.Mapx400 = rewriteValue(v.Mapx400, root, backup)
+	case *dns.RT:
+		v.Host = rewriteValue(v.Host, root, backup)
+		// A, AAAA, TXT: RDATA not modified. This switch and coveredRRTypes in
+		// classify.go MUST stay in sync (guarded by the round-trip invariant
+		// test).
 	}
 }

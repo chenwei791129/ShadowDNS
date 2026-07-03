@@ -26,7 +26,7 @@ func TestResolve_OverrideTXT(t *testing.T) {
 	rootTXT := newTXT("root.com.", "v=spf1 include:root.com. ~all")
 	rootZone := buildZone("root.com.", rootTXT)
 
-	rrs := Resolve("backup.com.", dns.TypeTXT, "backup.com.", "backup.com.", backupZone, rootZone, false)
+	rrs, _ := Resolve("backup.com.", dns.TypeTXT, "backup.com.", "backup.com.", backupZone, rootZone, false)
 
 	if len(rrs) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(rrs))
@@ -48,7 +48,7 @@ func TestResolve_NoOverride_InheritsMXWithRewrite(t *testing.T) {
 	rootMX := newMX("root.com.", 10, "mail.root.com.")
 	rootZone := buildZone("root.com.", rootMX)
 
-	rrs := Resolve("backup.com.", dns.TypeMX, "backup.com.", "backup.com.", backupZone, rootZone, false)
+	rrs, _ := Resolve("backup.com.", dns.TypeMX, "backup.com.", "backup.com.", backupZone, rootZone, false)
 
 	if len(rrs) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(rrs))
@@ -72,7 +72,7 @@ func TestResolve_SRVOverride(t *testing.T) {
 	rootSRV := newSRV("_sip._tcp.root.com.", 0, 0, 5060, "sip.root.com.")
 	rootZone := buildZone("root.com.", rootSRV)
 
-	rrs := Resolve("_sip._tcp.backup.com.", dns.TypeSRV, "backup.com.", "backup.com.", backupZone, rootZone, false)
+	rrs, _ := Resolve("_sip._tcp.backup.com.", dns.TypeSRV, "backup.com.", "backup.com.", backupZone, rootZone, false)
 
 	if len(rrs) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(rrs))
@@ -90,7 +90,7 @@ func TestResolve_NilBackupZone_FallsThrough(t *testing.T) {
 	rootA := newA("www.root.com.", "10.0.0.1")
 	rootZone := buildZone("root.com.", rootA)
 
-	rrs := Resolve("www.backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, rootZone, false)
+	rrs, _ := Resolve("www.backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, rootZone, false)
 
 	if len(rrs) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(rrs))
@@ -115,7 +115,7 @@ func TestResolve_OverrideExistsButQueryTypeIsA(t *testing.T) {
 	rootA := newA("root.com.", "192.168.1.1")
 	rootZone := buildZone("root.com.", rootA)
 
-	rrs := Resolve("backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
+	rrs, _ := Resolve("backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
 
 	if len(rrs) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(rrs))
@@ -133,7 +133,7 @@ func TestResolve_NoMatchInRootZone(t *testing.T) {
 	backupZone := buildZone("backup.com.")
 	rootZone := buildZone("root.com.") // no records
 
-	rrs := Resolve("www.backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
+	rrs, _ := Resolve("www.backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
 
 	if len(rrs) != 0 {
 		t.Errorf("expected empty result, got %d records", len(rrs))
@@ -148,7 +148,7 @@ func TestResolve_CNAMESynthesis_BackupZone(t *testing.T) {
 	backupZone := buildZone("backup.com.") // no overrides
 
 	// Query A for sub.backup.com. → should get CNAME with owner rewritten.
-	rrs := Resolve("sub.backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
+	rrs, _ := Resolve("sub.backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
 
 	if len(rrs) != 1 {
 		t.Fatalf("expected 1 CNAME record, got %d", len(rrs))
@@ -169,7 +169,7 @@ func TestResolve_CNAMESynthesis_NoCNAMENoA_ReturnsEmpty(t *testing.T) {
 	rootZone := buildZone("root.com.") // no records at sub.root.com.
 	backupZone := buildZone("backup.com.")
 
-	rrs := Resolve("sub.backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
+	rrs, _ := Resolve("sub.backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
 
 	if len(rrs) != 0 {
 		t.Errorf("expected empty result, got %d records", len(rrs))
@@ -182,7 +182,7 @@ func TestResolve_NilRootZone_DoesNotPanic(t *testing.T) {
 			t.Errorf("Resolve panicked with nil rootZone: %v", r)
 		}
 	}()
-	_ = Resolve("backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, nil, false)
+	_, _ = Resolve("backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, nil, false)
 }
 
 func TestResolveExact_NilRootZone_DoesNotPanic(t *testing.T) {
@@ -191,7 +191,7 @@ func TestResolveExact_NilRootZone_DoesNotPanic(t *testing.T) {
 			t.Errorf("ResolveExact panicked with nil rootZone: %v", r)
 		}
 	}()
-	rrs := ResolveExact("backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, nil, false)
+	rrs, _ := ResolveExact("backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, nil, false)
 	if rrs != nil {
 		t.Errorf("expected nil, got %v", rrs)
 	}
@@ -203,7 +203,7 @@ func TestResolveExactNoCNAME_NilRootZone_DoesNotPanic(t *testing.T) {
 			t.Errorf("ResolveExactNoCNAME panicked with nil rootZone: %v", r)
 		}
 	}()
-	rrs := ResolveExactNoCNAME("backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, nil, false)
+	rrs, _ := ResolveExactNoCNAME("backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, nil, false)
 	if rrs != nil {
 		t.Errorf("expected nil, got %v", rrs)
 	}
@@ -215,7 +215,7 @@ func TestResolveCNAMEFallback_NilRootZone_DoesNotPanic(t *testing.T) {
 			t.Errorf("ResolveCNAMEFallback panicked with nil rootZone: %v", r)
 		}
 	}()
-	rrs := ResolveCNAMEFallback("backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, false)
+	rrs, _ := ResolveCNAMEFallback("backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, false)
 	if rrs != nil {
 		t.Errorf("expected nil, got %v", rrs)
 	}
@@ -228,7 +228,7 @@ func TestResolveCNAMEFallback_CNAMEQtype_ReturnsNil(t *testing.T) {
 	rootZone := buildZone("root.com.",
 		newCNAME("alias.root.com.", "target.root.com."),
 	)
-	rrs := ResolveCNAMEFallback("alias.backup.com.", dns.TypeCNAME, "backup.com.", "backup.com.", rootZone, false)
+	rrs, _ := ResolveCNAMEFallback("alias.backup.com.", dns.TypeCNAME, "backup.com.", "backup.com.", rootZone, false)
 	if rrs != nil {
 		t.Errorf("expected nil for CNAME qtype, got %v", rrs)
 	}
@@ -240,7 +240,7 @@ func TestResolveWildcard_NilRootZone_DoesNotPanic(t *testing.T) {
 			t.Errorf("ResolveWildcard panicked with nil rootZone: %v", r)
 		}
 	}()
-	rrs, _ := ResolveWildcard("backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, false)
+	rrs, _, _ := ResolveWildcard("backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, false)
 	if rrs != nil {
 		t.Errorf("expected nil, got %v", rrs)
 	}
@@ -257,7 +257,7 @@ func TestResolve_CNAMEFollowing_InZone(t *testing.T) {
 	)
 	backupZone := buildZone("backup.com.")
 
-	rrs := Resolve("app.backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
+	rrs, _ := Resolve("app.backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
 
 	if len(rrs) != 2 {
 		t.Fatalf("expected 2 records (CNAME + A), got %d", len(rrs))
@@ -292,7 +292,7 @@ func TestResolve_CNAMEFollowing_Chain(t *testing.T) {
 	)
 	backupZone := buildZone("backup.com.")
 
-	rrs := Resolve("a.backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
+	rrs, _ := Resolve("a.backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
 
 	if len(rrs) != 3 {
 		t.Fatalf("expected 3 records (2 CNAME + 1 A), got %d", len(rrs))
@@ -317,7 +317,7 @@ func TestResolve_CNAMEFollowing_OutOfBailiwick(t *testing.T) {
 	)
 	backupZone := buildZone("backup.com.")
 
-	rrs := Resolve("app.backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
+	rrs, _ := Resolve("app.backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
 
 	if len(rrs) != 1 {
 		t.Fatalf("expected 1 record (CNAME only), got %d", len(rrs))
@@ -350,7 +350,7 @@ func TestResolve_OwnerRewrite_FlagTrueAndFalse(t *testing.T) {
 			name = "true"
 		}
 		t.Run("flag="+name, func(t *testing.T) {
-			rrs := Resolve("www.backup.com.", dns.TypeCNAME, "backup.com.", "backup.com.", backupZone, rootZone, flag)
+			rrs, _ := Resolve("www.backup.com.", dns.TypeCNAME, "backup.com.", "backup.com.", backupZone, rootZone, flag)
 			if len(rrs) != 1 {
 				t.Fatalf("flag=%v: expected 1 record, got %d", flag, len(rrs))
 			}
@@ -391,7 +391,7 @@ func TestResolve_RDATARewrite_FlagControlsMidLabel(t *testing.T) {
 			name = "true"
 		}
 		t.Run("flag="+name, func(t *testing.T) {
-			rrs := Resolve("host.backup.com.", dns.TypeCNAME, "backup.com.", "backup.com.", backupZone, rootZone, tc.flag)
+			rrs, _ := Resolve("host.backup.com.", dns.TypeCNAME, "backup.com.", "backup.com.", backupZone, rootZone, tc.flag)
 			if len(rrs) != 1 {
 				t.Fatalf("expected 1 record, got %d", len(rrs))
 			}
@@ -426,7 +426,7 @@ func TestResolve_BackupOriginalCase_PreservedOnWire(t *testing.T) {
 
 	// Mixed-case query (DNS-0x20 randomized) — the handler folds qname for
 	// the ResolveExact lookup, so callers pass the lookup-fold form here.
-	rrs := Resolve("svc.example.com.", dns.TypeA, backupOrigin, backupOnWire, backupZone, rootZone, false)
+	rrs, _ := Resolve("svc.example.com.", dns.TypeA, backupOrigin, backupOnWire, backupZone, rootZone, false)
 
 	if len(rrs) != 2 {
 		t.Fatalf("expected 2 records (CNAME + A), got %d", len(rrs))
@@ -456,7 +456,7 @@ func TestResolveWildcard_BackupOriginalCase(t *testing.T) {
 	rootZone := buildZone("root.com.")
 	rootZone.AddRR(newA("*.root.com.", "10.0.0.42"))
 
-	rrs, wcOwner := ResolveWildcard("any.example.com.", dns.TypeA, "example.com.", "Example.com.", rootZone, false)
+	rrs, wcOwner, _ := ResolveWildcard("any.example.com.", dns.TypeA, "example.com.", "Example.com.", rootZone, false)
 	// The wildcard owner is the root-namespace "*." node the answer was
 	// synthesized from, NOT the per-label rewritten qname — this is the stable
 	// RRL aggregation key for all labels covered by the wildcard.
@@ -484,7 +484,7 @@ func TestResolve_CNAMEFollowing_WildcardInZone(t *testing.T) {
 
 	backupZone := buildZone("backup.com.")
 
-	rrs := Resolve("any.backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
+	rrs, _ := Resolve("any.backup.com.", dns.TypeA, "backup.com.", "backup.com.", backupZone, rootZone, false)
 
 	if len(rrs) != 2 {
 		t.Fatalf("expected 2 records (CNAME + A), got %d", len(rrs))
@@ -536,7 +536,7 @@ func TestResolveCNAMEFallbackCollapse_RecordsOwnerCaseTTLAndImmutability(t *test
 	rootZone := collapseRootZone()
 	stored := rootZone.Lookup("pool-a.root.com.", dns.TypeA)
 
-	rrs, nodata := ResolveCNAMEFallbackCollapse("WwW.BaCkup.Com.", dns.TypeA, "backup.com.", "Backup.Com.", rootZone, false)
+	rrs, nodata, _ := ResolveCNAMEFallbackCollapse("WwW.BaCkup.Com.", dns.TypeA, "backup.com.", "Backup.Com.", rootZone, false)
 
 	if nodata {
 		t.Fatal("nodata = true, want false")
@@ -573,7 +573,7 @@ func TestResolveCNAMEFallbackCollapse_TerminalRDATAMatchesRewriteRR(t *testing.T
 		storedMX := rootZone.Lookup("mxhost.root.com.", dns.TypeMX)[0]
 		want := RewriteRR(storedMX, "root.com.", "Backup.Com.", flag).(*dns.MX).Mx
 
-		rrs, nodata := ResolveCNAMEFallbackCollapse("www.backup.com.", dns.TypeMX, "backup.com.", "Backup.Com.", rootZone, flag)
+		rrs, nodata, _ := ResolveCNAMEFallbackCollapse("www.backup.com.", dns.TypeMX, "backup.com.", "Backup.Com.", rootZone, flag)
 
 		if nodata || len(rrs) != 1 {
 			t.Fatalf("flag=%v: nodata=%v len=%d, want answer with 1 record", flag, nodata, len(rrs))
@@ -600,7 +600,7 @@ func TestResolveCNAMEFallbackCollapse_TailTemplatedTarget(t *testing.T) {
 	}
 
 	t.Run("rewrite_rdata_labels=true", func(t *testing.T) {
-		rrs, nodata := ResolveCNAMEFallbackCollapse("www.example.net.", dns.TypeA, "example.net.", "example.net.", build(), true)
+		rrs, nodata, _ := ResolveCNAMEFallbackCollapse("www.example.net.", dns.TypeA, "example.net.", "example.net.", build(), true)
 		if nodata || len(rrs) != 1 {
 			t.Fatalf("nodata=%v len=%d, want 1 synthesized CNAME", nodata, len(rrs))
 		}
@@ -617,7 +617,7 @@ func TestResolveCNAMEFallbackCollapse_TailTemplatedTarget(t *testing.T) {
 	})
 
 	t.Run("rewrite_rdata_labels=false", func(t *testing.T) {
-		rrs, nodata := ResolveCNAMEFallbackCollapse("www.example.net.", dns.TypeA, "example.net.", "example.net.", build(), false)
+		rrs, nodata, _ := ResolveCNAMEFallbackCollapse("www.example.net.", dns.TypeA, "example.net.", "example.net.", build(), false)
 		if nodata || len(rrs) != 1 {
 			t.Fatalf("nodata=%v len=%d, want 1 synthesized CNAME", nodata, len(rrs))
 		}
@@ -631,7 +631,7 @@ func TestResolveCNAMEFallbackCollapse_TailTemplatedTarget(t *testing.T) {
 // Chain-derived NODATA is expressed as nodata=true with zero records
 // (invariant: nodata=true ⇒ len(rrs)==0).
 func TestResolveCNAMEFallbackCollapse_NoData(t *testing.T) {
-	rrs, nodata := ResolveCNAMEFallbackCollapse("www.backup.com.", dns.TypeAAAA, "backup.com.", "backup.com.", collapseRootZone(), false)
+	rrs, nodata, _ := ResolveCNAMEFallbackCollapse("www.backup.com.", dns.TypeAAAA, "backup.com.", "backup.com.", collapseRootZone(), false)
 	if !nodata {
 		t.Fatal("nodata = false, want true (AAAA over A-only tail)")
 	}
@@ -644,7 +644,7 @@ func TestResolveCNAMEFallbackCollapse_NoData(t *testing.T) {
 // the next stage.
 func TestResolveCNAMEFallbackCollapse_NoCNAMEFallsThrough(t *testing.T) {
 	rootZone := buildZone("root.com.", aWithTTL("plain.root.com.", "192.0.2.1", 300))
-	rrs, nodata := ResolveCNAMEFallbackCollapse("other.backup.com.", dns.TypeA, "backup.com.", "backup.com.", rootZone, false)
+	rrs, nodata, _ := ResolveCNAMEFallbackCollapse("other.backup.com.", dns.TypeA, "backup.com.", "backup.com.", rootZone, false)
 	if nodata {
 		t.Error("nodata = true, want false (stage miss, not chain NODATA)")
 	}
@@ -657,7 +657,7 @@ func TestResolveCNAMEFallbackCollapse_NoCNAMEFallsThrough(t *testing.T) {
 // unified rule: in-zone walk-to-end is NODATA, out-of-zone tail synthesizes.
 func TestResolveExactCollapse_DirectCNAME(t *testing.T) {
 	t.Run("in-zone tail is NODATA", func(t *testing.T) {
-		rrs, nodata := ResolveExactCollapse("www.backup.com.", dns.TypeCNAME, "backup.com.", "backup.com.", nil, collapseRootZone(), false)
+		rrs, nodata, _ := ResolveExactCollapse("www.backup.com.", dns.TypeCNAME, "backup.com.", "backup.com.", nil, collapseRootZone(), false)
 		if !nodata {
 			t.Fatal("nodata = false, want true")
 		}
@@ -671,7 +671,7 @@ func TestResolveExactCollapse_DirectCNAME(t *testing.T) {
 			cnameWithTTL("www.root.com.", "lb.root.com.", 300),
 			cnameWithTTL("lb.root.com.", "cdn.external-vendor.example.org.", 60),
 		)
-		rrs, nodata := ResolveExactCollapse("www.backup.com.", dns.TypeCNAME, "backup.com.", "backup.com.", nil, rootZone, false)
+		rrs, nodata, _ := ResolveExactCollapse("www.backup.com.", dns.TypeCNAME, "backup.com.", "backup.com.", nil, rootZone, false)
 		if nodata || len(rrs) != 1 {
 			t.Fatalf("nodata=%v len=%d, want 1 synthesized CNAME", nodata, len(rrs))
 		}
@@ -692,9 +692,9 @@ func TestResolveExactCollapse_DirectCNAME(t *testing.T) {
 // ResolveExactNoCNAME (no chain is involved at an exact qtype hit).
 func TestResolveExactCollapse_NonCNAMEDelegates(t *testing.T) {
 	rootZone := buildZone("root.com.", aWithTTL("www.root.com.", "192.0.2.7", 300))
-	want := ResolveExactNoCNAME("www.backup.com.", dns.TypeA, "backup.com.", "Backup.Com.", nil, rootZone, false)
+	want, _ := ResolveExactNoCNAME("www.backup.com.", dns.TypeA, "backup.com.", "Backup.Com.", nil, rootZone, false)
 
-	rrs, nodata := ResolveExactCollapse("www.backup.com.", dns.TypeA, "backup.com.", "Backup.Com.", nil, rootZone, false)
+	rrs, nodata, _ := ResolveExactCollapse("www.backup.com.", dns.TypeA, "backup.com.", "Backup.Com.", nil, rootZone, false)
 
 	if nodata {
 		t.Fatal("nodata = true, want false")
@@ -719,7 +719,7 @@ func TestResolveWildcardCollapse_WildcardCNAMEStart(t *testing.T) {
 		t.Fatalf("test setup: wildcard CNAME lookup found=%v len=%d", found, len(storedWildcard))
 	}
 
-	rrs, nodata, wcOwner := ResolveWildcardCollapse("HoSt.w.BaCkup.Com.", dns.TypeA, "backup.com.", "Backup.Com.", rootZone, false)
+	rrs, nodata, wcOwner, _ := ResolveWildcardCollapse("HoSt.w.BaCkup.Com.", dns.TypeA, "backup.com.", "Backup.Com.", rootZone, false)
 
 	if nodata {
 		t.Fatal("nodata = true, want false")
@@ -751,7 +751,7 @@ func TestResolveWildcardCollapse_NoData(t *testing.T) {
 	rootZone := buildZone("root.com.",
 		cnameWithTTL("*.w.root.com.", "ghost.root.com.", 300),
 	)
-	rrs, nodata, _ := ResolveWildcardCollapse("host.w.backup.com.", dns.TypeA, "backup.com.", "backup.com.", rootZone, false)
+	rrs, nodata, _, _ := ResolveWildcardCollapse("host.w.backup.com.", dns.TypeA, "backup.com.", "backup.com.", rootZone, false)
 	if !nodata {
 		t.Fatal("nodata = false, want true (dangling wildcard chain tail)")
 	}
@@ -766,9 +766,9 @@ func TestResolveWildcardCollapse_PlainQtypeMatchesResolveWildcard(t *testing.T) 
 	build := func() *zone.Zone {
 		return buildZone("root.com.", aWithTTL("*.root.com.", "192.0.2.5", 300))
 	}
-	want, wantOwner := ResolveWildcard("any.Backup.Com.", dns.TypeA, "backup.com.", "Backup.Com.", build(), false)
+	want, wantOwner, _ := ResolveWildcard("any.Backup.Com.", dns.TypeA, "backup.com.", "Backup.Com.", build(), false)
 
-	rrs, nodata, gotOwner := ResolveWildcardCollapse("any.Backup.Com.", dns.TypeA, "backup.com.", "Backup.Com.", build(), false)
+	rrs, nodata, gotOwner, _ := ResolveWildcardCollapse("any.Backup.Com.", dns.TypeA, "backup.com.", "Backup.Com.", build(), false)
 
 	if nodata {
 		t.Fatal("nodata = true, want false")
@@ -784,15 +784,160 @@ func TestResolveWildcardCollapse_PlainQtypeMatchesResolveWildcard(t *testing.T) 
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Fail-closed withholding of uncovered name-bearing records
+// ---------------------------------------------------------------------------
+
+func newNSEC(owner, next string) *dns.NSEC {
+	return &dns.NSEC{
+		Hdr:        dns.RR_Header{Name: owner, Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 300},
+		NextDomain: next,
+		TypeBitMap: []uint16{dns.TypeA},
+	}
+}
+
+// An exact match whose records are all of an uncovered name-bearing type is
+// fully withheld: empty records with a non-empty withheld list (the
+// existing-name NODATA signal), never the half-rewritten record.
+func TestResolveExactNoCNAME_UncoveredNameBearing_Withheld(t *testing.T) {
+	rootZone := buildZone("root.com.", newNSEC("host.root.com.", "next.root.com."))
+
+	rrs, withheld := ResolveExactNoCNAME("host.backup.com.", dns.TypeNSEC, "backup.com.", "backup.com.", nil, rootZone, false)
+
+	if len(rrs) != 0 {
+		t.Fatalf("expected no records, got %d: %v", len(rrs), rrs)
+	}
+	if len(withheld) != 1 {
+		t.Fatalf("expected 1 withheld record, got %d", len(withheld))
+	}
+	if withheld[0].Rrtype != dns.TypeNSEC || withheld[0].Owner != "host.root.com." {
+		t.Errorf("withheld = %+v, want NSEC host.root.com.", withheld[0])
+	}
+}
+
+// Records of other types at the same owner are unaffected by a withheld
+// sibling type.
+func TestResolveExactNoCNAME_OtherTypesAtSameOwnerUnaffected(t *testing.T) {
+	rootZone := buildZone("root.com.",
+		newA("host.root.com.", "192.0.2.9"),
+		newNSEC("host.root.com.", "next.root.com."),
+	)
+
+	rrs, withheld := ResolveExactNoCNAME("host.backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, rootZone, false)
+
+	if len(withheld) != 0 {
+		t.Errorf("expected no withheld records for an A query, got %+v", withheld)
+	}
+	if len(rrs) != 1 {
+		t.Fatalf("expected 1 A record, got %d", len(rrs))
+	}
+	if a := rrs[0].(*dns.A); a.Hdr.Name != "host.backup.com." || a.A.String() != "192.0.2.9" {
+		t.Errorf("A record = %v, want host.backup.com. 192.0.2.9", rrs[0])
+	}
+}
+
+// A name existing in root only via an uncovered name-bearing record resolves
+// to the existing-name NODATA signal and does NOT fall through to the CNAME
+// fallback or a wildcard-synthesized answer (RFC 4592: an existing owner
+// name blocks wildcard matching).
+func TestResolve_FullyWithheld_NoFallbackOrWildcard(t *testing.T) {
+	rootZone := buildZone("root.com.",
+		newNSEC("host.root.com.", "next.root.com."),
+		// A CNAME at the same owner: falling through to the CNAME-fallback
+		// stage would (wrongly) emit this chain.
+		newCNAME("host.root.com.", "svc.root.com."),
+		newA("svc.root.com.", "192.0.2.10"),
+	)
+	rootZone.AddRR(newNSEC("*.root.com.", "wild-next.root.com."))
+
+	rrs, withheld := Resolve("host.backup.com.", dns.TypeNSEC, "backup.com.", "backup.com.", nil, rootZone, false)
+
+	if len(rrs) != 0 {
+		t.Fatalf("expected no records (no CNAME fallback, no wildcard), got %d: %v", len(rrs), rrs)
+	}
+	if len(withheld) != 1 || withheld[0].Rrtype != dns.TypeNSEC || withheld[0].Owner != "host.root.com." {
+		t.Fatalf("withheld = %+v, want exactly the exact-stage NSEC at host.root.com.", withheld)
+	}
+}
+
+// A chain whose terminal records are uncovered keeps the covered CNAME links
+// and withholds only the terminal (mixed answer).
+func TestResolveCNAMEFallback_UncoveredTerminal_Withheld(t *testing.T) {
+	rootZone := buildZone("root.com.",
+		newCNAME("app.root.com.", "signed.root.com."),
+		newNSEC("signed.root.com.", "next.root.com."),
+	)
+
+	rrs, withheld := ResolveCNAMEFallback("app.backup.com.", dns.TypeNSEC, "backup.com.", "backup.com.", rootZone, false)
+
+	if len(rrs) != 1 {
+		t.Fatalf("expected 1 record (the CNAME link), got %d: %v", len(rrs), rrs)
+	}
+	cn := rrs[0].(*dns.CNAME)
+	if cn.Hdr.Name != "app.backup.com." || cn.Target != "signed.backup.com." {
+		t.Errorf("CNAME = %v, want app.backup.com. → signed.backup.com.", cn)
+	}
+	if len(withheld) != 1 || withheld[0].Rrtype != dns.TypeNSEC || withheld[0].Owner != "signed.root.com." {
+		t.Errorf("withheld = %+v, want NSEC signed.root.com.", withheld)
+	}
+}
+
+// A wildcard whose records are all uncovered is fully withheld through the
+// wildcard entry point.
+func TestResolveWildcard_UncoveredNameBearing_Withheld(t *testing.T) {
+	rootZone := buildZone("root.com.")
+	rootZone.AddRR(newNSEC("*.root.com.", "next.root.com."))
+
+	rrs, wcOwner, withheld := ResolveWildcard("any.backup.com.", dns.TypeNSEC, "backup.com.", "backup.com.", rootZone, false)
+
+	if len(rrs) != 0 {
+		t.Fatalf("expected no records, got %d: %v", len(rrs), rrs)
+	}
+	if wcOwner != "*.root.com." {
+		t.Errorf("wildcard owner = %q, want *.root.com.", wcOwner)
+	}
+	if len(withheld) != 1 || withheld[0].Rrtype != dns.TypeNSEC {
+		t.Fatalf("withheld = %+v, want one NSEC entry", withheld)
+	}
+	// The withheld owner MUST be the stored wildcard node, not the per-query
+	// synthesized name: the handler's log-dedup key is built from it and its
+	// key space must stay bounded by zone content under a flood of distinct
+	// labels.
+	if withheld[0].Owner != "*.root.com." {
+		t.Errorf("withheld owner = %q, want the zone-bounded *.root.com. node", withheld[0].Owner)
+	}
+}
+
+// The collapse assembly distinguishes "all terminal records withheld"
+// (existing-name NODATA, nodata=true) from a stage miss.
+func TestResolveCNAMEFallbackCollapse_UncoveredTerminal_NoData(t *testing.T) {
+	rootZone := buildZone("root.com.",
+		cnameWithTTL("www.root.com.", "signed.root.com.", 300),
+		newNSEC("signed.root.com.", "next.root.com."),
+	)
+
+	rrs, nodata, withheld := ResolveCNAMEFallbackCollapse("www.backup.com.", dns.TypeNSEC, "backup.com.", "backup.com.", rootZone, false)
+
+	if !nodata {
+		t.Fatal("nodata = false, want true (all terminal records withheld)")
+	}
+	if len(rrs) != 0 {
+		t.Errorf("len(rrs) = %d, want 0", len(rrs))
+	}
+	if len(withheld) != 1 || withheld[0].Rrtype != dns.TypeNSEC || withheld[0].Owner != "signed.root.com." {
+		t.Errorf("withheld = %+v, want NSEC signed.root.com.", withheld)
+	}
+}
+
 // All collapse entries MUST NOT panic on nil zones.
 func TestResolveCollapse_NilRootZone_DoesNotPanic(t *testing.T) {
-	if rrs, nodata := ResolveExactCollapse("q.backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, nil, false); rrs != nil || nodata {
+	if rrs, nodata, _ := ResolveExactCollapse("q.backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, nil, false); rrs != nil || nodata {
 		t.Errorf("ResolveExactCollapse(nil root) = (%v, %v), want (nil, false)", rrs, nodata)
 	}
-	if rrs, nodata := ResolveCNAMEFallbackCollapse("q.backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, false); rrs != nil || nodata {
+	if rrs, nodata, _ := ResolveCNAMEFallbackCollapse("q.backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, false); rrs != nil || nodata {
 		t.Errorf("ResolveCNAMEFallbackCollapse(nil root) = (%v, %v), want (nil, false)", rrs, nodata)
 	}
-	if rrs, nodata, owner := ResolveWildcardCollapse("q.backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, false); rrs != nil || nodata || owner != "" {
+	if rrs, nodata, owner, _ := ResolveWildcardCollapse("q.backup.com.", dns.TypeA, "backup.com.", "backup.com.", nil, false); rrs != nil || nodata || owner != "" {
 		t.Errorf("ResolveWildcardCollapse(nil root) = (%v, %v, %q), want (nil, false, \"\")", rrs, nodata, owner)
 	}
 }

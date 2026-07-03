@@ -94,17 +94,29 @@ func HandleAliasAXFR(w dns.ResponseWriter, req *dns.Msg, backupOrigin, backupOri
 	soa := alias.BackupSOA(rootZone.SOA, rootZone.Origin, backupOriginalCase)
 
 	// Walk root zone records deterministically (sorted by owner, then by type).
-	// Skip root SOA; emit override or rewritten records.
-	records := buildAliasRecords(rootZone, backupZone, rootZone.Origin, backupOrigin, backupOriginalCase, rewriteRDATALabels)
+	// Skip root SOA; emit override or rewritten records, withholding uncovered
+	// name-bearing types (fail-closed rule, same as the query path).
+	records, withheld := buildAliasRecords(rootZone, backupZone, rootZone.Origin, backupOrigin, backupOriginalCase, rewriteRDATALabels)
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	sugar := logger.Sugar()
+	for _, wr := range withheld {
+		sugar.Warnw("withheld uncovered name-bearing record from alias AXFR",
+			wr.LogArgs(backupOrigin, dnsutil.LookupKey(wr.Owner))...)
+	}
 
 	streamAXFR(w, req, soa, records, logger)
 }
 
-// buildAliasRecords produces the non-SOA record list for a backup-zone AXFR.
+// buildAliasRecords produces the non-SOA record list for a backup-zone AXFR:
+// rewritten covered records, unchanged no-name records, and — per the
+// fail-closed rule shared with the query path — no uncovered name-bearing
+// records; those are returned in withheld for the caller to log.
 //
 // backupOrigin is the lookup-fold backup FQDN (used to key the override map);
 // backupOriginalCase is the operator-authored case (used for on-wire emission).
-func buildAliasRecords(rootZone, backupZone *zone.Zone, rootOrigin, backupOrigin, backupOriginalCase string, rewriteRDATALabels bool) []dns.RR {
+func buildAliasRecords(rootZone, backupZone *zone.Zone, rootOrigin, backupOrigin, backupOriginalCase string, rewriteRDATALabels bool) ([]dns.RR, []alias.WithheldRecord) {
 	// Collect and sort owners for determinism.
 	owners := make([]string, 0, len(rootZone.Records))
 	for owner := range rootZone.Records {
@@ -129,6 +141,7 @@ func buildAliasRecords(rootZone, backupZone *zone.Zone, rootOrigin, backupOrigin
 	}
 
 	var result []dns.RR
+	var withheld []alias.WithheldRecord
 
 	for _, owner := range owners {
 		// Translate root owner → backup owner for override lookup.
@@ -162,14 +175,17 @@ func buildAliasRecords(rootZone, backupZone *zone.Zone, rootOrigin, backupOrigin
 				}
 			}
 
-			// No override: rewrite root records into backup namespace.
-			for _, rr := range typeMap[rrtype] {
+			// No override: withhold uncovered name-bearing records, then
+			// rewrite the kept root records into the backup namespace.
+			kept, w := alias.FilterBackupRRs(typeMap[rrtype])
+			withheld = append(withheld, w...)
+			for _, rr := range kept {
 				result = append(result, alias.RewriteRR(rr, rootOrigin, backupOriginalCase, rewriteRDATALabels))
 			}
 		}
 	}
 
-	return result
+	return result, withheld
 }
 
 // streamAXFR sends the full AXFR envelope sequence: SOA → records → SOA.

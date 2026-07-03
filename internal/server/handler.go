@@ -640,12 +640,38 @@ func (s *Server) handleBackupQuery(
 		return
 	}
 
-	// answeredCollapsed triages a collapse entry point's result: a
-	// chain-derived NODATA short-circuits to the negative reply (design D4 —
-	// never fall through to later stages or wildcard synthesis), records are
-	// the answer, and (nil, false) means stage miss.
-	answeredCollapsed := func(rrs []dns.RR, nodata bool) bool {
-		if nodata {
+	// logWithheld emits one warning per record withheld by the fail-closed
+	// rule (uncovered name-bearing type under an alias). Owner is logged in
+	// lookup-fold form. Deduped per unique (backup, owner, rrtype) via
+	// s.withheldLogged so a query flood against a withheld name cannot
+	// amplify into unbounded log writes (see the field's doc comment).
+	logWithheld := func(withheld []alias.WithheldRecord) {
+		for _, wr := range withheld {
+			owner := dnsutil.LookupKey(wr.Owner)
+			// Keyed per view: the same backup zone name can exist in several
+			// views over different root zones, and each view's withholding
+			// must be reported.
+			key := viewName + "\x00" + match.MatchedZone + "\x00" + owner + "\x00" + dns.TypeToString[wr.Rrtype]
+			if _, dup := s.withheldLogged.LoadOrStore(key, struct{}{}); dup {
+				continue
+			}
+			// Sugar() only after a dedup miss — a flood against an
+			// already-reported withheld name must not allocate per query.
+			s.Logger.Sugar().Warnw("withheld uncovered name-bearing record from backup answer",
+				append(wr.LogArgs(match.MatchedZone, owner), "view", viewName)...)
+		}
+	}
+
+	// answered triages a resolve stage's result: records are the answer, a
+	// chain-derived NODATA (nodata=true, collapse entry points only) or a
+	// fully-withheld existing name (no records, non-empty withheld)
+	// short-circuits to the negative reply — never fall through to later
+	// stages or wildcard synthesis (design D4 / RFC 4592: an existing owner
+	// name blocks wildcard matching). (nil, false, nil) means stage miss.
+	// Non-collapse stages pass nodata=false.
+	answered := func(rrs []dns.RR, nodata bool, withheld []alias.WithheldRecord) bool {
+		logWithheld(withheld)
+		if nodata || (len(rrs) == 0 && len(withheld) > 0) {
 			s.negativeReply(w, req, qo, rootZone, backupZone, match, qname, backupSOA)
 			return true
 		}
@@ -662,11 +688,10 @@ func (s *Server) handleBackupQuery(
 	// only matters here for direct CNAME-type queries, so other qtypes skip
 	// the map read entirely.
 	if qtype == dns.TypeCNAME && st.CollapseFlags[match.RootZone] {
-		if answeredCollapsed(alias.ResolveExactCollapse(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels)) {
+		if answered(alias.ResolveExactCollapse(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels)) {
 			return
 		}
-	} else if records := alias.ResolveExactNoCNAME(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels); len(records) > 0 {
-		replyWithAnswer(w, req, qo, records)
+	} else if records, withheld := alias.ResolveExactNoCNAME(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels); answered(records, false, withheld) {
 		return
 	}
 
@@ -692,30 +717,31 @@ func (s *Server) handleBackupQuery(
 	// spoofed-victim flood across alias domains that share the wildcard. RRL is
 	// a DoS mitigation, not per-zone QoS, so cross-alias aggregation is correct.
 	if st.CollapseFlags[match.RootZone] {
-		rrs, nodata := alias.ResolveCNAMEFallbackCollapse(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels)
-		if !nodata && len(rrs) == 0 {
+		rrs, nodata, withheld := alias.ResolveCNAMEFallbackCollapse(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels)
+		if !nodata && len(rrs) == 0 && len(withheld) == 0 {
 			// Only the wildcard resolver's answer is wildcard-synthesized (the
 			// CNAME-fallback above is a real chain, keyed on the query name).
-			// Set the wildcard-owner RRL account before answeredCollapsed (a
-			// closure over qo) fires so the flood aggregates per wildcard owner.
+			// Set the wildcard-owner RRL account before answered (a closure
+			// over qo) fires so the flood aggregates per wildcard owner.
 			var wcOwner string
-			rrs, nodata, wcOwner = alias.ResolveWildcardCollapse(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels)
+			rrs, nodata, wcOwner, withheld = alias.ResolveWildcardCollapse(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels)
 			if len(rrs) > 0 {
 				qo.rrlWildcardOwner = dnsutil.LookupKey(wcOwner)
 			}
 		}
-		if answeredCollapsed(rrs, nodata) {
+		if answered(rrs, nodata, withheld) {
 			return
 		}
 	} else {
-		if records := alias.ResolveCNAMEFallback(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels); len(records) > 0 {
-			replyWithAnswer(w, req, qo, records)
+		if records, withheld := alias.ResolveCNAMEFallback(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels); answered(records, false, withheld) {
 			return
 		}
 
-		if records, wcOwner := alias.ResolveWildcard(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels); len(records) > 0 {
+		records, wcOwner, withheld := alias.ResolveWildcard(qnameOrig, qtype, match.MatchedZone, backupOriginalCase, rootZone, rewriteRDATALabels)
+		if len(records) > 0 {
 			qo.rrlWildcardOwner = dnsutil.LookupKey(wcOwner)
-			replyWithAnswer(w, req, qo, records)
+		}
+		if answered(records, false, withheld) {
 			return
 		}
 	}

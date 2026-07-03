@@ -32,10 +32,12 @@ Client query
      v
 [ In-Bailiwick Rewrite ]
      |   Rewrites the owner name back to the backup domain. For RDATA
-     |   fields containing DNS names (CNAME target, NS, MX, SRV,
-     |   SOA MNAME/RNAME): if the target points inside the root zone,
-     |   it is rewritten to the backup zone; targets pointing elsewhere
-     |   (e.g., third-party CDN hostnames) are left unchanged.
+     |   fields containing DNS names (CNAME, NS, MX, SRV, SOA, HTTPS,
+     |   SVCB, DNAME, and more — see the covered-type list below):
+     |   if the target points inside the root zone, it is rewritten to
+     |   the backup zone; targets pointing elsewhere (e.g., third-party
+     |   CDN hostnames) are left unchanged. Name-bearing record types
+     |   outside the covered list are withheld from backup answers.
      |
      v
 Response sent to client
@@ -66,10 +68,18 @@ The rewrite rules are deliberately conservative:
 | Target | Rewrite behavior |
 |------|----------|
 | Owner name | Always rewritten (in-bailiwick by definition) |
-| DNS names in RDATA (CNAME target, NS, MX, SRV, SOA MNAME/RNAME) | Rewritten only when pointing inside the root zone — ensuring the rewritten name can also be resolved correctly through the same alias mechanism |
+| DNS names in RDATA of the covered record types | Rewritten only when pointing inside the root zone — ensuring the rewritten name can also be resolved correctly through the same alias mechanism |
 | RDATA names pointing externally (e.g., third-party CDN hostnames) | Left unchanged |
 | A / AAAA | Carry IP addresses; never rewritten |
 | TXT | RDATA is treated as opaque data; never rewritten — even if the content string happens to equal the root domain name |
+| Name-bearing record types outside the covered list | Withheld from backup-zone answers (see below) |
+
+The **covered record types** — those whose RDATA name fields are rewritten — are:
+`CNAME` (target), `NS`, `MX`, `PTR`, `SRV` (target), `SOA` (MNAME/RNAME), `HTTPS` (target), `SVCB` (target), `DNAME` (target), `NAPTR` (replacement), `RP` (mbox/txt), `KX` (exchanger), `AFSDB` (hostname), `PX` (map822/mapx400), and `RT` (host).
+
+### Withholding of Uncovered Name-Bearing Types
+
+A record type that carries a domain name in its RDATA but is **not** in the covered list (for example DNSSEC records such as `RRSIG` or `NSEC`, or the legacy mailbox types) is never emitted in a backup-zone answer: emitting it would expose the root domain in the RDATA while the owner name already says backup — leaking the very origin the alias is meant to hide. Instead, the record is **withheld**: the query gets an empty NODATA answer for that name and type (never NXDOMAIN, never SERVFAIL), a warning naming the withheld record type and owner is logged, and all other records in the zone are served normally. Whether a type is name-bearing is derived from the record type's RDATA metadata, so the protection is fail-closed — any future name-bearing type is withheld by default until it is explicitly added to the covered list. The same rule applies to synthesized alias zone transfers (AXFR); note that when a name exists in the root zone only through withheld record types, the transferred zone omits that name entirely, so a secondary answers NXDOMAIN for it while ShadowDNS itself answers NODATA.
 
 ## SOA Inheritance and Zone Transfers
 

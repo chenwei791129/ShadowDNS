@@ -1,6 +1,7 @@
 package alias
 
 import (
+	"fmt"
 	"net"
 	"testing"
 
@@ -616,6 +617,294 @@ func TestRewriteRR_TXT_FlagTrue_RDATAUntouched(t *testing.T) {
 	txt := got.(*dns.TXT)
 	if txt.Txt[0] != "v=spf1 include:root.com. ~all" {
 		t.Errorf("TXT mutated: got %q", txt.Txt[0])
+	}
+}
+
+// ---- RewriteRR expanded RDATA types ----
+//
+// Each newly covered type is exercised under both rewrite_rdata_labels
+// values, for in-bailiwick values (rewritten), out-of-bailiwick values
+// (preserved byte-for-byte), and mid-label root sequences (rewritten only
+// when the flag is true).
+
+// expandedTypeCases enumerates the newly covered RDATA-name-bearing types.
+// build constructs a record whose name-bearing RDATA fields are set from
+// names (in declaration order); rdata extracts those fields for assertion.
+var expandedTypeCases = []struct {
+	typ    string
+	fields int
+	build  func(owner string, names []string) dns.RR
+	rdata  func(rr dns.RR) []string
+}{
+	{
+		typ: "HTTPS", fields: 1,
+		build: func(owner string, n []string) dns.RR {
+			return &dns.HTTPS{SVCB: dns.SVCB{
+				Hdr:      dns.RR_Header{Name: owner, Rrtype: dns.TypeHTTPS, Class: dns.ClassINET, Ttl: 300},
+				Priority: 1,
+				Target:   n[0],
+			}}
+		},
+		rdata: func(rr dns.RR) []string { return []string{rr.(*dns.HTTPS).Target} },
+	},
+	{
+		typ: "SVCB", fields: 1,
+		build: func(owner string, n []string) dns.RR {
+			return &dns.SVCB{
+				Hdr:      dns.RR_Header{Name: owner, Rrtype: dns.TypeSVCB, Class: dns.ClassINET, Ttl: 300},
+				Priority: 1,
+				Target:   n[0],
+			}
+		},
+		rdata: func(rr dns.RR) []string { return []string{rr.(*dns.SVCB).Target} },
+	},
+	{
+		typ: "DNAME", fields: 1,
+		build: func(owner string, n []string) dns.RR {
+			return &dns.DNAME{
+				Hdr:    dns.RR_Header{Name: owner, Rrtype: dns.TypeDNAME, Class: dns.ClassINET, Ttl: 300},
+				Target: n[0],
+			}
+		},
+		rdata: func(rr dns.RR) []string { return []string{rr.(*dns.DNAME).Target} },
+	},
+	{
+		typ: "NAPTR", fields: 1,
+		build: func(owner string, n []string) dns.RR {
+			return &dns.NAPTR{
+				Hdr:         dns.RR_Header{Name: owner, Rrtype: dns.TypeNAPTR, Class: dns.ClassINET, Ttl: 300},
+				Order:       100,
+				Preference:  10,
+				Flags:       "s",
+				Service:     "SIP+D2T",
+				Regexp:      "",
+				Replacement: n[0],
+			}
+		},
+		rdata: func(rr dns.RR) []string { return []string{rr.(*dns.NAPTR).Replacement} },
+	},
+	{
+		typ: "RP", fields: 2,
+		build: func(owner string, n []string) dns.RR {
+			return &dns.RP{
+				Hdr:  dns.RR_Header{Name: owner, Rrtype: dns.TypeRP, Class: dns.ClassINET, Ttl: 300},
+				Mbox: n[0],
+				Txt:  n[1],
+			}
+		},
+		rdata: func(rr dns.RR) []string { return []string{rr.(*dns.RP).Mbox, rr.(*dns.RP).Txt} },
+	},
+	{
+		typ: "KX", fields: 1,
+		build: func(owner string, n []string) dns.RR {
+			return &dns.KX{
+				Hdr:        dns.RR_Header{Name: owner, Rrtype: dns.TypeKX, Class: dns.ClassINET, Ttl: 300},
+				Preference: 10,
+				Exchanger:  n[0],
+			}
+		},
+		rdata: func(rr dns.RR) []string { return []string{rr.(*dns.KX).Exchanger} },
+	},
+	{
+		typ: "AFSDB", fields: 1,
+		build: func(owner string, n []string) dns.RR {
+			return &dns.AFSDB{
+				Hdr:      dns.RR_Header{Name: owner, Rrtype: dns.TypeAFSDB, Class: dns.ClassINET, Ttl: 300},
+				Subtype:  1,
+				Hostname: n[0],
+			}
+		},
+		rdata: func(rr dns.RR) []string { return []string{rr.(*dns.AFSDB).Hostname} },
+	},
+	{
+		typ: "PX", fields: 2,
+		build: func(owner string, n []string) dns.RR {
+			return &dns.PX{
+				Hdr:        dns.RR_Header{Name: owner, Rrtype: dns.TypePX, Class: dns.ClassINET, Ttl: 300},
+				Preference: 10,
+				Map822:     n[0],
+				Mapx400:    n[1],
+			}
+		},
+		rdata: func(rr dns.RR) []string { return []string{rr.(*dns.PX).Map822, rr.(*dns.PX).Mapx400} },
+	},
+	{
+		typ: "RT", fields: 1,
+		build: func(owner string, n []string) dns.RR {
+			return &dns.RT{
+				Hdr:        dns.RR_Header{Name: owner, Rrtype: dns.TypeRT, Class: dns.ClassINET, Ttl: 300},
+				Preference: 10,
+				Host:       n[0],
+			}
+		},
+		rdata: func(rr dns.RR) []string { return []string{rr.(*dns.RT).Host} },
+	},
+}
+
+func TestRewriteRR_ExpandedTypes(t *testing.T) {
+	scenarios := []struct {
+		name string
+		flag bool
+		in   func(i int) string
+		want func(i int) string
+	}{
+		{
+			name: "in-bailiwick rewritten (flag=false)",
+			flag: false,
+			in:   func(i int) string { return fmt.Sprintf("n%d.root.com.", i) },
+			want: func(i int) string { return fmt.Sprintf("n%d.backup.com.", i) },
+		},
+		{
+			name: "in-bailiwick rewritten (flag=true)",
+			flag: true,
+			in:   func(i int) string { return fmt.Sprintf("n%d.root.com.", i) },
+			want: func(i int) string { return fmt.Sprintf("n%d.backup.com.", i) },
+		},
+		{
+			name: "out-of-bailiwick preserved (flag=false)",
+			flag: false,
+			in:   func(i int) string { return fmt.Sprintf("n%d.external.example.net.", i) },
+			want: func(i int) string { return fmt.Sprintf("n%d.external.example.net.", i) },
+		},
+		{
+			name: "out-of-bailiwick preserved (flag=true)",
+			flag: true,
+			in:   func(i int) string { return fmt.Sprintf("n%d.external.example.net.", i) },
+			want: func(i int) string { return fmt.Sprintf("n%d.external.example.net.", i) },
+		},
+		{
+			name: "mid-label rewritten (flag=true)",
+			flag: true,
+			in:   func(i int) string { return fmt.Sprintf("n%d.root.com.cdn.example.net.", i) },
+			want: func(i int) string { return fmt.Sprintf("n%d.backup.com.cdn.example.net.", i) },
+		},
+		{
+			name: "mid-label preserved (flag=false)",
+			flag: false,
+			in:   func(i int) string { return fmt.Sprintf("n%d.root.com.cdn.example.net.", i) },
+			want: func(i int) string { return fmt.Sprintf("n%d.root.com.cdn.example.net.", i) },
+		},
+	}
+
+	for _, tc := range expandedTypeCases {
+		for _, sc := range scenarios {
+			t.Run(tc.typ+"/"+sc.name, func(t *testing.T) {
+				in := make([]string, tc.fields)
+				want := make([]string, tc.fields)
+				for i := range tc.fields {
+					in[i] = sc.in(i)
+					want[i] = sc.want(i)
+				}
+				orig := tc.build("svc.root.com.", in)
+				got := RewriteRR(orig, root, backup, sc.flag)
+
+				if got.Header().Name != "svc.backup.com." {
+					t.Errorf("%s owner: got %q, want svc.backup.com.", tc.typ, got.Header().Name)
+				}
+				for i, g := range tc.rdata(got) {
+					if g != want[i] {
+						t.Errorf("%s RDATA field %d: got %q, want %q", tc.typ, i, g, want[i])
+					}
+				}
+				// Original must not be mutated.
+				for i, o := range tc.rdata(orig) {
+					if o != in[i] {
+						t.Errorf("%s original RDATA field %d mutated: %q", tc.typ, i, o)
+					}
+				}
+			})
+		}
+	}
+}
+
+// Auxiliary (non-name) RDATA fields of the newly covered types must be
+// preserved byte-for-byte, per the spec's NAPTR scenario.
+func TestRewriteRR_NAPTR_AuxFieldsPreserved(t *testing.T) {
+	orig := &dns.NAPTR{
+		Hdr:         dns.RR_Header{Name: "root.com.", Rrtype: dns.TypeNAPTR, Class: dns.ClassINET, Ttl: 300},
+		Order:       100,
+		Preference:  10,
+		Flags:       "s",
+		Service:     "SIP+D2T",
+		Regexp:      "",
+		Replacement: "svc.root.com.",
+	}
+	got := RewriteRR(orig, root, backup, false).(*dns.NAPTR)
+
+	if got.Replacement != "svc.backup.com." {
+		t.Errorf("NAPTR Replacement: got %q, want svc.backup.com.", got.Replacement)
+	}
+	if got.Order != 100 || got.Preference != 10 || got.Flags != "s" || got.Service != "SIP+D2T" || got.Regexp != "" {
+		t.Errorf("NAPTR aux fields changed: order=%d pref=%d flags=%q service=%q regexp=%q",
+			got.Order, got.Preference, got.Flags, got.Service, got.Regexp)
+	}
+}
+
+func TestRewriteRR_HTTPS_SvcParamsPreserved(t *testing.T) {
+	orig := &dns.HTTPS{SVCB: dns.SVCB{
+		Hdr:      dns.RR_Header{Name: "www.root.com.", Rrtype: dns.TypeHTTPS, Class: dns.ClassINET, Ttl: 300},
+		Priority: 1,
+		Target:   "svc.root.com.",
+		Value:    []dns.SVCBKeyValue{&dns.SVCBAlpn{Alpn: []string{"h2"}}},
+	}}
+	got := RewriteRR(orig, root, backup, false).(*dns.HTTPS)
+
+	if got.Target != "svc.backup.com." {
+		t.Errorf("HTTPS Target: got %q, want svc.backup.com.", got.Target)
+	}
+	if got.Priority != 1 {
+		t.Errorf("HTTPS Priority changed: got %d", got.Priority)
+	}
+	if len(got.Value) != 1 {
+		t.Fatalf("HTTPS SvcParams changed: got %d params", len(got.Value))
+	}
+	alpn, ok := got.Value[0].(*dns.SVCBAlpn)
+	if !ok || len(alpn.Alpn) != 1 || alpn.Alpn[0] != "h2" {
+		t.Errorf("HTTPS alpn param changed: %v", got.Value[0])
+	}
+}
+
+// ---- Legacy-type regression guard ----
+//
+// The six originally covered types plus A/AAAA/TXT must produce output
+// identical to the pre-expansion behavior under both flag values. Pinned
+// via full RR String() comparison so any drift in owner, RDATA, or aux
+// fields surfaces here.
+func TestRewriteRR_LegacyTypesUnchanged(t *testing.T) {
+	build := []struct {
+		name string
+		orig dns.RR
+		want string // expected String() of the rewritten record (same under both flags)
+	}{
+		{"CNAME in-bailiwick", newCNAME("alias.root.com.", "canonical.root.com."),
+			"alias.backup.com.\t300\tIN\tCNAME\tcanonical.backup.com."},
+		{"NS in-bailiwick", newNS("root.com.", "ns1.root.com."),
+			"backup.com.\t300\tIN\tNS\tns1.backup.com."},
+		{"MX in-bailiwick", newMX("root.com.", 10, "mail.root.com."),
+			"backup.com.\t300\tIN\tMX\t10 mail.backup.com."},
+		{"PTR in-bailiwick", newPTR("4.2.0.192.in-addr.arpa.", "www.root.com."),
+			"4.2.0.192.in-addr.arpa.\t300\tIN\tPTR\twww.backup.com."},
+		{"SRV in-bailiwick", newSRV("_http._tcp.root.com.", 10, 20, 80, "app.root.com."),
+			"_http._tcp.backup.com.\t300\tIN\tSRV\t10 20 80 app.backup.com."},
+		{"SOA in-bailiwick", newSOA("root.com.", "ns1.root.com.", "admin.root.com.", 2024010101, 3600, 900, 604800, 300),
+			"backup.com.\t300\tIN\tSOA\tns1.backup.com. admin.backup.com. 2024010101 3600 900 604800 300"},
+		{"A untouched RDATA", newA("www.root.com.", "192.0.2.4"),
+			"www.backup.com.\t300\tIN\tA\t192.0.2.4"},
+		{"AAAA untouched RDATA", newAAAA("v6.root.com.", "2001:db8::1"),
+			"v6.backup.com.\t300\tIN\tAAAA\t2001:db8::1"},
+		{"TXT untouched RDATA", newTXT("root.com.", "v=spf1 include:root.com. ~all"),
+			"backup.com.\t300\tIN\tTXT\t\"v=spf1 include:root.com. ~all\""},
+	}
+
+	for _, tc := range build {
+		for _, flag := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/flag=%v", tc.name, flag), func(t *testing.T) {
+				got := RewriteRR(tc.orig, root, backup, flag)
+				if got.String() != tc.want {
+					t.Errorf("got  %q\nwant %q", got.String(), tc.want)
+				}
+			})
+		}
 	}
 }
 
