@@ -948,7 +948,7 @@ func run(ctx context.Context, opts runOptions) error {
 	// Shutdown-order contract: Serve has returned (whether because ctx was
 	// cancelled or because a listener died — the latter leaves ctx alive, so
 	// this sequence must not rely on it). Joining the signal goroutines here,
-	// before the deferred sink/GeoIP closes run, gives shutdown a
+	// before the deferred query-log-sink close runs, gives shutdown a
 	// happens-before edge over any in-flight reload's writes.
 	shutdownSignals()
 	return serveErr
@@ -965,7 +965,7 @@ func run(ctx context.Context, opts runOptions) error {
 // The returned function implements the shutdown-order contract: stop signal
 // delivery, cancel the child context, then join both goroutines (waiting out
 // an in-flight reload). The caller invokes it after srv.Serve returns and
-// before its deferred query-log-sink and GeoIP closes execute.
+// before its deferred query-log-sink close executes.
 func runSignalHandlers(
 	ctx context.Context,
 	opts runOptions,
