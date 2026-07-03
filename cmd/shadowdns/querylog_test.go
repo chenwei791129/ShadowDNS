@@ -673,16 +673,21 @@ func TestReload_QueryLogPathChangeApplied(t *testing.T) {
 	// The new log path must be created by the reload.
 	waitForFile(t, newQueryLog)
 
-	// Query traffic must land in the new file.
+	// Query traffic must land in the new file. The new file is created by a
+	// pre-swap fallible step, while the new query-log logger is installed
+	// only after the state swap (whose forced GC can stretch the window on
+	// slow machines) — a single query sent in that window lands in the old
+	// sink and flakes the test. Re-send the query until a line lands in the
+	// new file or the deadline expires.
 	c := &dns.Client{Net: "udp", Timeout: 2 * time.Second}
 	m := new(dns.Msg)
 	m.SetQuestion("example.com.", dns.TypeA)
-	if _, _, err := c.Exchange(m, fmt.Sprintf("127.0.0.1:%d", port)); err != nil {
-		t.Fatalf("post-reload query: %v", err)
-	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	var newContent []byte
 	for time.Now().Before(deadline) {
+		if _, _, err := c.Exchange(m, fmt.Sprintf("127.0.0.1:%d", port)); err != nil {
+			t.Fatalf("post-reload query: %v", err)
+		}
 		b, rerr := os.ReadFile(newQueryLog)
 		if rerr == nil && strings.Contains(string(b), "example.com") {
 			newContent = b

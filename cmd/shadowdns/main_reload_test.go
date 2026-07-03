@@ -880,7 +880,15 @@ func TestSigusr1AfterReload(t *testing.T) {
 		if err := syscall.Kill(syscall.Getpid(), syscall.SIGHUP); err != nil {
 			t.Fatalf("send SIGHUP: %v", err)
 		}
+		// waitForFile alone is not a reload barrier: the path-B sink file is
+		// created by a pre-swap fallible step, while qlState — which the
+		// SIGUSR1 handler reads — is updated only after the state swap (and
+		// the swap's forced GC can stretch that window on slow machines). A
+		// SIGUSR1 sent in the window reopens the retired path-A sink and
+		// flakes this test. "reload complete" is logged after every post-swap
+		// install step, so wait for it before touching the sinks.
 		waitForFile(t, qlPathB)
+		waitForFileContains(t, mainLog, "reload complete")
 
 		// The retired path-A sink is closed; remove its file so any
 		// erroneous reopen of the old sink would be visible as a recreation.
@@ -914,11 +922,14 @@ func TestSigusr1AfterReload(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		readyCh := make(chan struct{})
+		// Observer logger so the test can wait on the "reload complete"
+		// entry — the reload barrier below needs it.
+		logger, logs := newObservedLogger()
 		opts := runOptions{
 			NamedConfPath: filepath.Join(dir, "named.conf"),
 			ConfigPath:    filepath.Join(dir, "shadowdns.yaml"),
 			ListenAddr:    freePortAddr(t),
-			Logger:        zap.NewNop(),
+			Logger:        logger,
 			// No LogReopener and no query log at startup: registration must
 			// not depend on a startup sink.
 			ReadyCh: readyCh,
@@ -932,7 +943,12 @@ func TestSigusr1AfterReload(t *testing.T) {
 		if err := syscall.Kill(syscall.Getpid(), syscall.SIGHUP); err != nil {
 			t.Fatalf("send SIGHUP: %v", err)
 		}
+		// waitForFile alone is not a reload barrier (the sink file is created
+		// pre-swap; qlState is installed post-swap): a SIGUSR1 sent in the
+		// window still sees no sink and reopens nothing. Wait for the
+		// completion log entry, emitted after every post-swap install step.
 		waitForFile(t, qlPath)
+		waitForReloadComplete(t, logs)
 
 		// Rotate it and confirm SIGUSR1 reopens the reload-created sink.
 		if err := os.Rename(qlPath, qlPath+".1"); err != nil {
@@ -952,7 +968,11 @@ func TestSigusr1AfterReload(t *testing.T) {
 	})
 }
 
-// waitForFile polls until path exists or fails the test after 2s.
+// waitForFile polls until path exists or fails the test after 2s. Note that
+// for a SIGHUP-created query-log file this only proves the pre-swap open step
+// ran — it is NOT a reload-completion barrier; pair it with
+// waitForFileContains/waitForReloadComplete on "reload complete" when the
+// test's next step needs the post-swap installs (QueryLog/qlState) applied.
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -963,6 +983,34 @@ func waitForFile(t *testing.T, path string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("file %s did not appear within 2s", path)
+}
+
+// waitForFileContains polls until the file at path contains substr or fails
+// the test after 5s.
+func waitForFileContains(t *testing.T, path, substr string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(path); err == nil && strings.Contains(string(b), substr) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("log %s did not contain %q within 5s", path, substr)
+}
+
+// waitForReloadComplete polls the observed logs until a "reload complete"
+// entry appears or fails the test after 5s.
+func waitForReloadComplete(t *testing.T, logs *observer.ObservedLogs) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if logs.FilterMessage("reload complete").Len() > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("no \"reload complete\" log entry within 5s")
 }
 
 // ---------------------------------------------------------------------------
