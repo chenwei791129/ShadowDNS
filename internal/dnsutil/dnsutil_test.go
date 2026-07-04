@@ -3,6 +3,8 @@ package dnsutil
 import (
 	"strings"
 	"testing"
+
+	"github.com/miekg/dns"
 )
 
 func TestCanonicalize(t *testing.T) {
@@ -77,6 +79,17 @@ func TestIsInZone(t *testing.T) {
 		{name: "empty name", n: "", zone: "example.com.", want: false},
 		{name: "empty zone with trailing dot name", n: "foo.com.", zone: "", want: true},
 		{name: "different zone", n: "example.net.", zone: "example.com.", want: false},
+		// Escaped dot: the "\." in the leftmost label is a within-label byte,
+		// not a label boundary, so "x\.a.example.com." is a child of
+		// example.com. but NOT of a.example.com.
+		{name: "escaped dot not a boundary for child zone", n: "x\\.a.example.com.", zone: "a.example.com.", want: false},
+		{name: "escaped dot label attributed to enclosing zone", n: "x\\.a.example.com.", zone: "example.com.", want: true},
+		// Root zone follows the established byte contract (membership false
+		// unless name == "."), and escaped names behave identically to
+		// non-escaped ones so an escaped dot never flips root membership.
+		{name: "root zone: non-escaped name not matched (byte contract)", n: "www.example.com.", zone: ".", want: false},
+		{name: "root zone: escaped name matches non-escaped behavior", n: "x\\.a.example.com.", zone: ".", want: false},
+		{name: "root zone: name equal to root matches", n: ".", zone: ".", want: true},
 	}
 
 	for _, tc := range tests {
@@ -84,6 +97,43 @@ func TestIsInZone(t *testing.T) {
 			got := IsInZone(tc.n, tc.zone)
 			if got != tc.want {
 				t.Errorf("IsInZone(%q, %q) = %v; want %v", tc.n, tc.zone, got, tc.want)
+			}
+			// For backslash-free names, the inlinable byte-suffix fast path
+			// (the form alias.Detect calls directly) must agree with IsInZone.
+			if !HasEscape(tc.n) {
+				if bs := IsInZoneByteSuffix(tc.n, tc.zone); bs != got {
+					t.Errorf("IsInZoneByteSuffix(%q, %q) = %v; want %v (must match IsInZone for backslash-free names)", tc.n, tc.zone, bs, got)
+				}
+			}
+		})
+	}
+}
+
+// TestIsInZone_FastPathMatchesLabelAware guards the backslash-gated
+// optimization: for backslash-free names IsInZone takes the byte-suffix fast
+// path, and this asserts that path agrees with the escaping-aware label walk
+// (dns.IsSubDomain) IsInZone uses for escaped names. Confirms the two internal
+// paths never diverge on the common case.
+func TestIsInZone_FastPathMatchesLabelAware(t *testing.T) {
+	cases := []struct {
+		n    string
+		zone string
+	}{
+		{"example.com.", "example.com."},
+		{"www.example.com.", "example.com."},
+		{"a.b.example.com.", "example.com."},
+		{"badexample.com.", "example.com."},
+		{"oo.com.", "foo.com."},
+		{"com.", "example.com."},
+		{"example.net.", "example.com."},
+		{"a.example.com.", "a.example.com."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.n+"|"+tc.zone, func(t *testing.T) {
+			fast := IsInZone(tc.n, tc.zone)
+			labelAware := dns.IsSubDomain(tc.zone, tc.n)
+			if fast != labelAware {
+				t.Errorf("IsInZone(%q, %q)=%v disagrees with label-aware dns.IsSubDomain=%v", tc.n, tc.zone, fast, labelAware)
 			}
 		})
 	}

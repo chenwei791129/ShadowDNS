@@ -64,13 +64,55 @@ func isAlreadyLookupKey(s string) bool {
 	return true
 }
 
+// HasEscape reports whether name contains an RFC 1035 escape sequence (a
+// backslash). A name with no backslash provably contains no escaped dot, so
+// byte-level label logic — suffix comparison, "."-scan splitting — is exactly
+// equivalent to a full label walk for it. Callers use this to gate an
+// allocation-free fast path and fall back to escaping-aware label walks only
+// when an escape may be present. Such names are rare in real traffic.
+func HasEscape(name string) bool {
+	return strings.IndexByte(name, '\\') >= 0
+}
+
 // IsInZone returns true iff name equals zone or is a subdomain of zone.
 // Both arguments MUST already be lowercase-folded via LookupKey for correct
 // case-insensitive matching.
 //
-// Boundary check avoids allocating "."+zone on every call; kept alloc-free
-// and inline-friendly for the alias.Detect hot loop.
+// The common backslash-free case uses the allocation-free byte-suffix
+// comparison IsInZoneByteSuffix. When name carries an escape sequence (see
+// HasEscape), an escaped dot could sit inside a label, so membership is decided
+// with dns.IsSubDomain, whose label walk honors RFC 1035 escaping and reports
+// true when name equals zone as well.
+//
+// IsInZone itself is not inlinable (the dns.IsSubDomain call exceeds the
+// budget) — hot loops that test one backslash-free name against many zones
+// should hoist the HasEscape check and call IsInZoneByteSuffix directly (see
+// alias.Detect).
+//
+// Root-origin zones (".") are routed through the byte path for BOTH escaped and
+// non-escaped names: an escaped dot never changes whether a name sits under
+// root, and the byte contract (root membership is false unless name == ".") is
+// the established behavior every caller relies on. Routing root through
+// dns.IsSubDomain (which reports every name as a subdomain of root) would flip
+// that to true and silently change record loading and zone attribution for
+// every caller — out of scope for an escaped-dot correctness fix.
 func IsInZone(name, zone string) bool {
+	if zone != "." && HasEscape(name) {
+		return dns.IsSubDomain(zone, name)
+	}
+	return IsInZoneByteSuffix(name, zone)
+}
+
+// IsInZoneByteSuffix is the allocation-free, inline-friendly byte-suffix zone
+// membership test for names KNOWN to be free of RFC 1035 escape sequences
+// (HasEscape(name) == false). It returns true iff name equals zone or is a
+// byte-suffix subdomain at a "." boundary. It is exported so hot multi-zone
+// loops (alias.Detect scans every loaded zone per query) can call it directly
+// and keep the comparison inlined — IsInZone cannot inline because of its
+// dns.IsSubDomain branch. Results match IsInZone for backslash-free names and
+// are unspecified for names containing a backslash (the caller must gate on
+// HasEscape first).
+func IsInZoneByteSuffix(name, zone string) bool {
 	if name == zone {
 		return true
 	}
