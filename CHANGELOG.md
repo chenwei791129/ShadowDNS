@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.24.3](https://github.com/chenwei791129/ShadowDNS/compare/v0.24.2...v0.24.3) (2026-07-11)
+
+
+### Bug Fixes
+
+* **alias:** rewrite RDATA names for all covered record types and withhold uncovered name-bearing records ([#32](https://github.com/chenwei791129/ShadowDNS/issues/32)) ([929268b](https://github.com/chenwei791129/ShadowDNS/commit/929268baf5dd250aaf86f963ba206be83923573d))
+* **dnsutil,zone:** honor RFC 1035 escaping in zone attribution and wildcard matching ([#33](https://github.com/chenwei791129/ShadowDNS/issues/33)) ([5fa9883](https://github.com/chenwei791129/ShadowDNS/commit/5fa9883e8141aeeed15180ed88adf81f8ce30739))
+
 ## [0.24.2](https://github.com/chenwei791129/ShadowDNS/compare/v0.24.1...v0.24.2) (2026-07-03)
 
 
