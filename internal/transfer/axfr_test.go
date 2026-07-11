@@ -520,3 +520,64 @@ func TestHandleAliasAXFR_PreservesBackupCase(t *testing.T) {
 		t.Errorf("expected at least one A record with owner %q in AXFR output", "www."+backupOriginalCase)
 	}
 }
+
+// TestHandleAliasAXFR_WithholdsUncoveredNameBearing verifies the fail-closed
+// rule applies to the synthesized alias AXFR the same way as the query path:
+// an uncovered name-bearing record (NSEC) present in the root zone is omitted
+// from the transferred zone, while covered types are emitted fully rewritten
+// and no-name types are emitted unchanged.
+func TestHandleAliasAXFR_WithholdsUncoveredNameBearing(t *testing.T) {
+	rootZone := buildTestZone("root.com.", []dns.RR{
+		&dns.A{
+			Hdr: dns.RR_Header{Name: "www.root.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+			A:   net.ParseIP("192.0.2.4").To4(),
+		},
+		&dns.HTTPS{SVCB: dns.SVCB{
+			Hdr:      dns.RR_Header{Name: "www.root.com.", Rrtype: dns.TypeHTTPS, Class: dns.ClassINET, Ttl: 300},
+			Priority: 1,
+			Target:   "svc.root.com.",
+		}},
+		&dns.NSEC{
+			Hdr:        dns.RR_Header{Name: "www.root.com.", Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 300},
+			NextDomain: "zzz.root.com.",
+			TypeBitMap: []uint16{dns.TypeA},
+		},
+	})
+	backupOrigin := "backup.com."
+
+	mux := dns.NewServeMux()
+	mux.HandleFunc(backupOrigin, func(w dns.ResponseWriter, req *dns.Msg) {
+		HandleAliasAXFR(w, req, backupOrigin, backupOrigin, rootZone, nil, false, zap.NewNop())
+	})
+
+	addr, cleanup := startAXFRServer(t, mux)
+	defer cleanup()
+
+	rrs := collectAXFR(t, backupOrigin, addr)
+
+	var foundA, foundHTTPS bool
+	for _, rr := range rrs {
+		switch v := rr.(type) {
+		case *dns.NSEC:
+			t.Errorf("NSEC record must be withheld from the alias AXFR, got %v", v)
+		case *dns.A:
+			if v.Hdr.Name == "www."+backupOrigin {
+				foundA = true
+			}
+		case *dns.HTTPS:
+			foundHTTPS = true
+			if v.Hdr.Name != "www."+backupOrigin {
+				t.Errorf("HTTPS owner = %q, want www.%s", v.Hdr.Name, backupOrigin)
+			}
+			if v.Target != "svc."+backupOrigin {
+				t.Errorf("HTTPS target = %q, want rewritten svc.%s", v.Target, backupOrigin)
+			}
+		}
+	}
+	if !foundA {
+		t.Error("expected the A record (no-name type) to survive the transfer")
+	}
+	if !foundHTTPS {
+		t.Error("expected the HTTPS record (covered type) to survive the transfer")
+	}
+}

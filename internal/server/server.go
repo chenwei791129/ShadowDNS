@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"runtime"
 	"runtime/debug"
+	"sync"
 	"sync/atomic"
 
 	"github.com/miekg/dns"
@@ -175,6 +176,17 @@ type Server struct {
 	// secret — cookies issued before a reload stay valid. The secret is
 	// held in memory only and changes on every process restart.
 	cookieGen *cookie.Generator
+
+	// withheldLogged dedups the fail-closed withheld-record warning per
+	// unique (backup zone, owner, rrtype) key. Withholding is derived from
+	// zone content, so the key space is bounded by zone size, but the
+	// warning would otherwise fire on every matching query — query-driven
+	// log amplification that RRL does not cover (RRL throttles responses,
+	// not log writes). Cleared on every SwapState so the map stays bounded
+	// by the CURRENT zone content across a long-lived process with many
+	// SIGHUP reloads (and each reload re-reports still-withheld records
+	// once, which keeps the warning visible in fresh logs).
+	withheldLogged sync.Map
 }
 
 // listenerPair bundles the UDP and TCP dns.Server instances for a single
@@ -226,6 +238,9 @@ func (s *Server) CurrentState() *ServerState {
 func (s *Server) SwapState(state ServerState) {
 	state.sanitize()
 	s.state.Store(&state)
+	// Reset the withheld-warning dedup so its key space tracks the newly
+	// loaded zone content instead of accumulating across reloads.
+	s.withheldLogged.Clear()
 	s.updateZoneMetrics(&state)
 	if s.gcHook != nil {
 		s.gcHook()

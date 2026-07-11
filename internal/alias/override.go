@@ -20,6 +20,13 @@ import (
 // that don't need to interleave other lookups (e.g. ephemeral store) keep
 // working unchanged.
 //
+// The second return value lists records withheld by the fail-closed rule
+// (uncovered name-bearing types; see FilterBackupRRs). Empty records with a
+// non-empty withheld list is an existing-name NODATA: the stage that
+// produced it is terminal, so Resolve does NOT fall through to the wildcard
+// pass in that case (RFC 4592 — an existing owner name blocks wildcard
+// matching).
+//
 // rewriteRDATALabels controls whether RDATA name fields are rewritten with
 // the label-anywhere rule (per-alias-group opt-in). It does not affect
 // owner-name rewriting.
@@ -39,44 +46,46 @@ import (
 //     ServerState.BackupOriginalCase[match.MatchedZone]).
 //
 // MUST NOT panic on any input.
-func Resolve(qname string, qtype uint16, backupOrigin, backupOriginalCase string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
+func Resolve(qname string, qtype uint16, backupOrigin, backupOriginalCase string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, []WithheldRecord) {
 	if rootZone == nil {
-		return nil
+		return nil, nil
 	}
-	if rrs := ResolveExact(qname, qtype, backupOrigin, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels); len(rrs) > 0 {
-		return rrs
+	if rrs, withheld := ResolveExact(qname, qtype, backupOrigin, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels); len(rrs) > 0 || len(withheld) > 0 {
+		return rrs, withheld
 	}
-	if rrs, _ := ResolveWildcard(qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels); len(rrs) > 0 {
-		return rrs
+	if rrs, _, withheld := ResolveWildcard(qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels); len(rrs) > 0 || len(withheld) > 0 {
+		return rrs, withheld
 	}
-	return nil
+	return nil, nil
 }
 
 // ResolveExactNoCNAME performs the strict exact-match portion of backup-zone
 // resolution: backup override lookup for overridable types and root exact
 // lookup with in-bailiwick rewrite. No CNAME fallback; no wildcard. Returns
-// nil when no exact match exists. Split out so callers can interleave
-// another exact source (e.g. the ephemeral TXT store) between exact-match
-// and CNAME fallback.
+// nil records when no exact match exists; a non-empty withheld list with
+// empty records means the name/type existed in root but every record was
+// withheld (existing-name NODATA — see Resolve). Split out so callers can
+// interleave another exact source (e.g. the ephemeral TXT store) between
+// exact-match and CNAME fallback.
 //
 // MUST NOT panic on any input.
-func ResolveExactNoCNAME(qname string, qtype uint16, backupOrigin, backupOriginalCase string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
+func ResolveExactNoCNAME(qname string, qtype uint16, backupOrigin, backupOriginalCase string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, []WithheldRecord) {
 	if rootZone == nil {
-		return nil
+		return nil, nil
 	}
 
 	qnameFold := dnsutil.LookupKey(qname)
 
 	if dnsutil.OverridableTypes[qtype] && backupZone != nil {
 		if overrides := backupZone.Lookup(qnameFold, qtype); len(overrides) > 0 {
-			return overrides
+			return overrides, nil
 		}
 	}
 
 	rootQName := RewriteQName(qnameFold, backupOrigin, rootZone.Origin)
 	rootRRs := rootZone.Lookup(rootQName, qtype)
 	if len(rootRRs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOriginalCase, rewriteRDATALabels)
@@ -89,16 +98,16 @@ func ResolveExactNoCNAME(qname string, qtype uint16, backupOrigin, backupOrigina
 // qtypes) or when no CNAME exists at the qname.
 //
 // MUST NOT panic on any input.
-func ResolveCNAMEFallback(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
+func ResolveCNAMEFallback(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, []WithheldRecord) {
 	if rootZone == nil || qtype == dns.TypeCNAME {
-		return nil
+		return nil, nil
 	}
 
 	qnameFold := dnsutil.LookupKey(qname)
 	rootQName := RewriteQName(qnameFold, backupOrigin, rootZone.Origin)
 	rootRRs := rootZone.Lookup(rootQName, dns.TypeCNAME)
 	if len(rootRRs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOriginalCase, rewriteRDATALabels)
@@ -110,9 +119,11 @@ func ResolveCNAMEFallback(qname string, qtype uint16, backupOrigin, backupOrigin
 // Returns nil when no exact match exists.
 //
 // MUST NOT panic on any input.
-func ResolveExact(qname string, qtype uint16, backupOrigin, backupOriginalCase string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
-	if rrs := ResolveExactNoCNAME(qname, qtype, backupOrigin, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels); len(rrs) > 0 {
-		return rrs
+func ResolveExact(qname string, qtype uint16, backupOrigin, backupOriginalCase string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, []WithheldRecord) {
+	// A fully-withheld exact match (empty records, non-empty withheld) is an
+	// existing-name NODATA and MUST NOT fall through to the CNAME fallback.
+	if rrs, withheld := ResolveExactNoCNAME(qname, qtype, backupOrigin, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels); len(rrs) > 0 || len(withheld) > 0 {
+		return rrs, withheld
 	}
 	return ResolveCNAMEFallback(qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels)
 }
@@ -126,9 +137,9 @@ func ResolveExact(qname string, qtype uint16, backupOrigin, backupOriginalCase s
 // aggregates into a single account instead of one per label.
 //
 // MUST NOT panic on any input.
-func ResolveWildcard(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, string) {
+func ResolveWildcard(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, string, []WithheldRecord) {
 	if rootZone == nil {
-		return nil, ""
+		return nil, "", nil
 	}
 
 	qnameFold := dnsutil.LookupKey(qname)
@@ -144,12 +155,13 @@ func ResolveWildcard(qname string, qtype uint16, backupOrigin, backupOriginalCas
 		// backupZoneHasName → rootZone.HasWildcard and sets RCODE=NOERROR
 		// (NODATA) instead of NXDOMAIN. If that call chain is ever short-
 		// circuited, this coupling must be revisited.
-		return nil, ""
+		return nil, "", nil
 	}
 
 	// wRRs are the stored wildcard RRs; their owner is the "*.<root-origin>"
 	// node, taken before synthesizeWildcardRRs rewrites owners to the qname.
-	return synthesizeWildcardRRs(wRRs, qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels), wRRs[0].Header().Name
+	rrs, withheld := synthesizeWildcardRRs(wRRs, qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels)
+	return rrs, wRRs[0].Header().Name, withheld
 }
 
 // synthesizeWildcardRRs is the legacy wildcard-emission tail shared by
@@ -158,16 +170,29 @@ func ResolveWildcard(qname string, qtype uint16, backupOrigin, backupOriginalCas
 // original qname's prefix, then finalize. The suffix is the lookup-fold root
 // origin; finalizeBackupRRs → RewriteRR will rewrite that suffix to
 // backupOriginalCase, yielding a fully case-preserving owner.
-func synthesizeWildcardRRs(wRRs []dns.RR, qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) []dns.RR {
+func synthesizeWildcardRRs(wRRs []dns.RR, qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, []WithheldRecord) {
+	// Filter the STORED wildcard records before stamping the per-query owner,
+	// so a withheld record reports the zone-bounded "*.<root-origin>" node —
+	// never the attacker-controlled synthesized name. The withheld owner
+	// feeds the handler's log-dedup key, whose key space must stay bounded
+	// by zone content under a flood of distinct labels.
+	kept, withheld := FilterBackupRRs(wRRs)
+	if len(kept) == 0 {
+		return nil, withheld
+	}
+
 	wildcardOwner := RewriteName(qname, backupOrigin, rootZone.Origin)
-	rootRRs := make([]dns.RR, len(wRRs))
-	for i, rr := range wRRs {
+	rootRRs := make([]dns.RR, len(kept))
+	for i, rr := range kept {
 		cp := dns.Copy(rr)
 		cp.Header().Name = wildcardOwner
 		rootRRs[i] = cp
 	}
 
-	return finalizeBackupRRs(rootRRs, qtype, rootZone, backupOriginalCase, rewriteRDATALabels)
+	// Chain-terminal records withheld here carry their real stored owners
+	// (FollowCNAME walks actual zone nodes), so they are zone-bounded too.
+	rrs, more := finalizeBackupRRs(rootRRs, qtype, rootZone, backupOriginalCase, rewriteRDATALabels)
+	return rrs, append(withheld, more...)
 }
 
 // ResolveExactCollapse mirrors ResolveExactNoCNAME under the unified collapse
@@ -182,12 +207,13 @@ func synthesizeWildcardRRs(wRRs []dns.RR, qname string, qtype uint16, backupOrig
 // instead of consulting later stages (design D4).
 //
 // MUST NOT panic on any input.
-func ResolveExactCollapse(qname string, qtype uint16, backupOrigin, backupOriginalCase string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, bool) {
+func ResolveExactCollapse(qname string, qtype uint16, backupOrigin, backupOriginalCase string, backupZone *zone.Zone, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, bool, []WithheldRecord) {
 	if rootZone == nil {
-		return nil, false
+		return nil, false, nil
 	}
 	if qtype != dns.TypeCNAME {
-		return ResolveExactNoCNAME(qname, qtype, backupOrigin, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels), false
+		rrs, withheld := ResolveExactNoCNAME(qname, qtype, backupOrigin, backupOriginalCase, backupZone, rootZone, rewriteRDATALabels)
+		return rrs, false, withheld
 	}
 	return collapseChainAt(qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels)
 }
@@ -197,9 +223,9 @@ func ResolveExactCollapse(qname string, qtype uint16, backupOrigin, backupOrigin
 // of emitted. See ResolveExactCollapse for the nodata contract.
 //
 // MUST NOT panic on any input.
-func ResolveCNAMEFallbackCollapse(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, bool) {
+func ResolveCNAMEFallbackCollapse(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, bool, []WithheldRecord) {
 	if rootZone == nil || qtype == dns.TypeCNAME {
-		return nil, false
+		return nil, false, nil
 	}
 	return collapseChainAt(qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels)
 }
@@ -207,13 +233,13 @@ func ResolveCNAMEFallbackCollapse(qname string, qtype uint16, backupOrigin, back
 // collapseChainAt is the chase pipeline shared by ResolveExactCollapse and
 // ResolveCNAMEFallbackCollapse: fold the qname, rewrite it into the root
 // namespace, look up the CNAME RRset there, and collapse the chain. Returns
-// (nil, false) when no CNAME exists at the rewritten name (stage miss).
-func collapseChainAt(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, bool) {
+// (nil, false, nil) when no CNAME exists at the rewritten name (stage miss).
+func collapseChainAt(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, bool, []WithheldRecord) {
 	qnameFold := dnsutil.LookupKey(qname)
 	rootQName := RewriteQName(qnameFold, backupOrigin, rootZone.Origin)
 	initial := rootZone.Lookup(rootQName, dns.TypeCNAME)
 	if len(initial) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	return collapseBackupResult(rootZone.CollapseCNAME(initial, qtype), qname, rootZone, backupOriginalCase, rewriteRDATALabels)
 }
@@ -232,9 +258,9 @@ func collapseChainAt(qname string, qtype uint16, backupOrigin, backupOriginalCas
 // the caller as the rate-limit account name to aggregate wildcard floods (see
 // ResolveWildcard). It is set for both the direct wildcard-qtype hit and the
 // wildcard-CNAME-chain outcome, since both emit wildcard-synthesized answers.
-func ResolveWildcardCollapse(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, bool, string) {
+func ResolveWildcardCollapse(qname string, qtype uint16, backupOrigin, backupOriginalCase string, rootZone *zone.Zone, rewriteRDATALabels bool) ([]dns.RR, bool, string, []WithheldRecord) {
 	if rootZone == nil {
-		return nil, false, ""
+		return nil, false, "", nil
 	}
 
 	qnameFold := dnsutil.LookupKey(qname)
@@ -242,16 +268,17 @@ func ResolveWildcardCollapse(qname string, qtype uint16, backupOrigin, backupOri
 
 	if qtype != dns.TypeCNAME {
 		if wRRs, wFound := rootZone.LookupWildcard(rootQName, qtype); wFound && len(wRRs) > 0 {
-			return synthesizeWildcardRRs(wRRs, qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels), false, wRRs[0].Header().Name
+			rrs, withheld := synthesizeWildcardRRs(wRRs, qname, qtype, backupOrigin, backupOriginalCase, rootZone, rewriteRDATALabels)
+			return rrs, false, wRRs[0].Header().Name, withheld
 		}
 	}
 
 	wCNAMEs, _ := rootZone.LookupWildcard(rootQName, dns.TypeCNAME)
 	if len(wCNAMEs) == 0 {
-		return nil, false, ""
+		return nil, false, "", nil
 	}
-	rrs, nodata := collapseBackupResult(rootZone.CollapseCNAME(wCNAMEs, qtype), qname, rootZone, backupOriginalCase, rewriteRDATALabels)
-	return rrs, nodata, wCNAMEs[0].Header().Name
+	rrs, nodata, withheld := collapseBackupResult(rootZone.CollapseCNAME(wCNAMEs, qtype), qname, rootZone, backupOriginalCase, rewriteRDATALabels)
+	return rrs, nodata, wCNAMEs[0].Header().Name, withheld
 }
 
 // collapseBackupResult assembles the backup-namespace response for a collapse
@@ -265,46 +292,59 @@ func ResolveWildcardCollapse(qname string, qtype uint16, backupOrigin, backupOri
 //   - Tail: one synthesized CNAME whose target gets the stored-CNAME-target
 //     treatment — label-anywhere when rewriteRDATALabels, in-bailiwick rule
 //     otherwise.
-//   - NoData: (nil, true).
-func collapseBackupResult(res zone.CollapseResult, qname string, rootZone *zone.Zone, backupOriginalCase string, rewriteRDATALabels bool) ([]dns.RR, bool) {
+//   - NoData: (nil, true, nil).
+//
+// Terminal records pass through FilterBackupRRs first (fail-closed rule);
+// when the filter empties a non-empty terminal set, the name existed in root
+// but every record was withheld, so nodata is true (existing-name NODATA,
+// never NXDOMAIN or SERVFAIL).
+func collapseBackupResult(res zone.CollapseResult, qname string, rootZone *zone.Zone, backupOriginalCase string, rewriteRDATALabels bool) ([]dns.RR, bool, []WithheldRecord) {
 	switch res.Outcome {
 	case zone.CollapseRecords:
-		out := make([]dns.RR, len(res.RRs))
-		for i, rr := range res.RRs {
+		kept, withheld := FilterBackupRRs(res.RRs)
+		if len(kept) == 0 {
+			return nil, true, withheld
+		}
+		out := make([]dns.RR, len(kept))
+		for i, rr := range kept {
 			cp := dns.Copy(rr)
 			cp.Header().Name = qname
 			cp.Header().Ttl = res.MinTTL
 			rewriteRDATANames(cp, rootZone.Origin, backupOriginalCase, rewriteRDATALabels)
 			out[i] = cp
 		}
-		return out, false
+		return out, false, withheld
 	case zone.CollapseTail:
 		synth := &dns.CNAME{
 			Hdr:    dns.RR_Header{Name: qname, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: res.MinTTL},
 			Target: res.Target,
 		}
 		rewriteRDATANames(synth, rootZone.Origin, backupOriginalCase, rewriteRDATALabels)
-		return []dns.RR{synth}, false
+		return []dns.RR{synth}, false, nil
 	default: // zone.CollapseNoData
-		return nil, true
+		return nil, true, nil
 	}
 }
 
-// finalizeBackupRRs applies in-zone CNAME following (RFC 1034 §3.6.2) and
-// then rewrites owners from the root namespace to the backup namespace.
+// finalizeBackupRRs applies in-zone CNAME following (RFC 1034 §3.6.2),
+// withholds uncovered name-bearing records (FilterBackupRRs, fail-closed
+// rule), and then rewrites the kept records from the root namespace to the
+// backup namespace. Empty kept with non-empty withheld means the name/type
+// existed in root but every record was withheld (existing-name NODATA).
 //
 // backupOriginalCase MUST be the operator-authored YAML case for the backup
 // origin (FQDN with trailing dot); forwarded to RewriteRR as the on-wire
 // backup origin.
-func finalizeBackupRRs(rootRRs []dns.RR, qtype uint16, rootZone *zone.Zone, backupOriginalCase string, rewriteRDATALabels bool) []dns.RR {
+func finalizeBackupRRs(rootRRs []dns.RR, qtype uint16, rootZone *zone.Zone, backupOriginalCase string, rewriteRDATALabels bool) ([]dns.RR, []WithheldRecord) {
 	if len(rootRRs) > 0 && qtype != dns.TypeCNAME {
 		if _, ok := rootRRs[len(rootRRs)-1].(*dns.CNAME); ok {
 			rootRRs = rootZone.FollowCNAME(nil, rootRRs, qtype)
 		}
 	}
-	result := make([]dns.RR, 0, len(rootRRs))
-	for _, rr := range rootRRs {
+	kept, withheld := FilterBackupRRs(rootRRs)
+	result := make([]dns.RR, 0, len(kept))
+	for _, rr := range kept {
 		result = append(result, RewriteRR(rr, rootZone.Origin, backupOriginalCase, rewriteRDATALabels))
 	}
-	return result
+	return result, withheld
 }

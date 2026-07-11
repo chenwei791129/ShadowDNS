@@ -29,9 +29,11 @@ Client query
      v
 [ In-Bailiwick Rewrite ]
      |   把 owner name 改寫回備援網域。RDATA 中含 DNS 名稱的欄位
-     |   （CNAME target、NS、MX、SRV、SOA MNAME/RNAME）：若 target
-     |   指向 root zone 內部，改寫為備援 zone；指向其他位置的 target
-     |   （例如第三方 CDN 主機名）保持不變。
+     |   （CNAME、NS、MX、SRV、SOA、HTTPS、SVCB、DNAME 等 —— 完整
+     |   涵蓋清單見下文）：若 target 指向 root zone 內部，改寫為
+     |   備援 zone；指向其他位置的 target（例如第三方 CDN 主機名）
+     |   保持不變。涵蓋清單以外、RDATA 帶有網域名稱的 record type
+     |   會從備援回應中扣留（withheld）。
      |
      v
 Response sent to client
@@ -62,10 +64,18 @@ Zone 資料以 `map[viewName]map[zoneName]*Zone` 儲存，每個 `Zone` 持有 `
 | 對象 | 改寫行為 |
 |------|----------|
 | Owner name | 一律改寫（依定義必然 in-bailiwick） |
-| RDATA 中的 DNS 名稱（CNAME target、NS、MX、SRV、SOA MNAME/RNAME） | 只在指向 root zone 內部時改寫 —— 確保改寫後的名稱也能透過同一套 alias 機制正確解析 |
+| 涵蓋 record type 的 RDATA DNS 名稱 | 只在指向 root zone 內部時改寫 —— 確保改寫後的名稱也能透過同一套 alias 機制正確解析 |
 | 指向外部的 RDATA 名稱（如第三方 CDN 主機名） | 保持不變 |
 | A / AAAA | 承載 IP 位址，永不改寫 |
 | TXT | RDATA 視為不透明資料，永不改寫 —— 即使內容字串恰好等於 root domain 名稱 |
+| 涵蓋清單以外、RDATA 帶有網域名稱的 record type | 從備援 zone 回應中扣留（見下文） |
+
+**涵蓋 record type**（RDATA 名稱欄位會被改寫的類型）為：
+`CNAME`（target）、`NS`、`MX`、`PTR`、`SRV`（target）、`SOA`（MNAME/RNAME）、`HTTPS`（target）、`SVCB`（target）、`DNAME`（target）、`NAPTR`（replacement）、`RP`（mbox/txt）、`KX`（exchanger）、`AFSDB`（hostname）、`PX`（map822/mapx400）、`RT`（host）。
+
+### 未涵蓋名稱型 record type 的扣留
+
+RDATA 帶有網域名稱、但**不在**涵蓋清單內的 record type（例如 `RRSIG`、`NSEC` 等 DNSSEC 紀錄，或早期的 mailbox 類型），永遠不會出現在備援 zone 的回應中：若直接送出，owner name 已改寫成備援網域、RDATA 卻仍留著 root domain —— 正好洩漏 alias 機制要隱藏的來源。此時該筆紀錄會被**扣留**（withheld）：該名稱與類型的查詢得到空的 NODATA 回應（不是 NXDOMAIN，也不是 SERVFAIL），日誌記下一筆含 record type 與 owner name 的 warning，zone 內其他紀錄照常服務。「是否帶有網域名稱」由 record type 的 RDATA metadata 推導而來，因此這層保護是 fail-closed —— 未來任何名稱型 record type 在明確加入涵蓋清單之前，預設一律扣留。同一規則也適用於合成的 alias zone transfer（AXFR）；注意當某名稱在 root zone 只透過被扣留的 record type 存在時，轉送出去的 zone 會完全省略該名稱，因此 secondary 對它回應 NXDOMAIN，而 ShadowDNS 自身回應 NODATA。
 
 ## SOA 繼承與 zone transfer
 
