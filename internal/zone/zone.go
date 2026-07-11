@@ -166,20 +166,41 @@ func (z *Zone) LookupWildcard(qname string, qtype uint16) ([]dns.RR, bool) {
 		return nil, false
 	}
 
+	// An escaped dot ("\.") is a byte within a label, not a label boundary.
+	// Decide once per call: escaped names step via dns.NextLabel, whose walk
+	// honors escaping and yields the parent by offset (name[off:], not a
+	// re-joined split), keeping parent byte-identical to the stored "*."+parent
+	// / parent map keys; the common backslash-free name keeps the byte scan.
+	// Parents are suffixes of qname, so a backslash-free qname can never yield
+	// an escaped parent — one check covers every step.
+	escaped := dnsutil.HasEscape(qname)
+
 	// Walk up the label tree from qname toward the zone origin.
 	name := qname
 	for {
-		idx := strings.Index(name, ".")
-		if idx < 0 {
-			break
+		var parent string
+		if escaped {
+			off, end := dns.NextLabel(name, 0)
+			if end {
+				break
+			}
+			parent = name[off:]
+		} else {
+			idx := strings.Index(name, ".")
+			if idx < 0 {
+				break
+			}
+			parent = name[idx+1:]
 		}
-		parent := name[idx+1:]
 
 		if parent == z.Origin {
 			break
 		}
 
-		// Guard: stop if we've traversed past the zone origin.
+		// Guard: stop if we've traversed past the zone origin. This runs only a
+		// handful of times per wildcard-eligible query (once per label step),
+		// not per loaded zone, so the un-inlinable IsInZone call is negligible
+		// here — no need for the byte-suffix hoist alias.Detect uses.
 		if !dnsutil.IsInZone(parent, z.Origin) {
 			return nil, false
 		}

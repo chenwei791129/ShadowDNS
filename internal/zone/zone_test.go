@@ -282,6 +282,56 @@ func TestZone_LookupWildcard_BoundaryMismatch(t *testing.T) {
 	}
 }
 
+// TestZone_LookupWildcard_EscapingBoundary verifies wildcard label stepping
+// honors RFC 1035 escaping. With both *.example.com. (192.0.2.4) and the
+// more-specific *.a.example.com. (192.0.2.5) present: an escaped dot ("\.") in
+// the leftmost label is not a boundary, so "x\.a.example.com." steps the whole
+// label to example.com. and matches *.example.com.; the backslash-free
+// "x.a.example.com." steps at real boundaries and matches *.a.example.com.,
+// exactly as before.
+func TestZone_LookupWildcard_EscapingBoundary(t *testing.T) {
+	cases := []struct {
+		name   string
+		qname  string
+		wantIP string
+	}{
+		{name: "escaped dot steps to true parent", qname: "x\\.a.example.com.", wantIP: "192.0.2.4"},
+		{name: "unescaped name matches more-specific wildcard", qname: "x.a.example.com.", wantIP: "192.0.2.5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			z := &Zone{
+				Origin:  "example.com.",
+				Records: make(map[string]*qtypeStore),
+			}
+			z.AddRR(&dns.A{
+				Hdr: dns.RR_Header{Name: "*.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   net.ParseIP("192.0.2.4").To4(),
+			})
+			z.AddRR(&dns.A{
+				Hdr: dns.RR_Header{Name: "*.a.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   net.ParseIP("192.0.2.5").To4(),
+			})
+			z.AddRR(makeTestSOA("example.com."))
+
+			rrs, found := z.LookupWildcard(tc.qname, dns.TypeA)
+			if !found {
+				t.Fatalf("expected wildcard match for %q", tc.qname)
+			}
+			if len(rrs) != 1 {
+				t.Fatalf("expected 1 record, got %d", len(rrs))
+			}
+			a, ok := rrs[0].(*dns.A)
+			if !ok {
+				t.Fatal("record is not *dns.A")
+			}
+			if a.A.String() != tc.wantIP {
+				t.Errorf("LookupWildcard(%q) = %s; want %s", tc.qname, a.A.String(), tc.wantIP)
+			}
+		})
+	}
+}
+
 // makeTestSOA builds a minimal SOA for zone test fixtures.
 func makeTestSOA(origin string) *dns.SOA {
 	return &dns.SOA{
