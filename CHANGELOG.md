@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.4](https://github.com/chenwei791129/ShadowDNS/compare/v0.24.3...v0.24.4) (2026-08-04)
+
+
+### Bug Fixes
+
+* **deps:** update Go dependency graph ([bebf7d2](https://github.com/chenwei791129/ShadowDNS/commit/bebf7d2e8572ee799e51121f28039497bfe69746))
+
 ## [0.24.3](https://github.com/chenwei791129/ShadowDNS/compare/v0.24.2...v0.24.3) (2026-07-11)
 
 
