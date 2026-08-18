@@ -200,6 +200,21 @@ Use the host-specific binary path from step 2; the example below assumes `linux/
 
 ShadowDNS listens on `:53` (UDP and TCP) by default. Use `--listen` to override.
 
+### Container image
+
+Release builds are also published as a nonroot, Distroless linux/amd64 image on GHCR. The container listens on `0.0.0.0:5353` over UDP and TCP by default, with metrics on port 9153; mount a complete configuration tree at `/etc/shadowdns` and map host port 53 to container port 5353.
+
+```bash
+docker run --rm \
+  -p 53:5353/udp \
+  -p 53:5353/tcp \
+  -p 9153:9153/tcp \
+  --mount type=bind,src=/srv/shadowdns/config,dst=/etc/shadowdns,readonly \
+  ghcr.io/OWNER/shadowdns:vX.Y.Z
+```
+
+Use an exact version tag or digest in production. See the [Installation guide](docs/installation.md#container-image) for nonroot volume ownership, ACME state, logging, probes, signals, and the one-time public-package setup.
+
 ## Configuration
 
 ### Command-line flags

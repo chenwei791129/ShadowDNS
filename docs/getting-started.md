@@ -63,6 +63,6 @@ Before starting for real, it is recommended to first verify with `--dry-run` tha
 
 ## Next Steps
 
-- [Installation](installation.md) — deploy to a Debian/Ubuntu host with the `.deb` package, managed by systemd
+- [Installation](installation.md) — build from source, install the `.deb` package, or run the official GHCR container image
 - [CLI Reference](reference/cli.md) — complete flag and subcommand documentation
 - [Migrating from BIND](migration.md) — the full operational guide for production cutover

@@ -1,6 +1,6 @@
 # 安裝
 
-ShadowDNS 提供兩種安裝方式：從原始碼編譯，或在 Debian/Ubuntu 上以 `.deb` 套件安裝（內含 systemd service、logrotate 設定與 shell completion）。
+ShadowDNS 可從原始碼編譯、在 Debian/Ubuntu 上安裝 `.deb` 套件，或使用發布於 GHCR 的官方 linux/amd64 container image。
 
 ## 從原始碼編譯
 
@@ -87,8 +87,66 @@ sudo systemctl status shadowdns
 
 應用層 log 位於 `/var/log/shadowdns/shadowdns.log`。
 
+## Container Image
+
+官方 image **僅支援 linux/amd64**。正式部署應使用精確版本 tag（或 digest）；`latest` 會指向最新 release。
+
+```bash
+docker pull ghcr.io/OWNER/shadowdns:vX.Y.Z
+```
+
+Image 使用 Distroless nonroot runtime，並以 UID/GID `65532` 執行；其中沒有 shell、package manager、診斷 client、內嵌設定或 Docker `HEALTHCHECK`。預設參數為：
+
+```text
+--named-conf /etc/shadowdns/named.conf
+--config /etc/shadowdns/shadowdns.yaml
+--listen 0.0.0.0:5353
+--no-color
+```
+
+明確 listener 僅支援 IPv4，並覆寫 mounted BIND 設定中的宿主專用 `listen-on` 與 `listen-on-v6` 位址；此 image 預設不提供 first-class dual-stack container listening。
+
+請先準備完整的 `/etc/shadowdns` 目錄樹，包含 `named.conf`、`shadowdns.yaml`、所有 include 檔案、zone files 與 GeoIP databases。Include paths 會相對於 include 所在檔案解析，但相對的 `options { directory "zones"; };` 是從 container working directory 解析，不會自動相對於 `/etc/shadowdns`；請改用 `/etc/shadowdns/zones` 等 container 內 absolute path。設定中其他 absolute paths 同樣必須以相同路徑額外掛載，或改寫至 `/etc/shadowdns` 之下；只掛載 `/etc/shadowdns` 不會自動 remap `/srv/zones`。請將下方 `OWNER` 與 `vX.Y.Z` 替換成 package owner及GHCR中確實存在的tag，再執行：
+
+```bash
+docker run --rm --name shadowdns \
+  -p 53:5353/udp \
+  -p 53:5353/tcp \
+  -p 9153:9153/tcp \
+  --mount type=bind,src=/srv/shadowdns/config,dst=/etc/shadowdns,readonly \
+  ghcr.io/OWNER/shadowdns:vX.Y.Z
+```
+
+Operational logs 預設寫到 stderr，應交由 container runtime 收集。要重新載入 mounted 設定，請直接向 container 傳送 SIGHUP；SIGTERM 會執行 graceful shutdown：
+
+```bash
+docker kill --signal HUP shadowdns
+docker stop --time 10 shadowdns
+```
+
+Health probes 由部署端設定，因為 image 不含 `HEALTHCHECK`。Readiness 可用外部 DNS client 查詢 authoritative zones 中已知存在的 record；liveness 可視需要探測 `http://<container-address>:9153/metrics`。
+
+### 可寫狀態與選用 Listeners
+
+設定 mount 可保持唯讀。若啟用 DoH ACME，請將 `/var/lib/shadowdns` 掛載到 persistent storage，並確保 UID `65532` 可寫；如此 ACME account key 才能跨 container replacement 重用。File-backed main log 或 query log同樣必須使用明確掛載、由 UID `65532` 擁有的可寫路徑；image 絕不 fallback 為 root。
+
+DoH HTTPS、ACME HTTP-01 與 ephemeral API 必須使用大於 1023 的 container ports，再將外部 443 與 80 port map 或 route 至這些非特權 listeners。
+
+### 首次發布 GHCR Package
+
+第一次 release workflow 推送 package 後，package owner 必須在 GitHub package settings：
+
+1. 將 visibility 改為 **Public**。
+2. 確認 package 已連結 source repository。
+3. 從未登入的環境驗證 anonymous pull。
+4. 確認精確 release tag 與 `latest` 指向相同 image digest。
+
+GitHub Packages API 與 `gh` CLI 目前沒有可修改 package visibility 的受支援操作，因此這是一次性的 UI 步驟；後續 release 會保留既有 public visibility。
+
 ## 容器內端對端測試（開發用）
 
 ```bash
-make test-deb    # 需要 podman 或 docker
+make test-deb          # 需要 podman 或 docker
+make container-image   # 建置 linux/amd64 的 shadowdns:dev
+make verify-container  # 驗證本機 image 契約
 ```

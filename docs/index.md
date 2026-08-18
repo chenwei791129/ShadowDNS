@@ -61,6 +61,6 @@ In the reference deployment, memory usage is reduced by about **80%** compared w
 ## Next Steps
 
 - [Quick Start](getting-started.md) — the shortest path from build to launch
-- [Installation](installation.md) — building from source and installing the `.deb` package
+- [Installation](installation.md) — source builds, `.deb` packages, and the official GHCR container image
 - [How Zone Aliasing Works](guides/zone-aliasing.md) — the query processing pipeline and rewrite rules
 - [Migrating from BIND](migration.md) — the four-phase cutover procedure and rollback strategy
