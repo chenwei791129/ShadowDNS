@@ -1,0 +1,16 @@
+*
+!go.mod
+!go.sum
+!scripts/
+scripts/*
+!scripts/build-linux.sh
+!cmd/
+!cmd/**/
+!cmd/*.go
+!cmd/**/*.go
+cmd/**/*_test.go
+!internal/
+!internal/**/
+!internal/*.go
+!internal/**/*.go
+internal/**/*_test.go

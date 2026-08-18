@@ -4,8 +4,11 @@ HOST_GOARCH := $(shell go env GOARCH)
 BINARY := $(BIN_DIR)/shadowdns-$(HOST_GOOS)-$(HOST_GOARCH)
 LINUX_BINARY := $(BIN_DIR)/shadowdns-linux-amd64
 CMD_PKG := ./cmd/shadowdns
+CONTAINER_RUNTIME ?= $(shell ./scripts/container-runtime.sh)
+CONTAINER_IMAGE ?= shadowdns:dev
+CONTAINER_VERSION ?= dev
 
-.PHONY: all help build build-linux test lint smoke completions deb test-deb docs-serve docs-build
+.PHONY: all help build build-linux container-image verify-container test-container test lint smoke completions deb test-deb docs-serve docs-build
 
 all: build
 
@@ -28,7 +31,18 @@ build: ## Build the binary for the host platform into bin/
 # On linux/amd64 hosts this produces the same artefact as `build`.
 build-linux: ## Cross-compile a linux/amd64 binary into bin/
 	@mkdir -p $(BIN_DIR)
-	GOOS=linux GOARCH=amd64 go build -o $(LINUX_BINARY) $(CMD_PKG)
+	OUTPUT=$(LINUX_BINARY) VERSION=$(if $(filter command line environment,$(origin VERSION)),$(VERSION),dev) ./scripts/build-linux.sh
+
+container-image: ## Build the local linux/amd64 container image
+	$(CONTAINER_RUNTIME) build --platform linux/amd64 --build-arg VERSION=$(CONTAINER_VERSION) -t $(CONTAINER_IMAGE) .
+
+verify-container: ## Verify the local container image contract
+	CONTAINER_RUNTIME=$(CONTAINER_RUNTIME) ./scripts/verify-container-image.sh $(CONTAINER_IMAGE) $(CONTAINER_VERSION)
+
+# `verify-container` only inspects image configuration. `test-container` runs
+# the image and exercises its runtime contract (DNS, metrics, logging, signals).
+test-container: ## End-to-end runtime test of the container image
+	@./scripts/test-container.sh $(CONTAINER_IMAGE)
 
 test: ## Run unit tests with the race detector
 	go test -race -count=1 ./...

@@ -9,13 +9,17 @@
 - `make deb` — Build `.deb` package (implicitly runs `make build-linux` and `make completions`; requires nfpm via `go tool`)
 - `make completions` — Generate bash/zsh/fish completion files at `bin/shadowdns.{bash,zsh,fish}` via `go run ./cmd/shadowdns completion <shell>`. Single source of truth for supported shells; consumed by `make deb` and `scripts/test-deb.sh`.
 - `make test-deb` — End-to-end container test of `.deb` package (requires podman or docker)
+- `make container-image` — Build the local linux/amd64 Distroless image as `shadowdns:dev` (override with `CONTAINER_IMAGE=<name>`; `scripts/container-runtime.sh` prefers podman and falls back to docker, skipping any runtime whose daemon/machine is unreachable)
+- `make verify-container` — Verify the local image metadata, nonroot identity, entrypoint, default command, exposed ports, absent healthcheck, and dev version through `scripts/verify-container-image.sh`
+- `make test-container` — End-to-end runtime test of the container image via `scripts/test-container.sh` (starts `shadowdns:dev` with a read-only generated config mount and checks UDP/TCP answers, metrics, stderr logging, SIGHUP reload, SIGTERM graceful stop; requires an image built by `make container-image`, plus `dig` and `curl`)
 - `make docs-serve` — Live-reload preview of the MkDocs manual site at http://127.0.0.1:8000 (requires uv; runs mkdocs-material + mkdocs-static-i18n via `uvx`, no global install)
 - `make docs-build` — Render the manual site into `site/` (gitignored) with `--strict` (warnings fail the build, same as CI)
 
 # Project Structure
 
 - `packaging/` — Debian packaging assets (systemd service, example configs, install scripts)
-- `scripts/` — Build and test helper scripts
+- `scripts/` — Build and test helper scripts, including the shared local/CI container image contract verifier
+- `Dockerfile` + `.dockerignore` — linux/amd64 multi-stage container build with a Distroless nonroot runtime and an allowlisted Go-only build context
 - `grafana/` — Ready-to-import Grafana dashboards (e.g. `shadowdns-overview.json`); not packaged into the `.deb`, consumed from the repo. See `docs/operations/monitoring.md`.
 - `nfpm.yaml` — nfpm configuration for `.deb` packaging
 - `mkdocs.yml` + `docs/` — Bilingual MkDocs Material manual site via mkdocs-static-i18n (suffix structure): `page.md` is English (default, served at site root), `page.zh.md` is Traditional Chinese (served under `/zh/`). Every new page needs BOTH language files, an English `nav:` entry in `mkdocs.yml`, and a matching `nav_translations` entry under the i18n plugin's `zh` language. Published to GitHub Pages at https://chenwei791129.github.io/ShadowDNS/ by `.github/workflows/docs.yml` on push to main touching `docs/**` or `mkdocs.yml` (Pages source: GitHub Actions).
