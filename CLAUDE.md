@@ -10,7 +10,7 @@
 - `make completions` — Generate bash/zsh/fish completion files at `bin/shadowdns.{bash,zsh,fish}` via `go run ./cmd/shadowdns completion <shell>`. Single source of truth for supported shells; consumed by `make deb` and `scripts/test-deb.sh`.
 - `make test-deb` — End-to-end container test of `.deb` package (requires podman or docker)
 - `make container-image` — Build the local linux/amd64 Distroless image as `shadowdns:dev` (override with `CONTAINER_IMAGE=<name>`; `scripts/container-runtime.sh` prefers podman and falls back to docker, skipping any runtime whose daemon/machine is unreachable)
-- `make verify-container` — Verify the local image metadata, nonroot identity, entrypoint, default command, exposed ports, absent healthcheck, and dev version through `scripts/verify-container-image.sh`
+- `make verify-container` — Verify the local image metadata, nonroot identity, entrypoint, default command, exposed ports, absent healthcheck, and dev version through `scripts/verify-container-image.sh` (requires `jq`; values are read from one `image inspect` JSON round-trip so the check behaves identically on podman and docker)
 - `make test-container` — End-to-end runtime test of the container image via `scripts/test-container.sh` (starts `shadowdns:dev` with a read-only generated config mount and checks UDP/TCP answers, metrics, stderr logging, SIGHUP reload, SIGTERM graceful stop; requires an image built by `make container-image`, plus `dig` and `curl`)
 - `make docs-serve` — Live-reload preview of the MkDocs manual site at http://127.0.0.1:8000 (requires uv; runs mkdocs-material + mkdocs-static-i18n via `uvx`, no global install)
 - `make docs-build` — Render the manual site into `site/` (gitignored) with `--strict` (warnings fail the build, same as CI)
