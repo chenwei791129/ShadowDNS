@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.25.0...v0.25.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **container:** make the image contract verifier runtime-agnostic ([c81de90](https://github.com/chenwei791129/ShadowDNS/commit/c81de9069e744c16daef073fb501948db13aaaca))
+
 ## [0.25.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.24.4...v0.25.0) (2026-08-18)
 
 
