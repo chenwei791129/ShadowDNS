@@ -34,6 +34,18 @@ jobs:
   container:
     runs-on: ubuntu-latest
 
+    # Both runtimes are exercised on purpose: local development resolves to
+    # podman, while the release workflow builds and verifies through docker.
+    # They disagree on the template type of `image inspect`, so verifying only
+    # one runtime lets a release-path break through to publish time.
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [podman, docker]
+
+    env:
+      CONTAINER_RUNTIME: ${{ matrix.runtime }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

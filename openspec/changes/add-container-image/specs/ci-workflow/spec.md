@@ -21,7 +21,7 @@ The CI workflow SHALL build the project Dockerfile for `linux/amd64` on every pu
 
 ### Requirement: Pull Request CI verifies the image runtime contract
 
-After building the local image, CI SHALL invoke a repository-owned verification script shared with local development. The script SHALL verify the image contract: architecture `amd64`, UID/GID `65532`, the ShadowDNS exec-form entrypoint, the complete default command including `0.0.0.0:5353`, exposed `5353/udp`, `5353/tcp`, and `9153/tcp` ports, absence of a Docker health check, and development version output. The checks SHALL fail when any inspected value differs from the container-image specification.
+After building the local image, CI SHALL invoke a repository-owned verification script shared with local development, and SHALL do so for **both** supported container runtimes (podman and docker) so that the runtime used by the release workflow is exercised before merge. The script SHALL verify the image contract: architecture `amd64`, UID/GID `65532`, the ShadowDNS exec-form entrypoint, the complete default command including `0.0.0.0:5353`, exposed `5353/udp`, `5353/tcp`, and `9153/tcp` ports, absence of a Docker health check, and development version output. The checks SHALL fail when any inspected value differs from the container-image specification.
 
 #### Scenario: Image contract matches
 
