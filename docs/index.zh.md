@@ -63,6 +63,6 @@ ShadowDNS 透過 zone aliasing 消除這項浪費：
 ## 下一步
 
 - [快速開始](getting-started.md) — 從 build 到啟動的最短路徑
-- [安裝](installation.md) — 原始碼編譯與 `.deb` 套件安裝
+- [安裝](installation.md) — 原始碼編譯、`.deb` 套件與官方 GHCR container image
 - [Zone Aliasing 原理](guides/zone-aliasing.md) — 查詢處理管線與改寫規則
 - [從 BIND 遷移](migration.md) — 四階段切換步驟與 rollback 策略

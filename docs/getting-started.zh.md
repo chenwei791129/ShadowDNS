@@ -63,6 +63,6 @@ ShadowDNS 預設監聽 `:53`（UDP 與 TCP），可用 `--listen` 覆寫。
 
 ## 下一步
 
-- [安裝](installation.md) — 以 `.deb` 套件部署到 Debian/Ubuntu 主機並交由 systemd 管理
+- [安裝](installation.md) — 從原始碼編譯、安裝 `.deb` 套件，或執行官方 GHCR container image
 - [CLI 參考](reference/cli.md) — 完整的 flag 與 subcommand 說明
 - [從 BIND 遷移](migration.md) — 正式環境切換的完整操作指引
