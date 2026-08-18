@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.24.4...v0.25.0) (2026-08-18)
+
+
+### Features
+
+* **container:** add linux/amd64 Distroless container image ([925f751](https://github.com/chenwei791129/ShadowDNS/commit/925f75174f3857bc39993c241472dea1e24b247e))
+
 ## [0.24.4](https://github.com/chenwei791129/ShadowDNS/compare/v0.24.3...v0.24.4) (2026-08-04)
 
 
