@@ -12,14 +12,7 @@
 set -euo pipefail
 
 # Auto-detect container runtime: prefer podman, fall back to docker.
-if command -v podman >/dev/null 2>&1; then
-    CTR=podman
-elif command -v docker >/dev/null 2>&1; then
-    CTR=docker
-else
-    echo "Error: neither podman nor docker found in PATH" >&2
-    exit 1
-fi
+CTR=$("$(dirname "$0")/container-runtime.sh")
 echo "Using container runtime: $CTR"
 
 CONTAINER_NAME="shadowdns-deb-test-$$"
