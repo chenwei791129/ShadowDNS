@@ -84,6 +84,9 @@ func TestApplyFile_PreservesOriginalMode(t *testing.T) {
 	if err := os.WriteFile(path, []byte("original\n"), origMode); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	if err := os.Chmod(path, origMode); err != nil {
+		t.Fatalf("chmod seed: %v", err)
+	}
 
 	if err := applyFile(path, []byte("pruned\n"), zap.NewNop()); err != nil {
 		t.Fatalf("applyFile: %v", err)
