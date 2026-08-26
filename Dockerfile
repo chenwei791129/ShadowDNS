@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1@sha256:34b128e419449565adc5ed7f487a6f503a73f1077012cfed86354c731338c44f
 
-FROM --platform=linux/amd64 docker.io/library/golang:1.26.4-alpine@sha256:0648ddfa35769070197ba1cdf22a16dc452caf9315e66b91791308a543baf229 AS build
+FROM --platform=linux/amd64 docker.io/library/golang:1.27.0-alpine@sha256:c0ef102fd47cc7cfb3db3e93c4830f500307e37dad1dca44a3795e783cb0bf58 AS build
 
 WORKDIR /src
 
