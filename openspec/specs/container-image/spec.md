@@ -8,44 +8,35 @@ TBD - created by archiving change 'add-container-image'. Update Purpose after ar
 
 ### Requirement: Multi-stage linux/amd64 image build
 
-The project SHALL provide a multi-stage Dockerfile that builds `./cmd/shadowdns` with `CGO_ENABLED=0`, `GOOS=linux`, and `GOARCH=amd64`, then copies only the resulting binary into a Distroless static Debian 13 nonroot runtime image. The Go builder version SHALL match the version declared in `go.mod`. Both builder and runtime base images MUST be pinned by immutable digest. The final image architecture SHALL be `linux/amd64`.
+專案 SHALL 提供 multi-stage Dockerfile，以 `CGO_ENABLED=0`、`GOOS=linux` 與 `GOARCH=amd64` build `./cmd/shadowdns`，然後只將產出的 binary 複製到 Distroless static Debian 13 nonroot runtime image。Go builder 版本 SHALL 與 `go.mod` 宣告的版本一致。Builder 與 runtime base images MUST 以 immutable digest pin。Final image architecture SHALL 為 `linux/amd64`。
 
-#### Scenario: Local development image build
+#### Scenario: 本機開發 image build
 
-- **WHEN** the Dockerfile is built for `linux/amd64` without a VERSION build argument
-- **THEN** the build SHALL succeed and running the image with `--version` SHALL print `dev`
+- **WHEN** 未提供 VERSION build argument，且以 Dockerfile build `linux/amd64`
+- **THEN** build SHALL 成功，而以 `--version` 執行 image SHALL 輸出 `dev`
 
-#### Scenario: Versioned release image build
+#### Scenario: 帶版本的 release image build
 
-- **WHEN** the Dockerfile is built for `linux/amd64` with VERSION set to `v0.9.0`
-- **THEN** the binary SHALL be linked with `-s -w -X main.version=v0.9.0` and running the image with `--version` SHALL print `v0.9.0`
+- **WHEN** VERSION 設為 `v0.9.0`，且以 Dockerfile build `linux/amd64`
+- **THEN** binary SHALL 使用 `-s -w -X main.version=v0.9.0` link，而以 `--version` 執行 image SHALL 輸出 `v0.9.0`
 
-#### Scenario: Final image contains only runtime requirements
+#### Scenario: Final image 僅包含 runtime requirements
 
-- **WHEN** the final image is inspected
-- **THEN** it SHALL use the pinned Distroless static Debian 13 nonroot base and SHALL NOT install a shell, package manager, DNS client, HTTP client, configuration fixture, zone data, or GeoIP database
+- **WHEN** 檢查 final image
+- **THEN** image SHALL 使用 pinned Distroless static Debian 13 nonroot base，且 SHALL NOT 安裝 shell、package manager、DNS client、HTTP client、configuration fixture、zone data 或 GeoIP database
 
 
 <!-- @trace
-source: add-container-image
+source: upgrade-go-1-27
 updated: 2026-08-26
 code:
-  - docs/operations/reloading.zh.md
-  - docs/guides/environment-variables.zh.md
-  - internal/shadowdnscfg/envexpand.go
-  - docs/configuration/shadowdns-yaml.md
-  - docs/configuration/shadowdns-yaml.zh.md
-  - docs/operations/reloading.md
-  - docs/guides/environment-variables.md
-  - internal/shadowdnscfg/config.go
-  - mkdocs.yml
-tests:
-  - cmd/shadowdns/main_reload_test.go
-  - cmd/shadowdns/listenon_test.go
-  - cmd/shadowdns/main_test.go
-  - internal/shadowdnscfg/config_test.go
-  - internal/shadowdnscfg/envexpand_test.go
-  - cmd/shadowdns/prune_backup_test.go
+  - docs/installation.md
+  - docs/installation.zh.md
+  - Dockerfile
+  - docs/getting-started.zh.md
+  - docs/getting-started.md
+  - go.mod
+  - README.md
 -->
 
 ---
