@@ -4,7 +4,7 @@ ShadowDNS 可從原始碼編譯、在 Debian/Ubuntu 上安裝 `.deb` 套件，�
 
 ## 從原始碼編譯
 
-前置條件：Go 1.26+。
+前置條件：Go 1.27+。
 
 ```bash
 git clone https://github.com/chenwei791129/ShadowDNS.git

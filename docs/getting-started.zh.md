@@ -4,7 +4,7 @@
 
 ## 前置條件
 
-- Go 1.26+
+- Go 1.27+
 - MaxMind GeoLite2 資料庫（Country + ASN，見步驟 3 —— 僅在 view 使用 `geoip` 規則時需要）
 - 既有的 BIND 設定（`named.conf` 與 zone file）
 

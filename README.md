@@ -162,7 +162,7 @@ Supported sub-options (defaults align with BIND):
 
 ## Quick start
 
-**1. Install Go 1.26+ and clone the repository.**
+**1. Install Go 1.27+ and clone the repository.**
 
 ```bash
 git clone https://github.com/example/shadowdns.git

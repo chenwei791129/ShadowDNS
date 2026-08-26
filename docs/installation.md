@@ -4,7 +4,7 @@ ShadowDNS can be built from source, installed as a `.deb` package on Debian/Ubun
 
 ## Building from Source
 
-Prerequisite: Go 1.26+.
+Prerequisite: Go 1.27+.
 
 ```bash
 git clone https://github.com/chenwei791129/ShadowDNS.git

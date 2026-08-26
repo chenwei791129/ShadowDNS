@@ -4,7 +4,7 @@ This page walks you through the shortest path to getting ShadowDNS running: buil
 
 ## Prerequisites
 
-- Go 1.26+
+- Go 1.27+
 - MaxMind GeoLite2 databases (Country + ASN, see step 3 — only needed when views use `geoip` rules)
 - An existing BIND configuration (`named.conf` and zone files)
 
