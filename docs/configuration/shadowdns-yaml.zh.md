@@ -32,6 +32,39 @@ doh:
     account_key_file: "/var/lib/shadowdns/acme/account.key"
 ```
 
+## 環境變數 expression
+
+ShadowDNS 每次載入 `shadowdns.yaml` 時，都會展開 YAML **字串 value** 裡的環境變數 expression；這包括啟動、`--dry-run`、`prune-backup`，以及每次 SIGHUP 重載。展開功能刻意只支援以下有限 grammar：
+
+| 形式 | 行為 |
+|------|------|
+| `${NAME}` | 必填。`NAME` 未設定或設為空字串時，載入失敗。 |
+| `${NAME:-literal default}` | 環境變數為非空字串時使用該值；否則使用 literal default，default 可以是空字串。 |
+| `$$` | 產生一個 literal `$`。例如 `$${NAME}` 會產生 literal 文字 `${NAME}`。 |
+
+變數名稱必須符合 `[A-Za-z_][A-Za-z0-9_]*`。`$NAME`、`${NAME-default}`、`${NAME:?message}` 等 shell 形式不屬於展開語法：`$NAME` 會保持 literal，未 escape 的 braced expression 若使用不支援的 operator 則會被拒絕。可能被誤判為 expression 的 literal 文字請以 `$$` escape。
+
+每個 scalar 只會由左至右掃描一次。環境變數值與 default 都以 literal 方式插入，**不會遞迴展開**。例如環境中的 `OUTER=${INNER}` 時，`${OUTER}` 的結果是 literal 文字 `${INNER}`。
+
+```yaml
+ephemeral_api:
+  listen: "${API_LISTEN:-127.0.0.1:8053}"
+  allow:
+    - "${API_ALLOW:-127.0.0.1}"
+  token: "${API_TOKEN}"
+```
+
+展開與 YAML 結構互相隔離：
+
+- 只有 value-side YAML string scalar 會展開。Mapping key、sequence 結構、boolean、number、null 及其他非字串 scalar 都不會變更。
+- 帶 anchor 的字串 value 會在 anchor 定義處展開；YAML alias 仍指向同一個已展開值。Alias node 不會再展開第二次。
+- 即使環境變數值含有 `:`、`#`、換行、`---`、tag、anchor 或類似 alias 的文字，結果仍是 scalar data，不能注入 YAML key 或 node。
+- 與一般載入相同，只採用第一份 YAML document。
+
+載入採 fail-closed。必填變數不存在或為空、expression 格式錯誤、strict decoding 失敗，或 semantic validation 失敗，都會拒絕整次載入。SIGHUP 發生這類錯誤時，運行中的設定保持不變，ephemeral record 也不會被清除。Expression error 的 diagnostic 會指出變數與 YAML 位置；若源自環境變數的值在後續 decoding 或 validation 失敗，錯誤只會列出相關變數名稱與 YAML path，不會印出環境變數值或其轉換後的衍生內容。
+
+環境變數展開只應用於適合由 process environment 提供給 ShadowDNS 的欄位。部署方式與 secret 處理指引請見[環境變數](../guides/environment-variables.md)；重載範圍與 process environment 限制請見[設定重載](../operations/reloading.md)。
+
 ## aliases 欄位
 
 `aliases` 下的每個 key 是一個 root domain，value 是一個物件：

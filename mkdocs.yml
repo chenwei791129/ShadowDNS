@@ -86,8 +86,10 @@ plugins:
             Feature Guides: 功能指南
             How Zone Aliasing Works: Zone Aliasing 原理
             CNAME Chain Collapsing: CNAME 鏈收合
+            Environment Variables: 環境變數
             DNS-over-HTTPS (DoH): DNS-over-HTTPS (DoH)
             Operations: 維運
+            Reloading Configuration: 重新載入設定
             Migrating from BIND: 從 BIND 遷移
             Monitoring: 監控
             Startup Performance Benchmark: 啟動效能基準
@@ -124,10 +126,12 @@ nav:
   - Feature Guides:
       - How Zone Aliasing Works: guides/zone-aliasing.md
       - CNAME Chain Collapsing: guides/cname-chain-collapsing.md
+      - Environment Variables: guides/environment-variables.md
       - EDNS Client Subnet (ECS): guides/ecs.md
       - DNS-over-HTTPS (DoH): guides/doh.md
       - Ephemeral TXT API: ephemeral-api.md
   - Operations:
+      - Reloading Configuration: operations/reloading.md
       - Migrating from BIND: migration.md
       - Monitoring: operations/monitoring.md
       - Startup Performance Benchmark: benchmark.md

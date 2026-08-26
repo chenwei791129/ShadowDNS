@@ -32,6 +32,39 @@ doh:
     account_key_file: "/var/lib/shadowdns/acme/account.key"
 ```
 
+## Environment variable expressions
+
+ShadowDNS expands environment expressions in YAML **string values** every time it loads `shadowdns.yaml`, including startup, `--dry-run`, `prune-backup`, and each SIGHUP reload. Expansion supports this deliberately limited grammar:
+
+| Form | Behavior |
+|------|----------|
+| `${NAME}` | Required. Loading fails when `NAME` is unset or set to an empty string. |
+| `${NAME:-literal default}` | Uses the environment value when it is non-empty; otherwise uses the literal default, which may be empty. |
+| `$$` | Produces one literal `$`. For example, `$${NAME}` produces the literal text `${NAME}`. |
+
+Variable names must match `[A-Za-z_][A-Za-z0-9_]*`. Shell forms such as `$NAME`, `${NAME-default}`, and `${NAME:?message}` are not expansion syntax: `$NAME` remains literal, while unsupported unescaped braced operators are rejected. Use `$$` when literal text could otherwise be parsed as an expression.
+
+Each scalar is scanned exactly once from left to right. Environment values and defaults are inserted literally and are **not recursively expanded**. For example, if `OUTER=${INNER}`, `${OUTER}` results in the literal text `${INNER}`.
+
+```yaml
+ephemeral_api:
+  listen: "${API_LISTEN:-127.0.0.1:8053}"
+  allow:
+    - "${API_ALLOW:-127.0.0.1}"
+  token: "${API_TOKEN}"
+```
+
+Expansion is isolated from YAML structure:
+
+- Only value-side YAML string scalars are expanded. Mapping keys, sequence structure, booleans, numbers, nulls, and other non-string scalars are unchanged.
+- An anchored string value is expanded at its anchor definition; YAML aliases continue to refer to that same expanded value. Alias nodes are not expanded a second time.
+- The result remains scalar data even when an environment value contains `:`, `#`, newlines, `---`, tags, anchors, or alias-like text. It cannot inject YAML keys or nodes.
+- As with normal loading, only the first YAML document is used.
+
+Loading is fail-closed. A missing or empty required variable, malformed expression, strict-decoding error, or semantic validation error rejects the entire load. On SIGHUP, the running configuration remains unchanged and ephemeral records are not cleared. Diagnostics for expression errors identify the variable and YAML location. If an environment-derived value later fails decoding or validation, the error identifies only the involved variable names and YAML paths; it does not print the environment value or a transformed derivative of it.
+
+Use environment expansion only for fields that are safe for ShadowDNS to consume from process environment. For deployment patterns and secret-handling guidance, see [Environment Variables](../guides/environment-variables.md). For reload scope and process-environment limitations, see [Configuration Reloading](../operations/reloading.md).
+
 ## aliases fields
 
 Each key under `aliases` is a root domain; the value is an object:
