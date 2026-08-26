@@ -153,11 +153,19 @@ type putResponse struct {
 
 func decodePutResponse(t *testing.T, w *httptest.ResponseRecorder) putResponse {
 	t.Helper()
+	assertSingleTrailingNewline(t, w.Body.Bytes())
 	var resp putResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v; body=%s", err, w.Body.String())
 	}
 	return resp
+}
+
+func assertSingleTrailingNewline(t *testing.T, body []byte) {
+	t.Helper()
+	if !bytes.HasSuffix(body, []byte{'\n'}) || bytes.HasSuffix(body, []byte("\n\n")) {
+		t.Errorf("body must end with exactly one newline: %q", body)
+	}
 }
 
 func TestServer_PUT_CreatesRecord(t *testing.T) {
@@ -295,6 +303,42 @@ func TestServer_PUT_MissingValueRejected(t *testing.T) {
 	w := doRequest(s, "PUT", "/v1/txt/foo.example.com", `{"ttl":60}`, "127.0.0.1", "")
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestServer_PUT_StrictJSONRejectedBeforeStoreMutation(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"case mismatch", `{"Value":"token","TTL":60}`},
+		{"unknown member", `{"value":"token","ttl":60,"extra":true}`},
+		{"duplicate member", `{"value":"first","value":"second","ttl":60}`},
+		{"second top-level value", `{"value":"first","ttl":60} {"value":"second","ttl":60}`},
+		{"invalid UTF-8", string([]byte(`{"value":"token`)) + string([]byte{0xff}) + `","ttl":60}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, store := newTestServer(t, "", []netip.Prefix{singleAddrPrefix(t, "127.0.0.1")})
+			store.Put("foo.example.com.", "existing", 300)
+
+			w := doRequest(s, http.MethodPut, "/v1/txt/foo.example.com", tt.body, "127.0.0.1", "")
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+			var body errorBody
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if body.Status != "error" || body.Error == "" {
+				t.Errorf("error response = %+v, want non-empty status=error shape", body)
+			}
+			recs, ok := store.Lookup("foo.example.com.")
+			if !ok || len(recs) != 1 || recs[0].Value != "existing" {
+				t.Errorf("store changed after rejected PUT: records=%+v, ok=%v", recs, ok)
+			}
+		})
 	}
 }
 

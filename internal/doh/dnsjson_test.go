@@ -1,6 +1,7 @@
 package doh
 
 import (
+	"bytes"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -430,6 +431,56 @@ func TestJSON_TXTExample(t *testing.T) {
 	}
 	if resp.EDNSClientSubnet != "" {
 		t.Errorf("edns_client_subnet = %q, want empty", resp.EDNSClientSubnet)
+	}
+}
+
+func TestJSON_V2SerializationContract(t *testing.T) {
+	rootZ := buildRootZone("example.com.",
+		makeA("multi.example.com.", "203.0.113.20", 120),
+		makeA("multi.example.com.", "203.0.113.21", 60),
+		makeTXT("txt.example.com.", 180, "<tag>&value"),
+	)
+	h := newDoHHandler(t, newAnyViewServer(t, rootZ))
+
+	tests := []struct {
+		name      string
+		query     string
+		wantCache string
+		wantData  string
+		wantCount int
+	}{
+		{"multiple answers", "name=multi.example.com&type=A", "max-age=60", "", 2},
+		{"TXT HTML-sensitive characters", "name=txt.example.com&type=TXT", "max-age=180", `"<tag>&value"`, 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := doJSON(t, h, tt.query, "", "192.0.2.20:40000")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("HTTP status = %d, want 200", rec.Code)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != tt.wantCache {
+				t.Errorf("Cache-Control = %q, want %q", got, tt.wantCache)
+			}
+			if !bytes.HasSuffix(rec.Body.Bytes(), []byte{'\n'}) || bytes.HasSuffix(rec.Body.Bytes(), []byte("\n\n")) {
+				t.Errorf("body must end with exactly one newline: %q", rec.Body.String())
+			}
+
+			resp := parseJSONBody(t, rec)
+			if len(resp.Answer) != tt.wantCount {
+				t.Fatalf("Answer = %+v, want %d entries", resp.Answer, tt.wantCount)
+			}
+			if tt.wantData != "" && resp.Answer[0].Data != tt.wantData {
+				t.Errorf("Answer data = %q, want %q", resp.Answer[0].Data, tt.wantData)
+			}
+		})
+	}
+}
+
+func TestBuildJSONResponse_EmptySectionsAreArrays(t *testing.T) {
+	resp := buildJSONResponse(new(dns.Msg))
+	if resp.Question == nil || resp.Answer == nil {
+		t.Fatalf("empty sections must be non-nil arrays: Question=%#v Answer=%#v", resp.Question, resp.Answer)
 	}
 }
 

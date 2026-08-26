@@ -1,7 +1,7 @@
 package doh
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -160,7 +160,8 @@ func (s *Server) serveJSON(w http.ResponseWriter, r *http.Request, q url.Values)
 	h.Set("Content-Type", dnsJSONMediaType)
 	setCacheControl(h, rw.msg)
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(buildJSONResponse(rw.msg))
+	_ = json.MarshalWrite(w, buildJSONResponse(rw.msg))
+	_, _ = w.Write([]byte{'\n'})
 }
 
 // parseQType resolves the type parameter: empty defaults to A, a mnemonic is

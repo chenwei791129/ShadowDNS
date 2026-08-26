@@ -7,7 +7,7 @@ package api
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"net"
 	"net/http"
@@ -159,9 +159,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req putRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	if err := json.UnmarshalRead(r.Body, &req, json.RejectUnknownMembers(true)); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON body: %v", err))
 		return
 	}
@@ -303,5 +301,6 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 func writeJSON(w http.ResponseWriter, code int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(body)
+	_ = json.MarshalWrite(w, body)
+	_, _ = w.Write([]byte{'\n'})
 }
