@@ -57,6 +57,10 @@ Two consecutive calls with the same body are therefore idempotent — the final 
 | `value` | string | Required | The TXT record value (e.g. an ACME challenge token); UTF-8 bytes ≤ 255 (the RFC 1035 TXT character-string limit), `400` if exceeded |
 | `ttl` | integer | Optional (default 0) | Seconds; clamped to `[1, 3600]` (`0` → `1`, `7200` → `3600`) |
 
+JSON object member names are case-sensitive and must use the exact lowercase names `value` and `ttl`. The API rejects unknown or duplicate members, invalid UTF-8, and bodies containing more than one top-level JSON value with `400 Bad Request`. Every rejected request leaves the ephemeral store unchanged.
+
+For example, `{"value":"token","ttl":60}` is valid, while `{"Value":"token","TTL":60}`, `{"value":"first","value":"second","ttl":60}`, and two adjacent JSON objects are rejected.
+
 ### Example (without token)
 
 ```bash
@@ -218,7 +222,7 @@ This override behavior applies equally to backup (alias) zones: if you PUT `_acm
 | Source IP not on the `allow` list | `403` | `{"status":"error","error":"source IP not in allow list"}` |
 | Token configured but header missing / malformed | `401` | `{"status":"error","error":"missing or malformed Authorization header"}` |
 | Token configured but value mismatched | `401` | `{"status":"error","error":"invalid token"}` |
-| Empty body, non-JSON, or unknown fields | `400` | `{"status":"error","error":"invalid JSON body: ..."}` |
+| Empty body, non-JSON, case-mismatched / unknown / duplicate members, invalid UTF-8, or multiple top-level JSON values | `400` | `{"status":"error","error":"invalid JSON body: ..."}` |
 | Body missing the `value` field | `400` | `{"status":"error","error":"missing required field: value"}` |
 | PUT body `value` longer than 255 bytes | `400` | `{"status":"error","error":"value exceeds 255-byte limit (got N)"}` |
 | DELETE `?value=` (empty string) | `400` | `{"status":"error","error":"empty value query parameter"}` |

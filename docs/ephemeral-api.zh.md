@@ -57,6 +57,10 @@ IP ACL 先於 token 驗證：來源 IP 不在白名單直接回 `403`，就算 t
 | `value` | string | 必填 | TXT record 的值（例如 ACME challenge token）；UTF-8 bytes ≤ 255（RFC 1035 TXT character-string 上限），超過回 `400` |
 | `ttl` | integer | 選填（預設 0）| 秒數；會 clamp 至 `[1, 3600]`（`0` → `1`，`7200` → `3600`）|
 
+JSON object member 名稱區分大小寫，且必須使用精確的 lowercase 名稱 `value` 與 `ttl`。未知或重複的 member、invalid UTF-8，以及包含多個頂層 JSON value 的 body 都會回 `400 Bad Request`；所有被拒絕的 request 都不會修改 ephemeral store。
+
+例如 `{"value":"token","ttl":60}` 合法；`{"Value":"token","TTL":60}`、`{"value":"first","value":"second","ttl":60}`，以及相鄰的兩個 JSON object 都會被拒絕。
+
 ### 範例（無 token）
 
 ```bash
@@ -218,7 +222,7 @@ dig @127.0.0.1 _acme-challenge.foo.example.com CNAME +short
 | 來源 IP 不在 `allow` 清單 | `403` | `{"status":"error","error":"source IP not in allow list"}` |
 | 設了 token 但 header 缺失 / 格式錯誤 | `401` | `{"status":"error","error":"missing or malformed Authorization header"}` |
 | 設了 token 但值不符 | `401` | `{"status":"error","error":"invalid token"}` |
-| Body 空、非 JSON、或有未知欄位 | `400` | `{"status":"error","error":"invalid JSON body: ..."}` |
+| Body 空、非 JSON、member 大小寫不符／未知／重複、invalid UTF-8，或有多個頂層 JSON value | `400` | `{"status":"error","error":"invalid JSON body: ..."}` |
 | Body 缺少 `value` 欄位 | `400` | `{"status":"error","error":"missing required field: value"}` |
 | PUT body 的 `value` 長度 > 255 bytes | `400` | `{"status":"error","error":"value exceeds 255-byte limit (got N)"}` |
 | DELETE `?value=`（空字串）| `400` | `{"status":"error","error":"empty value query parameter"}` |
