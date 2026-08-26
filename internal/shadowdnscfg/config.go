@@ -6,12 +6,15 @@
 package shadowdnscfg
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
@@ -152,23 +155,107 @@ func (g *rawAliasGroup) UnmarshalYAML(value *yaml.Node) error {
 // Strict decoding is used: unknown top-level keys or unknown fields inside
 // recognized sections are rejected. Passing a nil logger is safe.
 func Load(path string, logger *zap.Logger) (*Config, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening config %q: %w", path, err)
+	}
+	cfg, err := loadBytesAtPath(contents, os.LookupEnv, logger, path)
+	if err != nil {
+		return nil, fmt.Errorf("parsing config %q: %w", path, err)
+	}
+	return cfg, nil
+}
+
+func loadBytes(contents []byte, lookup envLookup, logger *zap.Logger) (*Config, error) {
+	return loadBytesAtPath(contents, lookup, logger, "")
+}
+
+func loadBytesAtPath(contents []byte, lookup envLookup, logger *zap.Logger, path string) (*Config, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 
-	f, err := os.Open(path)
+	raw, err := decodeRawBytes(contents)
 	if err != nil {
-		return nil, fmt.Errorf("opening config %q: %w", path, err)
+		return nil, err
 	}
-	defer func() { _ = f.Close() }()
 
+	var source yaml.Node
+	if err := yaml.NewDecoder(bytes.NewReader(contents)).Decode(&source); err != nil {
+		return nil, err
+	}
+	refs, changed, err := expandYAMLValuesFromSource(&source, lookup, contents)
+	if err != nil {
+		return nil, err
+	}
+	if changed {
+		raw, err = decodeRawNode(&source)
+		if err != nil {
+			return nil, safeExpandedError(refs)
+		}
+	}
+	cfg, err := buildConfig(raw, logger, path)
+	if err != nil {
+		if len(refs) > 0 {
+			return nil, safeExpandedError(refs)
+		}
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func decodeRawBytes(contents []byte) (*rawConfig, error) {
 	var raw rawConfig
-	dec := yaml.NewDecoder(f)
+	dec := yaml.NewDecoder(bytes.NewReader(contents))
 	dec.KnownFields(true)
 	if err := dec.Decode(&raw); err != nil {
-		return nil, fmt.Errorf("parsing config %q: %w", path, err)
+		return nil, err
 	}
+	return &raw, nil
+}
 
+func decodeRawNode(node *yaml.Node) (*rawConfig, error) {
+	var encoded bytes.Buffer
+	enc := yaml.NewEncoder(&encoded)
+	if len(node.Content) > 0 {
+		if err := enc.Encode(node.Content[0]); err != nil {
+			return nil, err
+		}
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	var raw rawConfig
+	dec := yaml.NewDecoder(&encoded)
+	dec.KnownFields(true)
+	if err := dec.Decode(&raw); err != nil {
+		return nil, err
+	}
+	return &raw, nil
+}
+
+func safeExpandedError(refs []envReference) error {
+	variables := make(map[string]struct{})
+	paths := make(map[string]struct{})
+	for _, ref := range refs {
+		variables[ref.Name] = struct{}{}
+		if ref.Path != "" {
+			paths[ref.Path] = struct{}{}
+		}
+	}
+	var names, yamlPaths []string
+	for name := range variables {
+		names = append(names, name)
+	}
+	for path := range paths {
+		yamlPaths = append(yamlPaths, path)
+	}
+	sort.Strings(names)
+	sort.Strings(yamlPaths)
+	return fmt.Errorf("expanded configuration validation failed (environment variables: %s; YAML paths: %s)", strings.Join(names, ", "), strings.Join(yamlPaths, ", "))
+}
+
+func buildConfig(raw *rawConfig, logger *zap.Logger, path string) (*Config, error) {
 	cfg := &Config{}
 
 	// Surface the "no aliases declared" case so operators can tell an

@@ -30,10 +30,13 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 
+	"github.com/chenwei791129/ShadowDNS/internal/api"
+	"github.com/chenwei791129/ShadowDNS/internal/ephemeral"
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 	"github.com/chenwei791129/ShadowDNS/internal/querylog"
 	"github.com/chenwei791129/ShadowDNS/internal/ratelimit"
 	"github.com/chenwei791129/ShadowDNS/internal/server"
+	"github.com/chenwei791129/ShadowDNS/internal/shadowdnscfg"
 )
 
 // ---------------------------------------------------------------------------
@@ -479,6 +482,144 @@ func TestReload_GeoRulesWithoutDirectory_FailsKeepOld(t *testing.T) {
 	}
 	if got := reloadCounterValue(t, m, "failure"); got != 1 {
 		t.Errorf("failure counter = %v, want 1", got)
+	}
+}
+
+func TestReloadReExpandsEnvironmentBackedAlias(t *testing.T) {
+	dir := setupReloadTestDir(t)
+	t.Setenv("ALIAS_MEMBER", "first.example.net")
+	writeShadowConf(t, dir, `
+aliases:
+  example.com:
+    members: ["${ALIAS_MEMBER}"]
+`)
+	srv, geo, qlState, opts := startReloadTestServer(t, dir)
+	defer geo.closeAll(zap.NewNop())
+	if err := reload(context.Background(), opts, srv, geo, qlState, zap.NewNop()); err != nil {
+		t.Fatalf("first reload: %v", err)
+	}
+	if got := srv.CurrentState().Aliases["first.example.net."]; got != "example.com." {
+		t.Fatalf("first alias = %q, want example.com.", got)
+	}
+
+	t.Setenv("ALIAS_MEMBER", "second.example.net")
+	if err := reload(context.Background(), opts, srv, geo, qlState, zap.NewNop()); err != nil {
+		t.Fatalf("second reload: %v", err)
+	}
+	state := srv.CurrentState()
+	if got := state.Aliases["second.example.net."]; got != "example.com." {
+		t.Errorf("second alias = %q, want example.com.", got)
+	}
+	if _, ok := state.Aliases["first.example.net."]; ok {
+		t.Error("old environment-backed alias remained after reload")
+	}
+}
+
+func TestReloadDoesNotReplaceStartupScopedEphemeralAPIConfig(t *testing.T) {
+	dir := setupReloadTestDir(t)
+	t.Setenv("API_TOKEN", "startup-token")
+	apiAddr := freePortAddr(t)
+	writeShadowConf(t, dir, fmt.Sprintf(`
+aliases: {}
+ephemeral_api:
+  listen: %q
+  allow: ["127.0.0.1"]
+  token: "${API_TOKEN}"
+`, apiAddr))
+	srv, geo, qlState, opts := startReloadTestServer(t, dir)
+	defer geo.closeAll(zap.NewNop())
+	shadowCfg, err := shadowdnscfg.Load(opts.ConfigPath, zap.NewNop())
+	if err != nil {
+		t.Fatalf("load startup config: %v", err)
+	}
+	store := ephemeral.NewStore()
+	srv.EphemeralStore = store
+	apiSrv := api.NewServer(shadowCfg.EphemeralAPI, store, func() []string { return []string{"example.com."} }, zap.NewNop())
+	apiCtx, apiCancel := context.WithCancel(context.Background())
+	apiDone := make(chan struct{})
+	go func() { defer close(apiDone); _ = apiSrv.Run(apiCtx) }()
+	defer func() {
+		apiCancel()
+		select {
+		case <-apiDone:
+		case <-time.After(6 * time.Second):
+		}
+	}()
+	baseURL := "http://" + apiAddr
+	waitHTTPReady(t, baseURL)
+
+	t.Setenv("API_TOKEN", "reloaded-token")
+	if err := reload(context.Background(), opts, srv, geo, qlState, zap.NewNop()); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	request := func(token string) int {
+		req, err := http.NewRequest(http.MethodPut, baseURL+"/v1/txt/_acme.example.com", strings.NewReader(`{"value":"test","ttl":300}`))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
+	}
+	if got := request("reloaded-token"); got != http.StatusUnauthorized {
+		t.Errorf("new token status = %d, want %d", got, http.StatusUnauthorized)
+	}
+	if got := request("startup-token"); got == http.StatusUnauthorized {
+		t.Errorf("startup token status = %d, want authenticated response", got)
+	}
+}
+
+func TestReloadEnvironmentFailureKeepsStateAndEphemeralStore(t *testing.T) {
+	dir := setupReloadTestDir(t)
+	t.Setenv("ALIAS_MEMBER", "backup.example.net")
+	writeShadowConf(t, dir, `
+aliases:
+  example.com:
+    members: ["${ALIAS_MEMBER}"]
+`)
+	srv, _, store, geo, qlState, opts, cleanup := startEphemeralFixture(t, dir)
+	defer cleanup()
+	writeShadowConf(t, dir, `
+aliases:
+  example.com:
+    members: ["${ALIAS_MEMBER}"]
+ephemeral_api:
+  listen: "127.0.0.1:18053"
+  allow: ["127.0.0.1"]
+`)
+	m := metrics.New()
+	srv.Metrics = m
+	store.Put("_acme.example.com.", "synthetic-value", 300)
+	previous := srv.CurrentState()
+
+	if err := os.Unsetenv("ALIAS_MEMBER"); err != nil {
+		t.Fatalf("Unsetenv: %v", err)
+	}
+	logger, logs := newObservedLogger()
+	err := reload(context.Background(), opts, srv, geo, qlState, logger)
+	if err == nil {
+		t.Fatal("reload error = nil, want required-variable failure")
+	}
+	if srv.CurrentState() != previous {
+		t.Error("state swapped after failed environment expansion")
+	}
+	if _, ok := store.Lookup("_acme.example.com."); !ok {
+		t.Error("ephemeral store cleared after failed environment expansion")
+	}
+	if got := reloadCounterValue(t, m, "failure"); got != 1 {
+		t.Errorf("reload failures = %v, want 1", got)
+	}
+	combined := observedDiagnostics(err, logs)
+	if !strings.Contains(combined, "ALIAS_MEMBER") {
+		t.Errorf("diagnostics = %q, want safe variable name", combined)
+	}
+	if strings.Contains(combined, "backup.example.net") || strings.Contains(combined, "synthetic-value") {
+		t.Errorf("diagnostics disclose environment or ephemeral value: %q", combined)
 	}
 }
 

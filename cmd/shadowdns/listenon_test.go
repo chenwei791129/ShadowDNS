@@ -45,8 +45,12 @@ func newObservedLogger() (*zap.Logger, *observer.ObservedLogs) {
 	return zap.New(core), recorded
 }
 
-func formatObserved(logs *observer.ObservedLogs) string {
+func observedDiagnostics(err error, logs *observer.ObservedLogs) string {
 	var sb strings.Builder
+	if err != nil {
+		sb.WriteString(err.Error())
+		sb.WriteByte('\n')
+	}
 	for _, e := range logs.All() {
 		sb.WriteString(e.Message)
 		for k, v := range e.ContextMap() {
@@ -55,6 +59,10 @@ func formatObserved(logs *observer.ObservedLogs) string {
 		sb.WriteByte('\n')
 	}
 	return sb.String()
+}
+
+func formatObserved(logs *observer.ObservedLogs) string {
+	return observedDiagnostics(nil, logs)
 }
 
 // TestRun_OverrideBranchUsesListenFlag: --listen carries a specific host, so

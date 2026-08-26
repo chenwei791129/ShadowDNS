@@ -188,6 +188,22 @@ ephemeral_api:
 	}
 }
 
+func TestLoadUnknownFieldPreservesOriginalSourceLine(t *testing.T) {
+	path := writeConfig(t, `
+# comment keeps the unknown field on its authored line
+
+aliases: {}
+unknown_section: true
+`)
+	_, err := Load(path, nil)
+	if err == nil {
+		t.Fatal("Load() error = nil, want unknown-field error")
+	}
+	if !strings.Contains(err.Error(), "line 5") {
+		t.Fatalf("Load() error = %q, want original source line 5", err)
+	}
+}
+
 func TestLoad_UnknownTopLevelKeyFails(t *testing.T) {
 	path := writeConfig(t, `
 aliases:
@@ -634,6 +650,30 @@ aliases:
 	}
 	if got := cfg.BackupOriginalCase["example.com."]; got != "Example.Com." {
 		t.Errorf("BackupOriginalCase[example.com.] = %q, want %q", got, "Example.Com.")
+	}
+}
+
+func TestLoadResolvesCurrentEnvironmentOnEveryInvocation(t *testing.T) {
+	path := writeConfig(t, `
+ephemeral_api:
+  listen: "${API_LISTEN}"
+  allow: ["192.0.2.0/24"]
+`)
+	t.Setenv("API_LISTEN", "127.0.0.1:8053")
+	first, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("first Load: %v", err)
+	}
+	t.Setenv("API_LISTEN", "127.0.0.1:9053")
+	second, err := Load(path, nil)
+	if err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	if first.EphemeralAPI.Listen != "127.0.0.1:8053" {
+		t.Errorf("first listen = %q, want 127.0.0.1:8053", first.EphemeralAPI.Listen)
+	}
+	if second.EphemeralAPI.Listen != "127.0.0.1:9053" {
+		t.Errorf("second listen = %q, want 127.0.0.1:9053", second.EphemeralAPI.Listen)
 	}
 }
 

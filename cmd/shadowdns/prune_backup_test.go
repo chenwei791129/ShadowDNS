@@ -58,6 +58,43 @@ func TestPruneBackupCmd_MissingRequiredFlags(t *testing.T) {
 	}
 }
 
+func TestRunPruneBackupExpandsEnvironmentBackedAliases(t *testing.T) {
+	dir := t.TempDir()
+	namedConf := filepath.Join(dir, "named.conf")
+	if err := os.WriteFile(namedConf, []byte(`options { directory "`+dir+`"; };
+view "default" {
+  match-clients { any; };
+  zone "example.com" { type master; file "root.fwd"; };
+  zone "backup.example" { type master; file "backup.fwd"; };
+};
+`), 0o600); err != nil {
+		t.Fatalf("write named.conf: %v", err)
+	}
+	configPath := filepath.Join(dir, "shadowdns.yaml")
+	if err := os.WriteFile(configPath, []byte(`aliases:
+  example.com:
+    members: ["${BACKUP_NAME}"]
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("BACKUP_NAME", "backup.example")
+	for name, contents := range map[string]string{
+		"root.fwd":   "$ORIGIN example.com.\n@ 300 IN SOA ns1.example.com. hostmaster.example.com. 1 300 300 300 300\n",
+		"backup.fwd": "$ORIGIN backup.example.\n@ 300 IN SOA ns1.backup.example. hostmaster.backup.example. 1 300 300 300 300\nwww 300 IN A 192.0.2.10\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	var out bytes.Buffer
+	if err := runPruneBackup(&out, namedConf, configPath, false, zap.NewNop()); err != nil {
+		t.Fatalf("runPruneBackup: %v", err)
+	}
+	if !strings.Contains(out.String(), " A ") {
+		t.Fatalf("output = %q, want deletion from expanded alias", out.String())
+	}
+}
+
 func TestRunPruneBackup_DryRunAndApply(t *testing.T) {
 	dir := t.TempDir()
 

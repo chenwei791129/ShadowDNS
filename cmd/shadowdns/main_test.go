@@ -2111,6 +2111,83 @@ func TestRun_DryRun_NoGeoIP_SucceedsAndReportsState(t *testing.T) {
 	requireBoolField(t, entries[0], "geoip_enabled", false)
 }
 
+func TestRun_DryRunExpandsRequiredEnvironmentVariable(t *testing.T) {
+	dir, _ := setupGeoIPOptionalTestDir(t, "", "any;")
+	configPath := filepath.Join(dir, "shadowdns.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+ephemeral_api:
+  listen: "127.0.0.1:8053"
+  allow: ["192.0.2.0/24"]
+  token: "${API_TOKEN}"
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("API_TOKEN", "synthetic-secret")
+	logger, logs := newObservedLogger()
+	err := run(context.Background(), runOptions{
+		NamedConfPath: filepath.Join(dir, "named.conf"),
+		ConfigPath:    configPath,
+		ListenAddr:    "127.0.0.1:0",
+		DryRun:        true,
+		Logger:        logger,
+	})
+	if err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if logs.FilterMessage("dry-run: configuration loaded successfully").Len() != 1 {
+		t.Fatal("dry-run success log missing")
+	}
+}
+
+func TestRun_DryRunRequiredEnvironmentVariableFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  bool
+	}{
+		{name: "unset"},
+		{name: "empty", set: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, _ := setupGeoIPOptionalTestDir(t, "", "any;")
+			configPath := filepath.Join(dir, "shadowdns.yaml")
+			if err := os.WriteFile(configPath, []byte(`
+ephemeral_api:
+  listen: "127.0.0.1:8053"
+  allow: ["192.0.2.0/24"]
+  token: "${API_TOKEN}"
+`), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			if tc.set {
+				t.Setenv("API_TOKEN", "")
+			} else {
+				t.Setenv("API_TOKEN", "synthetic-secret")
+				if err := os.Unsetenv("API_TOKEN"); err != nil {
+					t.Fatalf("Unsetenv: %v", err)
+				}
+			}
+			logger, logs := newObservedLogger()
+			err := run(context.Background(), runOptions{
+				NamedConfPath: filepath.Join(dir, "named.conf"),
+				ConfigPath:    configPath,
+				ListenAddr:    "127.0.0.1:0",
+				DryRun:        true,
+				Logger:        logger,
+			})
+			if err == nil {
+				t.Fatal("dry-run error = nil, want required-variable failure")
+			}
+			combined := observedDiagnostics(err, logs)
+			if !strings.Contains(combined, "API_TOKEN") {
+				t.Errorf("diagnostics = %q, want API_TOKEN", combined)
+			}
+			if strings.Contains(combined, "synthetic-secret") {
+				t.Errorf("diagnostics disclose environment value: %q", combined)
+			}
+		})
+	}
+}
+
 // TestRun_DryRun_GeoRulesWithoutDirectory_Fails verifies --dry-run fails under
 // exactly the same GeoIP conditions as a real startup, with the same explicit
 // configuration error.
