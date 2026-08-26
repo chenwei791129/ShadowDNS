@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.26.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.25.1...v0.26.0) (2026-08-26)
+
+
+### Features
+
+* **config:** expand environment variables in YAML values ([a04a48d](https://github.com/chenwei791129/ShadowDNS/commit/a04a48d8a941b6e4b10be07ec83a825d724d751a))
+* **json:** migrate production boundaries to v2 ([d23a491](https://github.com/chenwei791129/ShadowDNS/commit/d23a49126b85e2add3db802819a650c876e30de3))
+
+
+### Bug Fixes
+
+* **deps:** update golang.org/x/mod ([97191f0](https://github.com/chenwei791129/ShadowDNS/commit/97191f0e04fbf3266590b0da7e772f008f44cc25))
+
 ## [0.25.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.25.0...v0.25.1) (2026-08-18)
 
 
