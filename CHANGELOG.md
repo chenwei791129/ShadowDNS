@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.26.0...v0.26.1) (2026-08-29)
+
+
+### Bug Fixes
+
+* **metrics:** bind the metrics listener before signalling readiness ([#44](https://github.com/chenwei791129/ShadowDNS/issues/44)) ([65c0d14](https://github.com/chenwei791129/ShadowDNS/commit/65c0d1432b3839fc2fdb4588f647eb7b92309b7c))
+
 ## [0.26.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.25.1...v0.26.0) (2026-08-26)
 
 
