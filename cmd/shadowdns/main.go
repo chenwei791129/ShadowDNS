@@ -417,12 +417,19 @@ type runOptions struct {
 	// is installed. Production callers leave it nil; test callers use it as an
 	// explicit happens-before sync point instead of sleeping.
 	//
-	// Everything run() binds is bound before the close, the metrics listener
-	// included, so a test that has observed the close may scrape /metrics
-	// without polling for the socket. Keep it that way: a listener whose bind
-	// happens after this point, or from a goroutine that run() does not
-	// synchronise with, reintroduces a window where the process reports ready
-	// and the socket still refuses connections.
+	// The close orders after every listener run() binds itself: the DNS
+	// listeners (BindMany) and the metrics listener. A test that has observed
+	// the close may therefore scrape /metrics without polling for the socket,
+	// and keeping that true is the point of binding the metrics listener
+	// synchronously rather than from inside its serve goroutine — a bind that
+	// moves after this point, or into a goroutine run() does not synchronise
+	// with, reintroduces a window where the process reports ready and the
+	// socket still refuses connections.
+	//
+	// The guarantee does NOT extend to the DoH and ephemeral API servers: both
+	// bind inside their own Run methods, which run() starts in a goroutine and
+	// never joins before the close. Tests for those listeners must poll for the
+	// socket (see requireTCPDialable in doh_startup_test.go).
 	ReadyCh chan<- struct{}
 }
 
