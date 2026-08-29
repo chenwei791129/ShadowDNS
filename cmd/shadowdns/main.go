@@ -416,6 +416,13 @@ type runOptions struct {
 	// ReadyCh is optional; if non-nil, run() closes it once the SIGHUP handler
 	// is installed. Production callers leave it nil; test callers use it as an
 	// explicit happens-before sync point instead of sleeping.
+	//
+	// Everything run() binds is bound before the close, the metrics listener
+	// included, so a test that has observed the close may scrape /metrics
+	// without polling for the socket. Keep it that way: a listener whose bind
+	// happens after this point, or from a goroutine that run() does not
+	// synchronise with, reintroduces a window where the process reports ready
+	// and the socket still refuses connections.
 	ReadyCh chan<- struct{}
 }
 
@@ -846,18 +853,40 @@ func run(ctx context.Context, opts runOptions) error {
 		// hosts the optional /debug/pprof/profile and /debug/pprof/trace streaming
 		// endpoints, which a fixed write timeout would truncate mid-stream. Read,
 		// idle, and header timeouts still apply.
-		metricsSrv := httpserver.NewServer(opts.MetricsAddr, mux, httpserver.WithWriteTimeout(0))
+		// Addr is empty because the server runs on the listener bound below
+		// rather than binding for itself.
+		metricsSrv := httpserver.NewServer("", mux, httpserver.WithWriteTimeout(0))
 
-		go func() {
-			logger.Sugar().Infow("metrics server starting", "addr", opts.MetricsAddr)
-			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				logger.Sugar().Errorw("metrics server failed", "err", err)
-			}
-		}()
-		// The existing defer already covers both run() exit paths (signal-driven
-		// and listener-death); it now drains through the shared primitive (single
-		// graceful-shutdown deadline) instead of an inlined 5s literal.
-		defer httpserver.Drain(metricsSrv, "metrics server", logger)
+		// Bind here, synchronously, instead of letting ListenAndServe bind from
+		// inside the serve goroutine. run() publishes readiness further down
+		// (ReadyCh, then the "shadowdns ready" entry) without any handshake with
+		// that goroutine, so an in-goroutine bind leaves a window in which the
+		// process announces itself ready while the metrics socket is not yet
+		// accepting and a scrape is refused. Binding before the goroutine starts
+		// orders the bind ahead of every readiness signal, which is what those
+		// signals are taken to mean.
+		//
+		// A bind failure stays non-fatal, as it was when ListenAndServe reported
+		// it asynchronously, and matches the other optional background servers:
+		// DNS keeps serving and metrics keep being collected in-process; only
+		// the scrape endpoint is missing.
+		metricsLn, err := net.Listen("tcp", opts.MetricsAddr)
+		if err != nil {
+			logger.Sugar().Errorw("metrics server failed", "addr", opts.MetricsAddr, "err", err)
+		} else {
+			// Log the bound address, not the requested one, so a port of 0
+			// resolves to the port actually in use.
+			logger.Sugar().Infow("metrics server starting", "addr", metricsLn.Addr().String())
+			go func() {
+				if err := metricsSrv.Serve(metricsLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					logger.Sugar().Errorw("metrics server failed", "err", err)
+				}
+			}()
+			// The existing defer already covers both run() exit paths (signal-driven
+			// and listener-death); it now drains through the shared primitive (single
+			// graceful-shutdown deadline) instead of an inlined 5s literal.
+			defer httpserver.Drain(metricsSrv, "metrics server", logger)
+		}
 	}
 
 	// DNS-over-HTTPS server (optional — only started when the doh section is
