@@ -112,6 +112,17 @@ ephemeral_api:
 #                           unit's StateDirectory (/var/lib/shadowdns).
 #                           Changing it requires a restart to take effect.
 #
+# Optional fields:
+#   acme.initial_delay — Go duration string (e.g. "30s") that delays ONLY
+#                        the first certificate obtain attempt of the
+#                        process, for orchestrated deployments whose
+#                        routing has not yet converged on a new instance.
+#                        Default "0s" (absent or empty) issues
+#                        immediately. Retries and renewals keep their own
+#                        timing. A negative or unparseable value fails the
+#                        load; no upper bound is enforced. Changing it
+#                        requires a restart to take effect.
+#
 # The ACME account is registered with no contact email, so acme accepts
 # no "email" field (RFC 8555 contact is optional; the short-lived
 # auto-renewed certificate makes expiry notices moot).
@@ -129,3 +140,4 @@ ephemeral_api:
 #     ip: "203.0.113.10"
 #     http01_listen: "203.0.113.10:80"
 #     account_key_file: "/var/lib/shadowdns/acme/account.key"
+#     # initial_delay: "30s"
