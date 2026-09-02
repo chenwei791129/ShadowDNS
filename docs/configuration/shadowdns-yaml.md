@@ -30,6 +30,7 @@ doh:
     ip: "203.0.113.10"
     http01_listen: "203.0.113.10:80"
     account_key_file: "/var/lib/shadowdns/acme/account.key"
+    # initial_delay: "30s"
 ```
 
 ## Environment variable expressions
@@ -113,7 +114,7 @@ When the `ephemeral_api` section is absent, no HTTP API server is started. For e
 
 ## doh fields
 
-All fields are required; loading fails naming the first missing field.
+Every field except `acme.initial_delay` is required; loading fails naming the first missing field. `acme.initial_delay` is optional and takes its documented default when absent.
 
 | Field | Required | Description |
 |------|------|------|
@@ -122,6 +123,9 @@ All fields are required; loading fails naming the first missing field.
 | `acme.ip` | Yes | The IP address the certificate is issued for (RFC 8738 IP-identifier certificate) |
 | `acme.http01_listen` | Yes | The `host:port` the ACME HTTP-01 challenge responder binds to; MUST be reachable from the public Internet as port 80 |
 | `acme.account_key_file` | Yes | Absolute path to the persisted ACME account private key (PKCS#8 PEM, mode `0600`). Generated on first use when absent and reused across restarts so re-registration is idempotent and does not exhaust the ACME new-account rate limit. Use a path under the systemd `StateDirectory` (`/var/lib/shadowdns`). This file is a **secret** — keep it `0600` and owned by the service user. Changing it requires a restart to take effect |
+| `acme.initial_delay` | No | A Go duration string (e.g. `30s`) that delays **only the first** certificate obtain attempt of this process. Default `0s` (absent or empty string), which issues immediately — the behavior when this field did not exist. Changing it requires a restart to take effect |
+
+The delay exists for orchestrated deployments whose routing data plane has not yet converged on a freshly started instance; see [DNS-over-HTTPS](../guides/doh.md) for when to set it. A negative value or a string that is not a Go duration (`30` without a unit, `soon`) fails the load with an error naming `initial_delay` and quoting the rejected value. No upper bound is enforced — an over-long window is visible in the log and self-corrects on restart.
 
 The ACME account is registered without a contact email, so `doh.acme` accepts no `email` field; including one fails the load as an unknown field. (Contact email is optional under RFC 8555, and the short-lived auto-renewed certificate makes expiry notifications moot.)
 

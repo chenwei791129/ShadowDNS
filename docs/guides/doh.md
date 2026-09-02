@@ -158,6 +158,29 @@ The DoH listener serves TLS with a certificate issued **for the IP address** (`a
 
 Because the certificate is bound to the IP rather than a hostname, clients connect to the IP directly (as in the curl examples above).
 
+### Delaying the first issuance at startup
+
+`doh.acme.initial_delay` is a **startup propagation window**, not a retry mechanism. In an orchestrated deployment — a rolling update, an external load balancer, service endpoints that have to converge — a freshly started instance binds its HTTP-01 listener and creates an ACME order before the public endpoint routes to it. HTTP-01 challenge tokens live in the memory of the process that created the order, so a validation request that lands on the old instance fails. The existing retry loop recovers eventually, but that first failed production order is avoidable and consumes ACME validation capacity.
+
+Set the delay to roughly how long the deployment takes to converge on a new instance:
+
+```yaml
+doh:
+  acme:
+    initial_delay: "30s"
+```
+
+What it does and does not do:
+
+- It delays **only the first** obtain attempt of the process. A retry after a failed obtain uses the existing retry interval, and renewals use the existing renewal schedule; neither is affected.
+- Both listeners bind and serve normally throughout the window — the delay never holds back listener startup, so the HTTP-01 responder is ready before the first order is created.
+- During the window no certificate is available yet, so a **TLS handshake against the DoH listener fails**. That is the same behavior as any other moment before the first successful issuance, just deliberately longer.
+- The wait is cancellable: a shutdown during the window exits promptly, without attempting issuance and without recording a certificate renewal failure.
+- When the delay is positive, one informational log entry is emitted at the start of the wait carrying the configured duration.
+- Like every other `doh.acme.*` field, it is **restart-only**: SIGHUP re-validates it but logs the restart advisory instead of applying it.
+
+Omitting the field, or setting `0s`, keeps the pre-existing behavior of issuing immediately.
+
 ---
 
 ## ACME HTTP-01 listener hardening
