@@ -30,6 +30,7 @@ doh:
     ip: "203.0.113.10"
     http01_listen: "203.0.113.10:80"
     account_key_file: "/var/lib/shadowdns/acme/account.key"
+    # initial_delay: "30s"
 ```
 
 ## 環境變數 expression
@@ -113,7 +114,7 @@ Zone aliasing 的查詢處理細節請見 [Zone Aliasing 原理](../guides/zone-
 
 ## doh 欄位
 
-所有欄位皆為必填；載入時若有缺漏，會指名第一個缺少的欄位並失敗。
+除 `acme.initial_delay` 外所有欄位皆為必填；載入時若有缺漏，會指名第一個缺少的欄位並失敗。`acme.initial_delay` 為選填，未設定時採用其預設值。
 
 | 欄位 | 必填 | 說明 |
 |------|------|------|
@@ -122,6 +123,9 @@ Zone aliasing 的查詢處理細節請見 [Zone Aliasing 原理](../guides/zone-
 | `acme.ip` | 是 | 憑證簽發對象的 IP 位址（RFC 8738 IP-identifier 憑證） |
 | `acme.http01_listen` | 是 | ACME HTTP-01 challenge 回應器綁定的 `host:port`；必須能從公開網際網路以 port 80 連到 |
 | `acme.account_key_file` | 是 | 持久化 ACME 帳號私鑰的絕對路徑（PKCS#8 PEM、權限 `0600`）。檔案不存在時於首次使用產生，並跨重啟重用，使重新註冊具冪等性、不會耗盡 ACME new-account 速率限制。請使用 systemd `StateDirectory`（`/var/lib/shadowdns`）之下的路徑。此檔為**機密**——務必保持 `0600` 且擁有者為服務使用者。變更此欄位需重啟才會生效 |
+| `acme.initial_delay` | 否 | Go duration 字串（例如 `30s`），**只**延後本行程第一次取得憑證的嘗試。預設 `0s`（欄位缺漏或空字串），即立即簽發——與此欄位存在前的行為相同。變更此欄位需重啟才會生效 |
+
+此延遲是為了路由資料平面尚未收斂到新啟動實例的編排式部署而設；使用時機請見 [DNS-over-HTTPS](../guides/doh.md)。負值、或不是 Go duration 的字串（缺單位的 `30`、`soon`）會導致載入失敗，錯誤訊息會指名 `initial_delay` 並引用被拒絕的值。不設上限——設得過長會直接反映在日誌中，且重啟即可自我修正。
 
 ACME 帳號以無聯絡 email 註冊，因此 `doh.acme` 不接受 `email` 欄位；若填入會以未知欄位導致載入失敗。（RFC 8555 的聯絡 email 為選填，且短效自動續簽的憑證讓到期通知失去意義。）
 
