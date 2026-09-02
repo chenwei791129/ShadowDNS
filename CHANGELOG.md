@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.26.1...v0.27.0) (2026-09-02)
+
+
+### Features
+
+* **doh:** add configurable delay before initial ACME issuance ([0a89b63](https://github.com/chenwei791129/ShadowDNS/commit/0a89b631faecaf3410254fb0827238775df5bd5c))
+
 ## [0.26.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.26.0...v0.26.1) (2026-08-29)
 
 
