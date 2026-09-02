@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 )
 
 // validDoHYAML returns a config body with a complete, valid doh section. The
@@ -287,6 +288,99 @@ doh:
 			}
 			if !strings.Contains(err.Error(), tc.wantInErr) {
 				t.Errorf("error = %q, want it to name %q", err.Error(), tc.wantInErr)
+			}
+		})
+	}
+}
+
+// dohYAMLWithInitialDelay returns validDoHYAML with the given initial_delay
+// value appended to its acme block verbatim (already YAML-quoted by the
+// caller). It extends the shared valid body rather than restating it, so a
+// future required field added to validDoHYAML propagates here instead of
+// failing these cases for an unrelated reason.
+func dohYAMLWithInitialDelay(value string) string {
+	return validDoHYAML + "    initial_delay: " + value + "\n"
+}
+
+// TestLoad_DoHInitialDelay covers the optional acme.initial_delay field: the
+// values that load successfully (with their effective duration) and the values
+// that must fail the load naming the field. It is the only optional field under
+// doh.acme, so absence must yield the zero delay rather than a missing-field
+// error.
+func TestLoad_DoHInitialDelay(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		// want is the effective delay when the load is expected to succeed.
+		want time.Duration
+		// wantInErr, when non-empty, are substrings the load error must carry;
+		// a non-empty slice also marks the case as expected to fail.
+		wantInErr []string
+	}{
+		{
+			name: "field absent yields zero delay",
+			yaml: validDoHYAML,
+			want: 0,
+		},
+		{
+			name: "empty string yields zero delay",
+			yaml: dohYAMLWithInitialDelay(`""`),
+			want: 0,
+		},
+		{
+			name: "explicit 0s yields zero delay",
+			yaml: dohYAMLWithInitialDelay(`"0s"`),
+			want: 0,
+		},
+		{
+			name: "30s is accepted",
+			yaml: dohYAMLWithInitialDelay(`"30s"`),
+			want: 30 * time.Second,
+		},
+		{
+			// No upper bound is enforced, so a multi-minute window loads.
+			name: "2m is accepted",
+			yaml: dohYAMLWithInitialDelay(`"2m"`),
+			want: 2 * time.Minute,
+		},
+		{
+			name:      "negative value is rejected",
+			yaml:      dohYAMLWithInitialDelay(`"-1s"`),
+			wantInErr: []string{"initial_delay", "-1s"},
+		},
+		{
+			name:      "unitless number is rejected",
+			yaml:      dohYAMLWithInitialDelay(`"30"`),
+			wantInErr: []string{"initial_delay", "30"},
+		},
+		{
+			name:      "unparseable string is rejected",
+			yaml:      dohYAMLWithInitialDelay(`"soon"`),
+			wantInErr: []string{"initial_delay", "soon"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(writeConfig(t, tc.yaml), nil)
+			if len(tc.wantInErr) > 0 {
+				if err == nil {
+					t.Fatalf("Load succeeded, want error mentioning %q", tc.wantInErr)
+				}
+				for _, want := range tc.wantInErr {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error = %q, want it to contain %q", err.Error(), want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.DoH == nil {
+				t.Fatal("DoH is nil, want populated")
+			}
+			if cfg.DoH.ACME.InitialDelay != tc.want {
+				t.Errorf("ACME.InitialDelay = %v, want %v", cfg.DoH.ACME.InitialDelay, tc.want)
 			}
 		})
 	}

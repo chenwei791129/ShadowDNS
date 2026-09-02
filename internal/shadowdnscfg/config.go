@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
@@ -42,8 +43,9 @@ type Config struct {
 }
 
 // DoHConfig holds the settings for the DNS-over-HTTPS (RFC 8484) server.
-// Present only when the doh section appears in the YAML; every field is
-// required and validated by buildDoH so a partial section fails the load.
+// Present only when the doh section appears in the YAML. Every field except
+// ACME.InitialDelay is required and validated by buildDoH, so a partial
+// section fails the load.
 type DoHConfig struct {
 	// Listen is the host:port the DoH HTTPS service binds, as provided in
 	// YAML (e.g. "203.0.113.10:443").
@@ -71,6 +73,13 @@ type DoHACMEConfig struct {
 	// retries so re-registration is idempotent and does not consume the
 	// per-source-IP new-account rate limit.
 	AccountKeyFile string
+	// InitialDelay is how long the certificate management loop waits before
+	// its first obtain attempt of the process, giving an orchestrated
+	// deployment's routing data plane time to converge on this instance
+	// before HTTP-01 validation runs. Zero (the default when the YAML field
+	// is absent or empty) means the first obtain is attempted immediately.
+	// It never applies to a retry after a failed obtain or to a renewal.
+	InitialDelay time.Duration
 }
 
 // EphemeralAPIConfig holds the settings for the ephemeral TXT API server.
@@ -107,6 +116,10 @@ type rawDoHACME struct {
 	IP             string `yaml:"ip"`
 	HTTP01Listen   string `yaml:"http01_listen"`
 	AccountKeyFile string `yaml:"account_key_file"`
+	// InitialDelay is optional and carried as a Go duration string (e.g.
+	// "30s") rather than a number of seconds so environment expansion, which
+	// only rewrites YAML string scalars, can supply it.
+	InitialDelay string `yaml:"initial_delay"`
 }
 
 // rawAliasGroup is the per-key YAML shape for the aliases map. Each entry
@@ -346,8 +359,11 @@ func validateHostPort(field, addr string) error {
 }
 
 // buildDoH validates the raw doh section and normalizes it into a DoHConfig.
-// Every field is required: a missing or malformed field fails the load with an
-// error naming the field, mirroring buildEphemeralAPI's fail-loud contract.
+// Every field except acme.initial_delay is required: a missing or malformed
+// field fails the load with an error naming the field, mirroring
+// buildEphemeralAPI's fail-loud contract. acme.initial_delay is optional and
+// takes its zero value when absent, but a present-and-invalid value still fails
+// the load the same way.
 func buildDoH(raw *rawDoH) (*DoHConfig, error) {
 	if raw.Listen == "" {
 		return nil, fmt.Errorf("listen: required field is missing")
@@ -401,11 +417,27 @@ func buildDoHACME(raw *rawDoHACME) (DoHACMEConfig, error) {
 	if !filepath.IsAbs(raw.AccountKeyFile) {
 		return DoHACMEConfig{}, fmt.Errorf("account_key_file: %q must be an absolute path", raw.AccountKeyFile)
 	}
+	// initial_delay is the one optional field in this section: absent or empty
+	// means no delay, preserving the immediate-issuance behavior. No upper
+	// bound is enforced — an over-long window is self-evident from the log and
+	// self-correcting on restart, so a cap would be inventing policy.
+	var initialDelay time.Duration
+	if raw.InitialDelay != "" {
+		d, err := time.ParseDuration(raw.InitialDelay)
+		if err != nil {
+			return DoHACMEConfig{}, fmt.Errorf("initial_delay: invalid duration %q: %w", raw.InitialDelay, err)
+		}
+		if d < 0 {
+			return DoHACMEConfig{}, fmt.Errorf("initial_delay: %q must not be negative", raw.InitialDelay)
+		}
+		initialDelay = d
+	}
 	return DoHACMEConfig{
 		DirectoryURL:   raw.DirectoryURL,
 		IP:             ip.Unmap(),
 		HTTP01Listen:   raw.HTTP01Listen,
 		AccountKeyFile: raw.AccountKeyFile,
+		InitialDelay:   initialDelay,
 	}, nil
 }
 

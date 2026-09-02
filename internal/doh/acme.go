@@ -323,9 +323,19 @@ type certManager struct {
 	logger        *zap.Logger
 	metrics       certMetrics
 	retryInterval time.Duration
+	// initialDelay postpones only the first obtain attempt of the process,
+	// giving an orchestrated deployment's routing data plane time to converge
+	// on this instance before HTTP-01 validation runs. Zero means no wait,
+	// which is the behavior this field's default preserves.
+	initialDelay time.Duration
 }
 
-func newCertManager(obtain func(context.Context) (*tls.Certificate, error), m certMetrics, logger *zap.Logger) *certManager {
+// newCertManager returns a certificate manager ready to run. initialDelay comes
+// from doh.acme.initial_delay and is a constructor parameter, not a field the
+// caller sets afterwards, because it is caller-supplied configuration like
+// obtain, m and logger — unlike retryInterval, which is an internal constant
+// this constructor owns and no caller touches.
+func newCertManager(obtain func(context.Context) (*tls.Certificate, error), m certMetrics, logger *zap.Logger, initialDelay time.Duration) *certManager {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -334,6 +344,7 @@ func newCertManager(obtain func(context.Context) (*tls.Certificate, error), m ce
 		logger:        logger,
 		metrics:       m,
 		retryInterval: renewRetryInterval,
+		initialDelay:  initialDelay,
 	}
 }
 
@@ -376,10 +387,17 @@ func (cm *certManager) recordRenewal(result string) {
 	}
 }
 
-// run obtains the initial certificate (retrying on failure) and then renews it
-// before expiry until ctx is cancelled. It returns when ctx is done. The first
-// successful obtain unblocks TLS handshakes; before that GetCertificate errors.
+// run waits out the configured initial delay (if any), obtains the initial
+// certificate (retrying on failure) and then renews it before expiry until ctx
+// is cancelled. It returns when ctx is done. The first successful obtain
+// unblocks TLS handshakes; before that GetCertificate errors.
 func (cm *certManager) run(ctx context.Context) {
+	// The startup delay sits outside the loop on purpose: only the first
+	// obtain attempt of the process is postponed, so the retry and renewal
+	// waits computed inside the loop are structurally unreachable from it.
+	if !cm.waitInitialDelay(ctx) {
+		return
+	}
 	for {
 		// Bail before attempting an obtain if ctx is already cancelled (a fast
 		// start/stop race): otherwise the first loop entry records a spurious
@@ -399,18 +417,45 @@ func (cm *certManager) run(ctx context.Context) {
 			// directory's rate limits.
 			wait = max(renewDelay(cert, time.Now()), minRenewInterval)
 		}
-		// time.NewTimer (not time.After) so the timer is stopped when ctx is
-		// cancelled: the success-path wait can be multiple days, and a bare
-		// time.After would leave that runtime timer on the heap until it fired
-		// long after the loop has exited.
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		if !cancellableWait(ctx, wait) {
 			return
-		case <-timer.C:
 		}
 	}
+}
+
+// cancellableWait blocks for d or until ctx is done, whichever comes first, and
+// reports whether the full duration elapsed. time.NewTimer (not time.After) so
+// a cancelled wait stops the timer: the renewal wait can be multiple days and
+// the startup delay has no upper bound, and a bare time.After would leave that
+// runtime timer on the heap until it fired long after the caller returned.
+func cancellableWait(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// waitInitialDelay blocks for the configured startup delay before the first
+// obtain attempt and reports whether the caller should proceed. A zero delay
+// returns true without waiting. A ctx cancelled during the wait returns false
+// so run returns before touching the obtain path: a shutdown mid-delay is not
+// a certificate failure and must not record one or log an ACME error.
+func (cm *certManager) waitInitialDelay(ctx context.Context) bool {
+	if cm.initialDelay <= 0 {
+		return true
+	}
+	// Mirror the loop's fast start/stop guard: a ctx already cancelled on entry
+	// must not announce a wait that is not going to happen, which would read as
+	// a stalled startup in the log of a process that is already shutting down.
+	if ctx.Err() != nil {
+		return false
+	}
+	cm.logger.Sugar().Infow("doh: delaying initial ACME certificate issuance", "delay", cm.initialDelay)
+	return cancellableWait(ctx, cm.initialDelay)
 }
 
 // renewDelay returns how long to wait before renewing cert, given now. Renewal

@@ -14,9 +14,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/chenwei791129/ShadowDNS/internal/metrics"
 )
@@ -284,7 +290,7 @@ func TestCertManager_HotSwapWithoutRestart(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return next, nil
-	}, nil, nil)
+	}, nil, nil, 0)
 	if _, err := cm.obtainAndStore(context.Background()); err != nil {
 		t.Fatalf("initial obtain: %v", err)
 	}
@@ -320,7 +326,7 @@ func TestCertManager_RenewalFailureRetainsCert(t *testing.T) {
 
 	fm := &fakeCertMetrics{}
 	failing := func(context.Context) (*tls.Certificate, error) { return nil, io.ErrUnexpectedEOF }
-	cm := newCertManager(failing, fm, nil)
+	cm := newCertManager(failing, fm, nil, 0)
 	cm.cert.Store(certA) // pretend a previous obtain succeeded
 
 	_, err := cm.obtainAndStore(context.Background())
@@ -340,7 +346,7 @@ func TestCertManager_RenewalFailureRetainsCert(t *testing.T) {
 }
 
 func TestCertManager_GetCertificateBeforeObtain(t *testing.T) {
-	cm := newCertManager(func(context.Context) (*tls.Certificate, error) { return nil, nil }, nil, nil)
+	cm := newCertManager(func(context.Context) (*tls.Certificate, error) { return nil, nil }, nil, nil, 0)
 	if _, err := cm.GetCertificate(nil); err == nil {
 		t.Error("GetCertificate returned nil error before any obtain, want error")
 	}
@@ -420,5 +426,200 @@ func TestBuildIPCSR_NoIPInCommonName(t *testing.T) {
 	}
 	if err := csr.CheckSignature(); err != nil {
 		t.Errorf("CSR signature invalid: %v", err)
+	}
+}
+
+// newDelayedCertManager returns a certManager whose obtain path is an inert
+// stub and whose startup delay is delay. logger may be nil (newCertManager
+// substitutes a no-op). Shared by the startup-delay tests, which differ only in
+// the delay and in whether they observe the log.
+func newDelayedCertManager(delay time.Duration, logger *zap.Logger) *certManager {
+	return newCertManager(func(context.Context) (*tls.Certificate, error) { return nil, nil }, nil, logger, delay)
+}
+
+// TestCertManager_WaitInitialDelay covers the cancellable wait that precedes
+// the first obtain attempt of the process: zero delay proceeds immediately, a
+// positive delay actually elapses, and a cancellation during the wait reports
+// that the loop must not proceed. The positive case asserts only the lower
+// bound on elapsed time (scheduling jitter makes an upper bound flaky) and uses
+// a very short duration to keep the test fast.
+func TestCertManager_WaitInitialDelay(t *testing.T) {
+	t.Run("zero delay proceeds immediately", func(t *testing.T) {
+		cm := newDelayedCertManager(0, nil)
+		start := time.Now()
+		if !cm.waitInitialDelay(context.Background()) {
+			t.Fatal("waitInitialDelay = false, want true (zero delay must proceed)")
+		}
+		if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+			t.Errorf("zero delay waited %v, want no wait", elapsed)
+		}
+	})
+
+	t.Run("positive delay elapses before proceeding", func(t *testing.T) {
+		const delay = 40 * time.Millisecond
+		cm := newDelayedCertManager(delay, nil)
+		start := time.Now()
+		if !cm.waitInitialDelay(context.Background()) {
+			t.Fatal("waitInitialDelay = false, want true (uncancelled wait must proceed)")
+		}
+		if elapsed := time.Since(start); elapsed < delay {
+			t.Errorf("waited %v, want at least %v", elapsed, delay)
+		}
+	})
+
+	t.Run("cancellation during the wait aborts", func(t *testing.T) {
+		cm := newDelayedCertManager(time.Hour, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			cancel()
+		}()
+		defer cancel()
+		if cm.waitInitialDelay(ctx) {
+			t.Error("waitInitialDelay = true after cancellation, want false")
+		}
+	})
+}
+
+// TestCertManager_InitialDelayLog asserts the observability of the startup
+// wait: a positive delay emits exactly one informational entry carrying the
+// configured duration (and no challenge or key material), while a zero delay
+// stays silent.
+func TestCertManager_InitialDelayLog(t *testing.T) {
+	newCM := func(delay time.Duration) (*certManager, *observer.ObservedLogs) {
+		core, obs := observer.New(zapcore.InfoLevel)
+		return newDelayedCertManager(delay, zap.New(core)), obs
+	}
+
+	t.Run("positive delay logs the configured duration", func(t *testing.T) {
+		const delay = 20 * time.Millisecond
+		cm, obs := newCM(delay)
+		cm.waitInitialDelay(context.Background())
+
+		entries := obs.All()
+		if len(entries) != 1 {
+			t.Fatalf("logged %d entries, want 1: %+v", len(entries), entries)
+		}
+		e := entries[0]
+		if e.Level != zapcore.InfoLevel {
+			t.Errorf("level = %v, want info", e.Level)
+		}
+		if !strings.Contains(e.Message, "delaying initial ACME") {
+			t.Errorf("message = %q, want it to state that initial ACME issuance is delayed", e.Message)
+		}
+		if got := e.ContextMap()["delay"]; got != delay {
+			t.Errorf("delay field = %v, want %v", got, delay)
+		}
+	})
+
+	t.Run("zero delay logs nothing", func(t *testing.T) {
+		cm, obs := newCM(0)
+		cm.waitInitialDelay(context.Background())
+		if n := obs.Len(); n != 0 {
+			t.Errorf("logged %d entries with zero delay, want 0: %+v", n, obs.All())
+		}
+	})
+}
+
+// TestCertManager_RunCancelledDuringInitialDelay drives the background loop
+// with a long initial delay and cancels mid-wait. The loop must return without
+// ever calling the obtain path, so shutdown records no renewal outcome at all —
+// a cancelled startup window is not a certificate failure.
+func TestCertManager_RunCancelledDuringInitialDelay(t *testing.T) {
+	var calls atomic.Int64
+	fm := &fakeCertMetrics{}
+	cm := newCertManager(func(context.Context) (*tls.Certificate, error) {
+		calls.Add(1)
+		return nil, io.ErrUnexpectedEOF
+	}, fm, nil, time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		cm.run(ctx)
+	}()
+
+	time.Sleep(10 * time.Millisecond) // let run enter the wait
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cm.run did not return after cancellation during the initial delay")
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("obtain called %d times during a cancelled initial delay, want 0", n)
+	}
+	if fm.failures != 0 {
+		t.Errorf("recorded failures = %d, want 0 (shutdown is not a renewal failure)", fm.failures)
+	}
+	if fm.successes != 0 {
+		t.Errorf("recorded successes = %d, want 0", fm.successes)
+	}
+}
+
+// TestCertManager_InitialDelayDoesNotAffectRetryTiming drives the background
+// loop through a failing first obtain and its retry, and asserts the initial
+// delay gates only the first attempt: the retry is spaced by retryInterval,
+// which is chosen far below the initial delay so a reapplied startup wait would
+// be unmistakable. The renewal side is covered structurally — the wait lives
+// outside the for loop — plus TestRenewDelay guarding the pure schedule
+// function; asserting the real renewRetryInterval (10m) or minRenewInterval
+// (1m) would mean actually waiting minutes, and those constants are out of
+// scope for this change.
+func TestCertManager_InitialDelayDoesNotAffectRetryTiming(t *testing.T) {
+	const (
+		initialDelay  = 200 * time.Millisecond
+		retryInterval = 5 * time.Millisecond
+	)
+	var (
+		mu    sync.Mutex
+		times []time.Time
+	)
+	twice := make(chan struct{})
+	cm := newCertManager(func(context.Context) (*tls.Certificate, error) {
+		mu.Lock()
+		times = append(times, time.Now())
+		n := len(times)
+		mu.Unlock()
+		if n == 2 {
+			close(twice)
+		}
+		return nil, io.ErrUnexpectedEOF
+	}, nil, nil, initialDelay)
+	cm.retryInterval = retryInterval
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		defer close(done)
+		cm.run(ctx)
+	}()
+
+	select {
+	case <-twice:
+	case <-time.After(10 * time.Second):
+		t.Fatal("obtain was not attempted twice")
+	}
+	cancel()
+	<-done
+
+	mu.Lock()
+	first, second := times[0], times[1]
+	mu.Unlock()
+
+	if d := first.Sub(start); d < initialDelay {
+		t.Errorf("first obtain at +%v, want at least the initial delay %v", d, initialDelay)
+	}
+	gap := second.Sub(first)
+	if gap < retryInterval {
+		t.Errorf("retry gap = %v, want at least the retry interval %v", gap, retryInterval)
+	}
+	if gap >= initialDelay {
+		t.Errorf("retry gap = %v, want well under the initial delay %v: the initial delay must not be reapplied to retries", gap, initialDelay)
 	}
 }
