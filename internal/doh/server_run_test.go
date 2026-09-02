@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -37,7 +38,7 @@ func TestServer_RunServesThenShutsDown(t *testing.T) {
 	s := NewServer(dnsSrv, cfg, nil, nil)
 
 	cert := selfSigned(t, "doh-test", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
-	cm := newCertManager(func(context.Context) (*tls.Certificate, error) { return cert, nil }, nil, nil)
+	cm := newCertManager(func(context.Context) (*tls.Certificate, error) { return cert, nil }, nil, nil, 0)
 	responder := newChallengeResponder(nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -87,5 +88,70 @@ func TestServer_RunServesThenShutsDown(t *testing.T) {
 	if conn, err := net.DialTimeout("tcp", cfg.Listen, 500*time.Millisecond); err == nil {
 		_ = conn.Close()
 		t.Error("DoH listener still accepting connections after shutdown")
+	}
+}
+
+// dialUntilUp polls addr with short TCP dials until one connects, so a test can
+// proceed once a listener is actually accepting rather than after a fixed sleep.
+func dialUntilUp(t *testing.T, addr string) {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		if conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond); err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("listener %s never accepted a connection", addr)
+}
+
+// TestServer_RunBindsListenersDuringInitialDelay guards the central safety
+// claim of doh.acme.initial_delay: it postpones the first obtain attempt only,
+// never listener startup. With an hour-long delay both listeners must still be
+// accepting, the obtain path must not have been entered, and a TLS handshake
+// must fail exactly as it does at any other moment before the first issuance.
+// Without this, moving the wait ahead of the listener goroutines would keep the
+// whole suite green (every other test uses a zero delay).
+func TestServer_RunBindsListenersDuringInitialDelay(t *testing.T) {
+	dnsSrv := newAnyViewServer(t, buildRootZone("example.com.", makeA("www.example.com.", "203.0.113.20", 300)))
+	cfg := testDoHConfig()
+	cfg.Listen = freeAddr(t)
+	cfg.ACME.HTTP01Listen = freeAddr(t)
+	s := NewServer(dnsSrv, cfg, nil, nil)
+
+	// Built here, not inside obtain: selfSigned calls t.Fatalf, which is only
+	// valid on the test goroutine.
+	cert := selfSigned(t, "doh-test", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	var obtains atomic.Int64
+	cm := newCertManager(func(context.Context) (*tls.Certificate, error) {
+		obtains.Add(1)
+		return cert, nil
+	}, nil, nil, time.Hour)
+	responder := newChallengeResponder(nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.runWith(ctx, responder, cm) }()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("runWith did not return after context cancellation")
+		}
+	}()
+
+	// Both listeners must come up while the delay is still elapsing.
+	dialUntilUp(t, cfg.ACME.HTTP01Listen)
+	dialUntilUp(t, cfg.Listen)
+
+	// No certificate has been obtained, so the handshake fails for want of one.
+	if conn, err := tls.Dial("tcp", cfg.Listen, &tls.Config{InsecureSkipVerify: true}); err == nil {
+		_ = conn.Close()
+		t.Error("TLS handshake succeeded during the initial delay, want failure (no certificate yet)")
+	}
+
+	if n := obtains.Load(); n != 0 {
+		t.Errorf("obtain called %d times during the initial delay, want 0", n)
 	}
 }

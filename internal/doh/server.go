@@ -81,7 +81,7 @@ func NewServer(dnsHandler *server.Server, cfg *shadowdnscfg.DoHConfig, m *metric
 func (s *Server) Run(ctx context.Context) error {
 	responder := newChallengeResponder(s.logger, s.metrics)
 	obtain := newLazyLegoObtainer(s.cfg.ACME, responder)
-	cm := newCertManager(obtain, s.metrics, s.logger)
+	cm := newCertManager(obtain, s.metrics, s.logger, s.cfg.ACME.InitialDelay)
 	return s.runWith(ctx, responder, cm)
 }
 
