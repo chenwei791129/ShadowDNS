@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.1](https://github.com/chenwei791129/ShadowDNS/compare/v0.27.0...v0.27.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **deps:** upgrade x/net to address CVE-2026-78669 ([9e6b1b3](https://github.com/chenwei791129/ShadowDNS/commit/9e6b1b37a6ffef527ea43b6395e7dac4750d3de3))
+
 ## [0.27.0](https://github.com/chenwei791129/ShadowDNS/compare/v0.26.1...v0.27.0) (2026-09-02)
 
 
