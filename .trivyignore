@@ -1,0 +1,6 @@
+# GO-2026-5932 targets the legacy golang.org/x/crypto/openpgp packages.
+# ShadowDNS and its Go tools do not import them: the runtime uses
+# golang.org/x/crypto/ocsp via lego, and nFPM uses the maintained
+# github.com/ProtonMail/go-crypto/openpgp implementation.
+# Re-check with `go list -deps` when Go dependencies change.
+GO-2026-5932
