@@ -18,7 +18,7 @@ RUN OUTPUT=/out/shadowdns \
     SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
     ./scripts/build-linux.sh
 
-FROM --platform=linux/amd64 gcr.io/distroless/static-debian13:nonroot@sha256:23795be0fe67b7d47d1ee62b19c7db750152db627d5bbfa31307e892a7575bec
+FROM --platform=linux/amd64 gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 
 ARG SOURCE=https://example.org/shadowdns
 ARG REVISION=unknown
