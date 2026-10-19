@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Checkout code
@@ -32,7 +32,7 @@ jobs:
         run: make smoke
 
   container:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     # Both runtimes are exercised on purpose: local development resolves to
     # podman, while the release workflow builds and verifies through docker.
