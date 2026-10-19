@@ -13,20 +13,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Shared workflow: the pinned release-please SHA is maintained in
+  # chenwei791129/.github for every repository. release-type is omitted so the
+  # repository's release-please-config.json / .release-please-manifest.json
+  # are used.
   release-please:
-    runs-on: ubuntu-26.04
     permissions:
       contents: write
       issues: write
       pull-requests: write
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-    steps:
-      - uses: googleapis/release-please-action@v5
-        id: release
-        with:
-          token: ${{ secrets.MY_RELEASE_PLEASE_TOKEN }}
+    uses: chenwei791129/.github/.github/workflows/release-please.yml@main
+    secrets:
+      token: ${{ secrets.MY_RELEASE_PLEASE_TOKEN }}
 
   build-and-upload:
     needs: release-please
